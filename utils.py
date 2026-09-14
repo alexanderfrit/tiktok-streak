@@ -4,18 +4,20 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
 import time, re, csv, os
 from dotenv import load_dotenv
-from ocacaptcha import oca_solve_captcha
 
 load_dotenv()
 
+PROFILE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "chrome_profile"))
 
-def init_browser():
+
+def init_browser(headless=True):
     chrome_options = Options()
+    chrome_options.add_argument(f"--user-data-dir={PROFILE_DIR}")
     chrome_options.add_argument("--disable-notifications")
-    chrome_options.add_argument("--headless=new")
+    if headless:
+        chrome_options.add_argument("--headless=new")
     browser = webdriver.Chrome(options=chrome_options)
 
     wait = WebDriverWait(browser, 20)
@@ -23,24 +25,13 @@ def init_browser():
     return browser, wait
 
 
-def login_tiktok(browser, wait, username, password):
-    browser.get('https://www.tiktok.com/login/phone-or-email/email')
-    
-    actions = ActionChains(browser, duration=550)
-
-    try:
-        wait.until(EC.presence_of_element_located((By.NAME, "username"))).send_keys(username)
-        password_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[autocomplete="new-password"]')))
-        password_field.send_keys(password)
-        wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "tiktok-11sviba-Button-StyledButton"))).click()
-        time.sleep(3)
-        user_api_key = os.getenv('CAPTCHA_API_KEY')
-        print(user_api_key)
-        number_captcha_attempts = 10
-        action_type = 'tiktokcircle'
-        oca_solve_captcha(browser, actions, user_api_key, action_type, number_captcha_attempts)
-    except:
-        print("You have logged in")
+def login_tiktok(browser, wait, username=None, password=None):
+    # ponytail: session persistence via chrome profile; automated login bypassed, add when headless re-auth flow needed.
+    browser.get('https://www.tiktok.com/messages?lang=vi')
+    time.sleep(3)
+    if 'login' in browser.current_url:
+        raise RuntimeError("Session not authenticated. Run setup_session.py to log in once.")
+    print("Session authenticated")
 
 
 def get_all_friends(browser, wait):
