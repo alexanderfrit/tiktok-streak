@@ -40,6 +40,7 @@ jobs:
         env:
           TIKTOK_ACCOUNTS_JSON: ${{ secrets.TIKTOK_ACCOUNTS_JSON }}
           TIKTOK_SESSION_ID: ${{ secrets.TIKTOK_SESSION_ID }}
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
           MESSAGE: ${{ secrets.MESSAGE }}
           FRIENDS_LIST: ${{ secrets.FRIENDS_LIST }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

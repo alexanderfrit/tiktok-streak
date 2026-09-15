@@ -51,27 +51,80 @@ def init_browser(headless: bool = None) -> tuple:
     return browser, wait
 
 
+def parse_cookie_payload(raw: str) -> dict:
+    raw = raw.strip()
+    if not raw:
+        return {}
+
+    # 1. JSON dict or list of dicts
+    if (raw.startswith("{") and raw.endswith("}")) or (raw.startswith("[") and raw.endswith("]")):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            elif isinstance(parsed, list):
+                out = {}
+                for item in parsed:
+                    if isinstance(item, dict) and "name" in item and "value" in item:
+                        out[item["name"]] = item["value"]
+                if out:
+                    return out
+        except Exception:
+            pass
+
+    # 2. Semicolon-separated cookie header string
+    if ";" in raw or "=" in raw:
+        out = {}
+        for part in raw.split(";"):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                out[k.strip()] = v.strip().strip('"')
+        if out:
+            return out
+
+    # 3. Raw single session token fallback
+    return {
+        "sessionid": raw,
+        "sessionid_ss": raw,
+        "sid_tt": raw,
+    }
+
+
 def authenticate_session(browser, session_id: str, account_name: str = "Account") -> None:
     if not session_id:
         raise SessionExpiredError(f"[{account_name}] session_id is empty.")
 
-    logger.info("[%s] Injecting session cookie...", account_name)
+    logger.info("[%s] Injecting session cookies...", account_name)
     browser.get("https://www.tiktok.com")
     browser.delete_all_cookies()
 
-    for cookie_name in ("sessionid", "sessionid_ss"):
-        browser.add_cookie({
-            "name": cookie_name,
-            "value": session_id,
-            "domain": ".tiktok.com",
-            "path": "/",
-            "secure": True,
-            "httpOnly": True,
-        })
+    cookies_to_inject = parse_cookie_payload(session_id)
+
+    # Merge additional cookies from TIKTOK_COOKIES if available
+    extra_env = os.getenv("TIKTOK_COOKIES", "").strip()
+    if extra_env:
+        extra_cookies = parse_cookie_payload(extra_env)
+        cookies_to_inject.update(extra_cookies)
+
+    for c_name, c_val in cookies_to_inject.items():
+        if not c_name or not c_val:
+            continue
+        try:
+            browser.add_cookie({
+                "name": c_name,
+                "value": c_val,
+                "domain": ".tiktok.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+            })
+        except Exception as e:
+            logger.debug("Failed adding cookie %s: %s", c_name, e)
 
     logger.info("[%s] Verifying authentication at messages endpoint...", account_name)
     browser.get("https://www.tiktok.com/messages?lang=vi")
-    time.sleep(3)
+    time.sleep(4)
 
     if "login" in browser.current_url:
         dump_debug_diagnostics(browser, f"session_expired_{account_name}")
