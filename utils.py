@@ -109,10 +109,17 @@ CHAT_ITEM_CANDIDATES = [
     (By.CSS_SELECTOR, 'div[class*="ConversationItem"]'),
 ]
 
-PROFILE_LINK_CANDIDATES = [
-    (By.CSS_SELECTOR, 'a[href*="/@"]'),
-    (By.XPATH, "//a[contains(@href, '/@')]"),
-    (By.CSS_SELECTOR, 'a[class*="StyledLink"]'),
+PROFILE_MESSAGE_BUTTON_CANDIDATES = [
+    (By.CSS_SELECTOR, '[data-e2e="message-button"]'),
+    (By.XPATH, "//button[contains(., 'Message') or contains(., 'Nhắn tin')]"),
+    (By.CSS_SELECTOR, 'button[class*="ButtonMessage"]'),
+    (By.CSS_SELECTOR, 'a[href*="/messages"]'),
+]
+
+CHAT_HEADER_LINK_CANDIDATES = [
+    (By.CSS_SELECTOR, 'div[data-e2e="chat-header"] a[href*="/@"]'),
+    (By.XPATH, "//div[contains(@class, 'ChatHeader') or contains(@data-e2e, 'chat-header')]//a[contains(@href, '/@')]"),
+    (By.XPATH, "//main//a[contains(@href, '/@')]"),
 ]
 
 MESSAGE_INPUT_CANDIDATES = [
@@ -152,7 +159,7 @@ def get_all_friends(browser, wait):
         logger.info("[%d/%d] Inspecting chat thread...", idx, total_chats)
         user.click()
         time.sleep(2)
-        profile_element = find_element_by_candidates(browser, PROFILE_LINK_CANDIDATES, "profile link")
+        profile_element = find_element_by_candidates(browser, CHAT_HEADER_LINK_CANDIDATES, "chat header profile link")
         href = profile_element.get_attribute("href")
         match = re.search(r"/@([^/?]+)", href)
         if not match:
@@ -177,48 +184,40 @@ def get_all_friends(browser, wait):
 
 
 def auto_send_message(browser, wait):
-    logger.info("Opening messages page for auto-send...")
-    browser.get('https://www.tiktok.com/messages?lang=vi')
-
-    my_friends = load_friends('friends.csv')
-    logger.info("Loaded %d target friends from friends.csv.", len(my_friends))
-
-    logger.info("Waiting for conversation list to load...")
-    all_user = find_elements_by_candidates(browser, CHAT_ITEM_CANDIDATES, "conversation items")
-    total_chats = len(all_user)
-    logger.info("Found %d conversation threads.", total_chats)
+    # ponytail: direct profile message dispatch; inbox thread scanning bypassed, add when batch-broadcasting to unknown inbox users.
+    my_friends = sorted(load_friends('friends.csv'))
+    total_friends = len(my_friends)
+    logger.info("Loaded %d target friends from friends.csv: %s", total_friends, my_friends)
+    if total_friends == 0:
+        logger.warning("friends.csv has no target usernames. Exiting.")
+        return
 
     message_text = os.getenv('MESSAGE')
     if not message_text:
         logger.warning("MESSAGE environment variable is empty.")
 
     sent_count = 0
-    for idx, user in enumerate(all_user, start=1):
-        logger.info("[%d/%d] Opening chat...", idx, total_chats)
-        user.click()
-        time.sleep(2)
-        profile_element = find_element_by_candidates(browser, PROFILE_LINK_CANDIDATES, "profile link")
-        href = profile_element.get_attribute("href")
-        match = re.search(r"/@([^/?]+)", href)
-        if not match:
-            logger.warning("[%d/%d] Could not parse username from %s", idx, total_chats, href)
-            continue
-        username = match.group(1)
-
-        if username not in my_friends:
-            logger.info("[%d/%d] @%s not in friends.csv, skipping.", idx, total_chats, username)
-            continue
-
+    for idx, username in enumerate(my_friends, start=1):
+        logger.info("[%d/%d] Navigating to profile: https://www.tiktok.com/@%s", idx, total_friends, username)
         try:
-            logger.info("[%d/%d] Sending message to @%s...", idx, total_chats, username)
-            message_input = find_element_by_candidates(browser, MESSAGE_INPUT_CANDIDATES, "message input field")
+            browser.get(f"https://www.tiktok.com/@{username}")
+            time.sleep(2)
+
+            logger.info("[%d/%d] Finding Message button for @%s...", idx, total_friends, username)
+            message_button = find_element_by_candidates(browser, PROFILE_MESSAGE_BUTTON_CANDIDATES, f"message button on @{username} profile", timeout=10)
+            message_button.click()
+            time.sleep(2)
+
+            logger.info("[%d/%d] Locating chat input field...", idx, total_friends)
+            message_input = find_element_by_candidates(browser, MESSAGE_INPUT_CANDIDATES, "message input field", timeout=10)
             message_input.click()
             message_input.send_keys(message_text)
             message_input.send_keys(Keys.RETURN)
             sent_count += 1
-            logger.info("[%d/%d] Message sent to @%s.", idx, total_chats, username)
+            logger.info("[%d/%d] Message sent successfully to @%s.", idx, total_friends, username)
+            time.sleep(2)
         except Exception as e:
-            logger.error("[%d/%d] Failed sending message to @%s: %s", idx, total_chats, username, e)
+            logger.error("[%d/%d] Failed sending message to @%s: %s", idx, total_friends, username, e)
 
-    logger.info("Auto send complete. Sent %d messages.", sent_count)
+    logger.info("Auto send complete. Successfully sent %d/%d messages.", sent_count, total_friends)
 
