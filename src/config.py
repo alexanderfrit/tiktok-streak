@@ -34,11 +34,19 @@ def load_friends_csv(filepath: str = "friends.csv") -> list:
 
 
 def parse_post_urls(raw) -> list:
+    urls = []
     if isinstance(raw, list):
-        return [str(u).strip() for u in raw if str(u).strip()]
-    if isinstance(raw, str):
-        return [u.strip() for u in raw.split(",") if u.strip()]
-    return []
+        urls = [str(u).strip() for u in raw if str(u).strip()]
+    elif isinstance(raw, str):
+        urls = [u.strip() for u in raw.split(",") if u.strip()]
+
+    # Strip query tracking parameters (e.g. ?is_from_webapp=1&sender_device=pc)
+    cleaned = []
+    for u in urls:
+        base_url = u.split("?")[0].strip()
+        if base_url:
+            cleaned.append(base_url)
+    return cleaned
 
 
 def load_accounts(config_file: str = "accounts.json") -> list:
