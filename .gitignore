@@ -3,3 +3,5 @@
 .env
 /__pycache__
 chrome_profile/
+debug_*.png
+debug_*.html

@@ -68,6 +68,61 @@ def login_tiktok(browser, wait, username=None, password=None):
     logger.info("Session authenticated successfully.")
 
 
+def _dump_debug_diagnostics(browser, label="timeout"):
+    try:
+        browser.save_screenshot(f"debug_{label}.png")
+        with open(f"debug_{label}.html", "w", encoding="utf-8") as file:
+            file.write(browser.page_source)
+        logger.info("Saved diagnostics: debug_%s.png, debug_%s.html", label, label)
+    except Exception as e:
+        logger.warning("Failed saving diagnostics: %s", e)
+
+
+def find_elements_by_candidates(browser, candidates, description, timeout=15):
+    # ponytail: polled multi-selector fallback; add dedicated page-object models when UI surface expands.
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        for by_type, selector in candidates:
+            try:
+                elements = browser.find_elements(by_type, selector)
+                visible = [el for el in elements if el.is_displayed()]
+                if visible:
+                    return visible
+            except Exception:
+                continue
+        time.sleep(0.5)
+
+    _dump_debug_diagnostics(browser, "timeout")
+    raise TimeoutError(f"Could not locate {description} using candidate selectors.")
+
+
+def find_element_by_candidates(browser, candidates, description, timeout=15):
+    elements = find_elements_by_candidates(browser, candidates, description, timeout=timeout)
+    return elements[0]
+
+
+CHAT_ITEM_CANDIDATES = [
+    (By.CSS_SELECTOR, '[data-e2e="chat-item"]'),
+    (By.CSS_SELECTOR, 'div[class*="PInfoNickname"]'),
+    (By.XPATH, "//*[contains(@class, 'Nickname') or contains(@class, 'InfoNickname')]"),
+    (By.CSS_SELECTOR, 'div[role="listitem"]'),
+    (By.CSS_SELECTOR, 'div[class*="ConversationItem"]'),
+]
+
+PROFILE_LINK_CANDIDATES = [
+    (By.CSS_SELECTOR, 'a[href*="/@"]'),
+    (By.XPATH, "//a[contains(@href, '/@')]"),
+    (By.CSS_SELECTOR, 'a[class*="StyledLink"]'),
+]
+
+MESSAGE_INPUT_CANDIDATES = [
+    (By.CSS_SELECTOR, 'div[contenteditable="true"]'),
+    (By.CSS_SELECTOR, 'div[role="textbox"]'),
+    (By.CSS_SELECTOR, 'div[class*="public-DraftStyleDefault-block"]'),
+    (By.CSS_SELECTOR, 'textarea'),
+]
+
+
 def load_friends(filepath='friends.csv'):
     friends = set()
     if not os.path.exists(filepath):
@@ -85,7 +140,7 @@ def get_all_friends(browser, wait):
     browser.get('https://www.tiktok.com/messages?lang=vi')
 
     logger.info("Waiting for conversation list to load...")
-    all_user = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-2tydh5-PInfoNickname")))
+    all_user = find_elements_by_candidates(browser, CHAT_ITEM_CANDIDATES, "conversation items")
     total_chats = len(all_user)
     logger.info("Found %d conversation threads.", total_chats)
 
@@ -97,7 +152,7 @@ def get_all_friends(browser, wait):
         logger.info("[%d/%d] Inspecting chat thread...", idx, total_chats)
         user.click()
         time.sleep(2)
-        profile_element = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-1qxabns-StyledLink")))[0]
+        profile_element = find_element_by_candidates(browser, PROFILE_LINK_CANDIDATES, "profile link")
         href = profile_element.get_attribute("href")
         match = re.search(r"/@([^/?]+)", href)
         if not match:
@@ -129,7 +184,7 @@ def auto_send_message(browser, wait):
     logger.info("Loaded %d target friends from friends.csv.", len(my_friends))
 
     logger.info("Waiting for conversation list to load...")
-    all_user = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-1mez8np-PInfoNickname")))
+    all_user = find_elements_by_candidates(browser, CHAT_ITEM_CANDIDATES, "conversation items")
     total_chats = len(all_user)
     logger.info("Found %d conversation threads.", total_chats)
 
@@ -142,7 +197,7 @@ def auto_send_message(browser, wait):
         logger.info("[%d/%d] Opening chat...", idx, total_chats)
         user.click()
         time.sleep(2)
-        profile_element = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-1qxabns-StyledLink")))[0]
+        profile_element = find_element_by_candidates(browser, PROFILE_LINK_CANDIDATES, "profile link")
         href = profile_element.get_attribute("href")
         match = re.search(r"/@([^/?]+)", href)
         if not match:
@@ -156,7 +211,7 @@ def auto_send_message(browser, wait):
 
         try:
             logger.info("[%d/%d] Sending message to @%s...", idx, total_chats, username)
-            message_input = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "public-DraftStyleDefault-block")))
+            message_input = find_element_by_candidates(browser, MESSAGE_INPUT_CANDIDATES, "message input field")
             message_input.click()
             message_input.send_keys(message_text)
             message_input.send_keys(Keys.RETURN)

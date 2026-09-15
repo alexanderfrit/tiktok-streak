@@ -1,6 +1,7 @@
 import os
 from unittest.mock import MagicMock
-from utils import login_tiktok, load_friends
+from selenium.webdriver.common.by import By
+from utils import login_tiktok, load_friends, find_elements_by_candidates
 
 # 1. Test missing session ID raises ValueError
 if "TIKTOK_SESSION_ID" in os.environ:
@@ -33,4 +34,12 @@ assert mock_browser.get.call_count >= 2, "browser did not navigate"
 friends = load_friends('friends.csv')
 assert isinstance(friends, set), "load_friends must return set"
 
-print("Self-check passed: session cookie injection and load_friends verified.")
+# 4. Test candidate fallback
+mock_elem = MagicMock()
+mock_elem.is_displayed.return_value = True
+mock_browser.find_elements.side_effect = [[], [mock_elem]]
+candidates = [(By.CSS_SELECTOR, "missing"), (By.CSS_SELECTOR, "found")]
+res = find_elements_by_candidates(mock_browser, candidates, "test element", timeout=2)
+assert res == [mock_elem], "candidate resolver failed to find fallback element"
+
+print("Self-check passed: session cookie injection, load_friends, and candidate resolvers verified.")
