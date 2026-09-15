@@ -5,14 +5,14 @@
 Create a `.env` file in the root directory and declare the following variables:
 
 ```
-CAPTCHA_API_KEY="api_key_ocacaptcha"
-TIKTOK_USERNAME="username"
-TIKTOK_PASSWORD="password"
+TIKTOK_SESSION_ID="your_sessionid_cookie_value"
 MESSAGE="auto send message"
 ```
 
-
-> **Note:** Instead of a username, you can use an email for the `TIKTOK_USERNAME` variable.
+### How to get `TIKTOK_SESSION_ID`:
+1. Open normal Chrome, go to `https://www.tiktok.com`, log in.
+2. Press `F12` -> **Application** -> **Cookies** -> `https://www.tiktok.com`.
+3. Copy the value of cookie `sessionid`. Paste into `.env`.
 
 > **Note:** The `MESSAGE` variable is the message that will be sent to all friends.
 

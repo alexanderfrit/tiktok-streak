@@ -9,13 +9,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROFILE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "chrome_profile"))
-
-
 def init_browser(headless=True):
     chrome_options = Options()
-    chrome_options.add_argument(f"--user-data-dir={PROFILE_DIR}")
     chrome_options.add_argument("--disable-notifications")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
     if headless:
         chrome_options.add_argument("--headless=new")
     browser = webdriver.Chrome(options=chrome_options)
@@ -26,11 +26,26 @@ def init_browser(headless=True):
 
 
 def login_tiktok(browser, wait, username=None, password=None):
-    # ponytail: session persistence via chrome profile; automated login bypassed, add when headless re-auth flow needed.
-    browser.get('https://www.tiktok.com/messages?lang=vi')
+    # ponytail: sessionid cookie injection; automated credentials login bypassed, add when headless re-auth flow needed.
+    session_id = os.getenv("TIKTOK_SESSION_ID")
+    if not session_id:
+        raise ValueError("TIKTOK_SESSION_ID not found in .env")
+
+    browser.get("https://www.tiktok.com")
+    for cookie_name in ("sessionid", "sessionid_ss"):
+        browser.add_cookie({
+            "name": cookie_name,
+            "value": session_id,
+            "domain": ".tiktok.com",
+            "path": "/",
+            "secure": True,
+            "httpOnly": True,
+        })
+
+    browser.get("https://www.tiktok.com/messages?lang=vi")
     time.sleep(3)
-    if 'login' in browser.current_url:
-        raise RuntimeError("Session not authenticated. Run setup_session.py to log in once.")
+    if "login" in browser.current_url:
+        raise RuntimeError("Session invalid or expired. Check TIKTOK_SESSION_ID in .env.")
     print("Session authenticated")
 
 

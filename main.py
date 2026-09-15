@@ -6,5 +6,5 @@ load_dotenv()
 
 if __name__ == "__main__":
     browser, wait = init_browser()
-    login_tiktok(browser, wait, os.getenv("TIKTOK_USERNAME"), os.getenv("TIKTOK_PASSWORD"))
+    login_tiktok(browser, wait)
     auto_send_message(browser, wait)
