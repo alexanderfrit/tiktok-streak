@@ -68,14 +68,11 @@ def notify_streak_summary(results: list, total_duration: int) -> bool:
     for acc in results:
         name = acc.get("name", "Account")
         friends_total = acc.get("friends_total", 0)
-        text_sent = acc.get("text_sent", 0)
-        photos_sent = acc.get("photos_sent", 0)
-        posts_sent = acc.get("posts_sent", 0)
+        sent = acc.get("sent", 0)
         failures = acc.get("failures", [])
 
         status_flag = "✓" if not failures else "⚠️"
-        lines.append(f"👤 *{name}* ({text_sent}/{friends_total} friends) {status_flag}")
-        lines.append(f"   • Text: `{text_sent}` | Photo: `{photos_sent}` | Posts: `{posts_sent}`")
+        lines.append(f"👤 *{name}*: {sent}/{friends_total} streak(s) sent {status_flag}")
 
         if failures:
             for fail in failures[:3]:

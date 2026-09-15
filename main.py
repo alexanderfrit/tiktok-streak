@@ -1,7 +1,7 @@
 import logging, sys, time
 from src.browser import init_browser, authenticate_session
 from src.config import load_accounts
-from src.actions import execute_streak_bundle
+from src.actions import send_streak_message
 from src.notifier import notify_streak_summary, notify_telegram
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
@@ -41,9 +41,7 @@ def run() -> None:
             acc_result = {
                 "name": account.name,
                 "friends_total": len(account.friends),
-                "text_sent": 0,
-                "photos_sent": 0,
-                "posts_sent": 0,
+                "sent": 0,
                 "failures": [],
             }
 
@@ -64,33 +62,19 @@ def run() -> None:
                 continue
 
             for f_idx, friend in enumerate(account.friends, start=1):
-                logger.info("[%s] [%d/%d] Executing streak bundle for @%s...", account.name, f_idx, len(account.friends), friend)
-                bundle_status = execute_streak_bundle(
+                logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(account.friends), friend)
+                res = send_streak_message(
                     browser=browser,
                     friend=friend,
                     message_text=account.message,
-                    image_path=account.image_path,
-                    posts=account.posts,
                 )
 
-                if bundle_status["text"]:
-                    acc_result["text_sent"] += 1
-                if bundle_status["photo"]:
-                    acc_result["photos_sent"] += 1
-                acc_result["posts_sent"] += bundle_status["posts"]
-
-                if bundle_status["error"]:
-                    err = f"@{friend}: {bundle_status['error']}"
-                    logger.error("[%s] Streak bundle failed for @%s: %s", account.name, friend, bundle_status["error"])
-                    acc_result["failures"].append(err)
+                if res["sent"]:
+                    acc_result["sent"] += 1
+                    logger.info("[%s] Streak message delivered to @%s.", account.name, friend)
                 else:
-                    logger.info(
-                        "[%s] @%s completed successfully (Text: ✓ | Photo: %s | Posts: %d/2).",
-                        account.name,
-                        friend,
-                        "✓" if bundle_status["photo"] else "—",
-                        bundle_status["posts"],
-                    )
+                    err = f"@{friend}: {res['error']}"
+                    acc_result["failures"].append(err)
 
             all_results.append(acc_result)
 
@@ -114,9 +98,8 @@ def run() -> None:
         if all_results:
             notify_streak_summary(all_results, elapsed)
 
-        # Exit code 1 if no messages were sent across all accounts
-        total_text_sent = sum(r.get("text_sent", 0) for r in all_results)
-        if (has_critical_failure or total_text_sent == 0) and accounts:
+        total_sent = sum(r.get("sent", 0) for r in all_results)
+        if (has_critical_failure or total_sent == 0) and accounts:
             sys.exit(1)
 
 

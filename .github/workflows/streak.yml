@@ -41,8 +41,6 @@ jobs:
           TIKTOK_SESSION_ID: ${{ secrets.TIKTOK_SESSION_ID }}
           MESSAGE: ${{ secrets.MESSAGE }}
           FRIENDS_LIST: ${{ secrets.FRIENDS_LIST }}
-          STREAK_IMAGE: ${{ secrets.STREAK_IMAGE }}
-          STREAK_POSTS: ${{ secrets.STREAK_POSTS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HEADLESS: "true"

@@ -6,12 +6,8 @@ from src.actions import (
     find_elements_by_candidates,
     find_element_by_candidates,
     type_human_like,
-    send_text_message,
-    send_media_photo,
-    share_video_post,
-    execute_streak_bundle,
+    send_streak_message,
     CHAT_ITEM_CANDIDATES,
-    PROFILE_MESSAGE_BUTTON_CANDIDATES,
     MESSAGE_INPUT_CANDIDATES,
 )
 from src.notifier import get_wib_timestamp, notify_telegram, notify_streak_summary, logger
@@ -21,8 +17,6 @@ from src.exceptions import (
     UserNotFoundError,
     DMBlockedError,
     RateLimitError,
-    MediaUploadError,
-    VideoShareError,
 )
 
 
@@ -43,16 +37,12 @@ def load_friends(filepath="friends.csv"):
 def auto_send_message(browser, wait=None):
     friends = sorted(load_friends())
     msg = os.getenv("MESSAGE", "🔥 Daily Streak")
-    img = os.getenv("STREAK_IMAGE", "assets/streak.png")
-    posts_str = os.getenv("STREAK_POSTS", "")
-    posts = [p.strip() for p in posts_str.split(",") if p.strip()]
-
     sent = 0
     failures = []
     for f in friends:
-        res = execute_streak_bundle(browser, f, msg, img, posts)
-        if res["text"]:
+        res = send_streak_message(browser, f, msg)
+        if res["sent"]:
             sent += 1
-        if res["error"]:
+        else:
             failures.append(f"@{f}: {res['error']}")
     return sent, len(friends), failures

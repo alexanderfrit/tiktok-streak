@@ -1,24 +1,19 @@
-# TikTok Streak & Streak Pet Auto 🚀
+# TikTok Streak Auto 🚀
 
-Automated TikTok streak keeper and **Streak Pet progression bot** (Daily Text + 1 Photo + 2 Shared Posts). Powered by Python, headless Selenium, CDP stealth anti-detection, and session cookie injection. Runs locally or 100% free on GitHub Actions.
+Automated TikTok streak keeper powered by Python, headless Selenium, CDP anti-detection, and session cookie injection. Runs 100% inside your TikTok inbox (`/messages`) to eliminate captchas. Runs locally or free on GitHub Actions.
 
 ---
 
 ## ✨ Features
 
-- **No Captcha / Anti-Bot Stealth**: Uses valid `sessionid` cookies + Chrome DevTools Protocol anti-automation patches. Never triggers login captchas or "maximum attempts reached" errors.
-- **Streak Pet Automation**:
-  - 💬 **1 Text Message**: Types with human-like keystroke intervals (`0.04s - 0.12s`).
-  - 📸 **1 Photo Upload**: Attaches and uploads media files (`assets/streak.png` or custom).
-  - 🎥 **2 Shared Posts**: Natively shares your specified TikTok video links to your friends.
-- **Multi-Account Support**: Manage multiple TikTok accounts with isolated cookies and per-account friend lists.
-- **Local Testing Made Easy**:
-  - Run completely offline without Telegram.
-  - Inspect visually with `--headful` flag to watch the browser work live on your desktop.
-- **Actionable Telegram Alerts (24h WIB Format)**:
-  - ✅ **Success**: Clean summary with per-account stats and execution time.
-  - ❌ **Failure**: Actionable diagnoses (`SessionExpiredError`, `DMBlockedError`, `RateLimitError`, `UserNotFoundError`).
-- **100% Free Cloud Scheduling**: Pre-configured GitHub Actions runner scheduled daily at **08:00 WIB** (01:00 UTC). Consumes only ~30 minutes/month out of 2,000 free minutes.
+- **No Captcha / Anti-Bot Stealth**: Stays strictly inside `tiktok.com/messages`. Never visits external profiles or video watch pages, preventing TikTok `secsdk-captcha` triggers.
+- **Session Cookie Injection**: Uses valid `sessionid` cookies. Completely avoids username/password forms, email 2FA, and puzzle sliders.
+- **Human-Like Simulation**: Types keystroke-by-keystroke with randomized delays (`0.04s - 0.12s`).
+- **Multi-Account Support**: Manage multiple TikTok accounts with isolated sessions and custom friend lists.
+- **Actionable Telegram Alerts (24h WIB)**:
+  - ✅ **Success**: Clean summary with sent count, duration, and timestamp.
+  - ❌ **Failure**: Explicit errors (`SessionExpiredError`, `UserNotFoundError`, `RateLimitError`) with instant action steps.
+- **100% Free Cloud Scheduling**: Runs daily at **08:00 WIB** (`01:00 UTC`) on GitHub Actions (~15 minutes/month out of 2,000 free minutes).
 
 ---
 
@@ -27,9 +22,8 @@ Automated TikTok streak keeper and **Streak Pet progression bot** (Daily Text + 
 ```text
 tiktok-streak/
 ├── .github/workflows/streak.yml  # Automated daily cloud runner
-├── assets/streak.png            # Bundled lightweight streak photo
 ├── src/
-│   ├── actions.py               # Send text, upload photo, share video posts
+│   ├── actions.py               # Inbox navigation, human typing, message sending
 │   ├── browser.py               # Stealth Chrome launcher & session injector
 │   ├── config.py                # Multi-account & single-account config parser
 │   ├── exceptions.py            # Classified errors with actionable fix advice
@@ -67,8 +61,6 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuration Modes
 
-Choose whichever setup fits your needs:
-
 ### Option A: Single Account (Simplest)
 Create a `.env` file:
 ```bash
@@ -79,10 +71,6 @@ Edit `.env`:
 TIKTOK_SESSION_ID="your_sessionid_cookie_here"
 MESSAGE="🔥 Daily Streak"
 FRIENDS_LIST="friend_handle_1, friend_handle_2"
-
-# Streak Pet Options (Leave blank if you only want text messages)
-STREAK_IMAGE="assets/streak.png"
-STREAK_POSTS="https://www.tiktok.com/@user/video/123456789, https://www.tiktok.com/@user/video/987654321"
 
 # Local Browser: true = headless (background), false = visible window
 HEADLESS=true
@@ -100,24 +88,17 @@ Edit `accounts.json`:
     "name": "Main_Account",
     "session_id": "sessionid_cookie_1",
     "friends": ["celuley"],
-    "message": "🔥 Daily Streak",
-    "image_path": "assets/streak.png",
-    "posts": [
-      "https://www.tiktok.com/@user/video/7684569330163453192",
-      "https://www.tiktok.com/@user/video/7684569330163453193"
-    ]
+    "message": "🔥 Daily Streak"
   },
   {
     "name": "Alt_Account",
     "session_id": "sessionid_cookie_2",
     "friends": ["friend_two"],
-    "message": "🔥 Streak!",
-    "image_path": "assets/streak.png",
-    "posts": []
+    "message": "🔥 Streak!"
   }
 ]
 ```
-*(Note: `accounts.json` is automatically gitignored so your account cookies remain safe).*
+*(Note: `accounts.json` is gitignored to keep your account credentials safe).*
 
 ---
 
@@ -129,7 +110,6 @@ python main.py
 ```
 
 ### Visible Desktop Run (Watch It Work Live)
-To watch the browser navigate, type, attach photos, and share posts in real time:
 ```bash
 python main.py --headful
 ```
@@ -166,8 +146,6 @@ Run daily in the cloud without keeping your PC powered on:
 | `TIKTOK_SESSION_ID` | Yes (if single account) | Your copied TikTok cookie |
 | `MESSAGE` | Optional | Custom streak message (default: `🔥 Daily Streak`) |
 | `FRIENDS_LIST` | Yes (if single account) | Comma-separated friend usernames: `user1, user2` |
-| `STREAK_IMAGE` | Optional | Path to photo (default: `assets/streak.png`) |
-| `STREAK_POSTS` | Optional | Comma-separated post URLs for Streak Pet |
 | `TIKTOK_ACCOUNTS_JSON`| Alternative (multi-account) | The raw content of your `accounts.json` |
 | `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot API Token |
 | `TELEGRAM_CHAT_ID` | Optional | Your Telegram User ID |
@@ -183,10 +161,9 @@ Run daily in the cloud without keeping your PC powered on:
 | Error | Root Cause | Immediate Action |
 |---|---|---|
 | `SessionExpiredError` | Cookie expired or user logged out | Copy a fresh `sessionid` from your browser into `.env` / GitHub Secrets. |
-| `UserNotFoundError` | Username changed or account deleted | Check handle spelling in `FRIENDS_LIST` or `accounts.json`. |
-| `DMBlockedError` | Direct Message button missing | Ensure mutual follow or check recipient's DM privacy settings. |
+| `UserNotFoundError` | Handle not found in inbox | Make sure a mutual conversation thread exists with that friend. |
 | `RateLimitError` | Sent too many messages too quickly | Script automatically stops; cooldown resets in 24 hours. |
-| `TimeoutError` | TikTok UI structure changed | Download the `debug-diagnostics` artifact from the GitHub Actions run to inspect the screenshot. |
+| `TimeoutError` | TikTok inbox layout changed | Download the `debug-diagnostics` artifact from the GitHub Actions run to inspect the screenshot. |
 
 ---
 

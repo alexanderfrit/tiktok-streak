@@ -7,7 +7,7 @@ class SessionExpiredError(TikTokError):
 
 
 class UserNotFoundError(TikTokError):
-    action_tip = "Verify TikTok username handle exists and is spelled correctly."
+    action_tip = "Verify TikTok username handle exists in your inbox or friends list."
 
 
 class DMBlockedError(TikTokError):
@@ -16,11 +16,3 @@ class DMBlockedError(TikTokError):
 
 class RateLimitError(TikTokError):
     action_tip = "TikTok rate limit active. Stop bot runs for 24 hours to clear cooldown."
-
-
-class MediaUploadError(TikTokError):
-    action_tip = "Check that photo file exists, is under 10MB, and format is supported (PNG/JPG)."
-
-
-class VideoShareError(TikTokError):
-    action_tip = "Check that video URL is public and recipient username is valid in friend list."

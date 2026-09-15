@@ -6,12 +6,7 @@
       "friend_username_1",
       "friend_username_2"
     ],
-    "message": "🔥 Daily Streak",
-    "image_path": "assets/streak.png",
-    "posts": [
-      "https://www.tiktok.com/@user/video/7684569330163453192",
-      "https://www.tiktok.com/@user/video/7684569330163453193"
-    ]
+    "message": "🔥 Daily Streak"
   },
   {
     "name": "Second_Account",
@@ -19,8 +14,6 @@
     "friends": [
       "another_friend"
     ],
-    "message": "🔥 Streak!",
-    "image_path": "assets/streak.png",
-    "posts": []
+    "message": "🔥 Streak!"
   }
 ]

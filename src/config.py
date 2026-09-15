@@ -12,8 +12,6 @@ class AccountConfig:
     session_id: str
     friends: list = field(default_factory=list)
     message: str = "🔥 Daily Streak"
-    image_path: str = "assets/streak.png"
-    posts: list = field(default_factory=list)
 
 
 def clean_handle(raw: str) -> str:
@@ -33,22 +31,6 @@ def load_friends_csv(filepath: str = "friends.csv") -> list:
     return friends
 
 
-def parse_post_urls(raw) -> list:
-    urls = []
-    if isinstance(raw, list):
-        urls = [str(u).strip() for u in raw if str(u).strip()]
-    elif isinstance(raw, str):
-        urls = [u.strip() for u in raw.split(",") if u.strip()]
-
-    # Strip query tracking parameters (e.g. ?is_from_webapp=1&sender_device=pc)
-    cleaned = []
-    for u in urls:
-        base_url = u.split("?")[0].strip()
-        if base_url:
-            cleaned.append(base_url)
-    return cleaned
-
-
 def load_accounts(config_file: str = "accounts.json") -> list:
     # 1. Multi-account local file
     if os.path.exists(config_file):
@@ -58,15 +40,12 @@ def load_accounts(config_file: str = "accounts.json") -> list:
             accounts = []
             for item in data:
                 friends = [clean_handle(f) for f in item.get("friends", []) if clean_handle(f)]
-                posts = parse_post_urls(item.get("posts", []))
                 accounts.append(
                     AccountConfig(
                         name=item.get("name", "Account"),
                         session_id=item.get("session_id", "").strip(),
                         friends=friends,
                         message=item.get("message", "🔥 Daily Streak"),
-                        image_path=item.get("image_path", "assets/streak.png"),
-                        posts=posts,
                     )
                 )
             if accounts:
@@ -83,15 +62,12 @@ def load_accounts(config_file: str = "accounts.json") -> list:
             accounts = []
             for item in data:
                 friends = [clean_handle(f) for f in item.get("friends", []) if clean_handle(f)]
-                posts = parse_post_urls(item.get("posts", []))
                 accounts.append(
                     AccountConfig(
                         name=item.get("name", "Account"),
                         session_id=item.get("session_id", "").strip(),
                         friends=friends,
                         message=item.get("message", "🔥 Daily Streak"),
-                        image_path=item.get("image_path", "assets/streak.png"),
-                        posts=posts,
                     )
                 )
             if accounts:
@@ -103,8 +79,6 @@ def load_accounts(config_file: str = "accounts.json") -> list:
     # 3. Single-account fallback from standard .env
     session_id = os.getenv("TIKTOK_SESSION_ID", "").strip()
     message = os.getenv("MESSAGE", "🔥 Daily Streak")
-    image_path = os.getenv("STREAK_IMAGE", "assets/streak.png")
-    posts = parse_post_urls(os.getenv("STREAK_POSTS", ""))
 
     friends = []
     env_friends = os.getenv("FRIENDS_LIST")
@@ -120,8 +94,6 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                 session_id=session_id,
                 friends=friends,
                 message=message,
-                image_path=image_path,
-                posts=posts,
             )
         ]
 
