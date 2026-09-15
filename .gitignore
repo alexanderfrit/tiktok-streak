@@ -3,5 +3,6 @@
 .env
 /__pycache__
 chrome_profile/
+friends.csv
 debug_*.png
 debug_*.html
