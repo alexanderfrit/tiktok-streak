@@ -1,8 +1,10 @@
 /node_modules
 /dist
 .env
-/__pycache__
+__pycache__/
+*.pyc
 chrome_profile/
 friends.csv
+accounts.json
 debug_*.png
 debug_*.html

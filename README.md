@@ -1,25 +1,54 @@
-# TikTok Streak Auto 🚀
+# TikTok Streak & Streak Pet Auto 🚀
 
-Automated daily TikTok streak keeper powered by Python, headless Selenium, and session cookie injection. Runs locally or 100% free in the cloud via GitHub Actions.
+Automated TikTok streak keeper and **Streak Pet progression bot** (Daily Text + 1 Photo + 2 Shared Posts). Powered by Python, headless Selenium, CDP stealth anti-detection, and session cookie injection. Runs locally or 100% free on GitHub Actions.
 
 ---
 
 ## ✨ Features
 
-- **No Captcha / Anti-Bot Bypass**: Uses real session cookies (`sessionid`). Never triggers TikTok's login captcha or "maximum attempts reached" firewall.
-- **Direct Profile Dispatch**: Navigates directly to friends' profiles (`/@username`) and sends messages—bypasses slow inbox scanning loops.
-- **Human-like Anti-Ban Simulation**: Simulates typing character-by-character with randomized keystroke and click delays.
-- **Actionable Telegram Alerts (WIB Timezone)**:
-  - ✅ **Success**: Reports total messages delivered, duration, and 24-hour WIB timestamp.
-  - ❌ **Failure**: Distinguishes between expired session, user not found, DMs blocked, rate limit, or UI timeouts with immediate action steps.
-- **Free Cloud Automation**: Ready-to-use GitHub Actions workflow scheduled daily at **08:00 WIB** (01:00 UTC). Auto-uploads debug screenshots on failure.
+- **No Captcha / Anti-Bot Stealth**: Uses valid `sessionid` cookies + Chrome DevTools Protocol anti-automation patches. Never triggers login captchas or "maximum attempts reached" errors.
+- **Streak Pet Automation**:
+  - 💬 **1 Text Message**: Types with human-like keystroke intervals (`0.04s - 0.12s`).
+  - 📸 **1 Photo Upload**: Attaches and uploads media files (`assets/streak.png` or custom).
+  - 🎥 **2 Shared Posts**: Natively shares your specified TikTok video links to your friends.
+- **Multi-Account Support**: Manage multiple TikTok accounts with isolated cookies and per-account friend lists.
+- **Local Testing Made Easy**:
+  - Run completely offline without Telegram.
+  - Inspect visually with `--headful` flag to watch the browser work live on your desktop.
+- **Actionable Telegram Alerts (24h WIB Format)**:
+  - ✅ **Success**: Clean summary with per-account stats and execution time.
+  - ❌ **Failure**: Actionable diagnoses (`SessionExpiredError`, `DMBlockedError`, `RateLimitError`, `UserNotFoundError`).
+- **100% Free Cloud Scheduling**: Pre-configured GitHub Actions runner scheduled daily at **08:00 WIB** (01:00 UTC). Consumes only ~30 minutes/month out of 2,000 free minutes.
 
 ---
 
-## 🛠️ Local Setup
+## 📁 Project Structure
+
+```text
+tiktok-streak/
+├── .github/workflows/streak.yml  # Automated daily cloud runner
+├── assets/streak.png            # Bundled lightweight streak photo
+├── src/
+│   ├── actions.py               # Send text, upload photo, share video posts
+│   ├── browser.py               # Stealth Chrome launcher & session injector
+│   ├── config.py                # Multi-account & single-account config parser
+│   ├── exceptions.py            # Classified errors with actionable fix advice
+│   └── notifier.py              # Telegram reports with 24h WIB timestamps
+├── main.py                      # Main automation entry point
+├── fetch_friends.py             # Tool to scrape mutual friends from inbox
+├── test_runner.py               # Self-check test suite
+├── accounts.example.json        # Template for multi-account mode
+├── friends.csv.example          # Template for friends list
+├── .env.example                 # Template for single-account mode
+└── requirements.txt             # Minimal dependencies (selenium, python-dotenv)
+```
+
+---
+
+## 🛠️ Quick Start (Local Setup)
 
 ### 1. Install Dependencies
-Ensure you have Python 3.10+ and Google Chrome installed.
+Ensure Python 3.10+ and Google Chrome are installed:
 
 ```bash
 git clone https://github.com/your-username/tiktok-streak.git
@@ -27,88 +56,146 @@ cd tiktok-streak
 pip install -r requirements.txt
 ```
 
-### 2. Configure `.env`
-Copy the example template:
+### 2. Extract Your TikTok `sessionid` Cookie
+1. Open Chrome (or your normal browser), go to [tiktok.com](https://www.tiktok.com), and log in.
+2. Press `F12` to open DevTools:
+   - **Chrome / Edge**: Go to **Application** -> **Cookies** -> `https://www.tiktok.com`.
+   - **Firefox**: Press `Shift + F9` -> **Cookies** -> `https://www.tiktok.com`.
+3. Double-click the value of the cookie named **`sessionid`** and copy it.
+
+---
+
+## ⚙️ Configuration Modes
+
+Choose whichever setup fits your needs:
+
+### Option A: Single Account (Simplest)
+Create a `.env` file:
 ```bash
 cp .env.example .env
 ```
-
-Fill in your `.env` values:
+Edit `.env`:
 ```env
-TIKTOK_SESSION_ID="your_sessionid_cookie"
+TIKTOK_SESSION_ID="your_sessionid_cookie_here"
 MESSAGE="🔥 Daily Streak"
+FRIENDS_LIST="friend_handle_1, friend_handle_2"
 
-# Optional Telegram Notifications
-TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
-TELEGRAM_CHAT_ID="987654321"
+# Streak Pet Options (Leave blank if you only want text messages)
+STREAK_IMAGE="assets/streak.png"
+STREAK_POSTS="https://www.tiktok.com/@user/video/123456789, https://www.tiktok.com/@user/video/987654321"
+
+# Local Browser: true = headless (background), false = visible window
+HEADLESS=true
 ```
 
-### 3. Extract Your TikTok `sessionid`
-1. Open Google Chrome (or your normal browser), go to [tiktok.com](https://www.tiktok.com), and log in.
-2. Press `F12` to open DevTools:
-   - **Chrome / Edge**: Go to **Application** -> **Cookies** -> `https://www.tiktok.com`.
-   - **Firefox**: Press `Shift + F9` or go to **Storage** -> **Cookies** -> `https://www.tiktok.com`.
-3. Locate the row named **`sessionid`**, double-click its value, and copy it into `.env`.
-
-### 4. Set Up Friends List
-Add TikTok handles (without `@`) to `friends.csv`:
-```csv
-Username
-friend_one
-friend_two
+### Option B: Multi-Account Mode
+Copy the template:
+```bash
+cp accounts.example.json accounts.json
 ```
-*(Or set `FRIENDS_LIST="friend_one, friend_two"` directly in `.env`).*
+Edit `accounts.json`:
+```json
+[
+  {
+    "name": "Main_Account",
+    "session_id": "sessionid_cookie_1",
+    "friends": ["celuley"],
+    "message": "🔥 Daily Streak",
+    "image_path": "assets/streak.png",
+    "posts": [
+      "https://www.tiktok.com/@user/video/7684569330163453192",
+      "https://www.tiktok.com/@user/video/7684569330163453193"
+    ]
+  },
+  {
+    "name": "Alt_Account",
+    "session_id": "sessionid_cookie_2",
+    "friends": ["friend_two"],
+    "message": "🔥 Streak!",
+    "image_path": "assets/streak.png",
+    "posts": []
+  }
+]
+```
+*(Note: `accounts.json` is automatically gitignored so your account cookies remain safe).*
 
-### 5. Run
+---
+
+## 🚀 Running the App
+
+### Headless Run (Background)
 ```bash
 python main.py
 ```
 
+### Visible Desktop Run (Watch It Work Live)
+To watch the browser navigate, type, attach photos, and share posts in real time:
+```bash
+python main.py --headful
+```
+
+### Scrape Friends from Inbox (Optional)
+Automatically grab your mutual friends' handles into `friends.csv`:
+```bash
+python fetch_friends.py
+```
+
 ---
 
-## 📱 Telegram Alerts Setup (2 Minutes)
+## 📱 Telegram Alerts Setup (Optional)
 
-Get instant status updates directly on your phone:
+Receive instant status reports directly on your phone:
 
-1. Open Telegram and search for [`@BotFather`](https://t.me/BotFather).
-2. Send `/newbot`, choose a name and username. Copy the generated **API Token** (`TELEGRAM_BOT_TOKEN`).
-3. Search for [`@userinfobot`](https://t.me/userinfobot) and press `/start`. Copy your **Id** (`TELEGRAM_CHAT_ID`).
-4. Start a chat with your newly created bot and send any message (e.g. `/start`) so it can send you alerts.
+1. Open Telegram, search for [`@BotFather`](https://t.me/BotFather), send `/newbot`, and copy the **API Token** (`TELEGRAM_BOT_TOKEN`).
+2. Search for [`@userinfobot`](https://t.me/userinfobot), click `/start`, and copy your **Id** (`TELEGRAM_CHAT_ID`).
+3. Send a message (e.g. `/start`) to your newly created bot.
+4. Add the token and ID to `.env` or GitHub Secrets.
 
 ---
 
 ## ☁️ 100% Free Cloud Automation (GitHub Actions)
 
-Run the streak keeper daily without keeping your computer turned on. (Consumes ~15 minutes per month out of 2,000 free minutes).
+Run daily in the cloud without keeping your PC powered on:
 
-1. **Fork or push** this repository to your GitHub account (make it **Private** to keep your secrets and code private).
-2. Go to your repository on GitHub:
-   - **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**.
-3. Add the following secrets:
+1. Push or fork this repository to your GitHub account (**Make it Private**).
+2. On GitHub, navigate to **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**.
+3. Add the secrets below:
 
-| Secret Name | Description | Example |
+| Secret Name | Required? | Description |
 |---|---|---|
-| `TIKTOK_SESSION_ID` | Your copied TikTok session cookie | `a1b2c3d4...` |
-| `MESSAGE` | The message to send | `🔥 Streak` |
-| `FRIENDS_LIST` | Comma-separated usernames | `celuley, friend2` |
-| `TELEGRAM_BOT_TOKEN` | (Optional) Telegram bot token | `123456:ABC...` |
-| `TELEGRAM_CHAT_ID` | (Optional) Your Telegram numeric ID | `987654321` |
+| `TIKTOK_SESSION_ID` | Yes (if single account) | Your copied TikTok cookie |
+| `MESSAGE` | Optional | Custom streak message (default: `🔥 Daily Streak`) |
+| `FRIENDS_LIST` | Yes (if single account) | Comma-separated friend usernames: `user1, user2` |
+| `STREAK_IMAGE` | Optional | Path to photo (default: `assets/streak.png`) |
+| `STREAK_POSTS` | Optional | Comma-separated post URLs for Streak Pet |
+| `TIKTOK_ACCOUNTS_JSON`| Alternative (multi-account) | The raw content of your `accounts.json` |
+| `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot API Token |
+| `TELEGRAM_CHAT_ID` | Optional | Your Telegram User ID |
 
-4. **Trigger Manually or Wait for Schedule**:
+4. **Schedule**:
    - The workflow runs automatically every day at **08:00 WIB** (`01:00 UTC`).
-   - To test immediately: Go to the **Actions** tab -> Select **TikTok Daily Streak** -> Click **Run workflow**.
+   - To test immediately: Go to **Actions** -> **TikTok Daily Streak** -> **Run workflow**.
 
 ---
 
 ## 🔍 Troubleshooting & Failure Codes
 
-| Alert Scenario | Cause | Solution |
+| Error | Root Cause | Immediate Action |
 |---|---|---|
-| `SessionExpiredError` | Cookie expired or logged out | Grab fresh `sessionid` from browser and update secret. |
-| `UserNotFoundError` | Username changed or account deleted | Check spelling in `friends.csv` or `FRIENDS_LIST`. |
-| `DMBlockedError` | Direct Message button not visible | Ensure mutual follow or check friend's DM privacy settings. |
-| `RateLimitError` | Sending too many messages quickly | Script stops automatically; cooldown resets in 24 hours. |
-| `TimeoutError` | TikTok page layout changed | Download `debug-diagnostics` artifact from GitHub Actions run to see the screenshot. |
+| `SessionExpiredError` | Cookie expired or user logged out | Copy a fresh `sessionid` from your browser into `.env` / GitHub Secrets. |
+| `UserNotFoundError` | Username changed or account deleted | Check handle spelling in `FRIENDS_LIST` or `accounts.json`. |
+| `DMBlockedError` | Direct Message button missing | Ensure mutual follow or check recipient's DM privacy settings. |
+| `RateLimitError` | Sent too many messages too quickly | Script automatically stops; cooldown resets in 24 hours. |
+| `TimeoutError` | TikTok UI structure changed | Download the `debug-diagnostics` artifact from the GitHub Actions run to inspect the screenshot. |
+
+---
+
+## 🧪 Testing
+
+Run the automated self-check test suite anytime:
+```bash
+python test_runner.py
+```
 
 ---
 

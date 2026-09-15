@@ -1,0 +1,108 @@
+from datetime import datetime, timezone, timedelta
+import logging, os, urllib.parse, urllib.request
+
+logger = logging.getLogger("tiktok-streak")
+
+
+def get_wib_timestamp() -> str:
+    wib = timezone(timedelta(hours=7))
+    return datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S WIB")
+
+
+def notify_telegram(title: str, details: str, action_tip: str = None, is_error: bool = False) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        logger.debug("Telegram credentials not set; skipping notification.")
+        return False
+
+    status_icon = "❌" if is_error else "✅"
+    wib_time = get_wib_timestamp()
+
+    msg_lines = [
+        f"{status_icon} *{title}*",
+        f"🕒 `{wib_time}`",
+        f"📝 {details}",
+    ]
+    if action_tip:
+        msg_lines.append(f"💡 *Action:* `{action_tip}`")
+
+    text = "\n".join(msg_lines)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": "true",
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        logger.warning("Failed sending Telegram alert: %s", e)
+        return False
+
+
+def notify_streak_summary(results: list, total_duration: int) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return False
+
+    has_failures = any(r.get("failures") for r in results)
+    status_icon = "⚠️" if has_failures else "✅"
+    wib_time = get_wib_timestamp()
+
+    lines = [
+        f"{status_icon} *TikTok Streak Report*",
+        f"🕒 `{wib_time}`",
+        "",
+    ]
+
+    for acc in results:
+        name = acc.get("name", "Account")
+        friends_total = acc.get("friends_total", 0)
+        text_sent = acc.get("text_sent", 0)
+        photos_sent = acc.get("photos_sent", 0)
+        posts_sent = acc.get("posts_sent", 0)
+        failures = acc.get("failures", [])
+
+        status_flag = "✓" if not failures else "⚠️"
+        lines.append(f"👤 *{name}* ({text_sent}/{friends_total} friends) {status_flag}")
+        lines.append(f"   • Text: `{text_sent}` | Photo: `{photos_sent}` | Posts: `{posts_sent}`")
+
+        if failures:
+            for fail in failures[:3]:
+                lines.append(f"   ❌ {fail}")
+            if len(failures) > 3:
+                lines.append(f"   ... and {len(failures) - 3} more issue(s)")
+        lines.append("")
+
+    lines.append(f"⏱️ Total Duration: `{total_duration}s`")
+    text = "\n".join(lines)
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": "true",
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        logger.warning("Failed sending Telegram summary: %s", e)
+        return False
