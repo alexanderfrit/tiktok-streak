@@ -150,9 +150,40 @@ Run daily in the cloud without keeping your PC powered on:
 | `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot API Token |
 | `TELEGRAM_CHAT_ID` | Optional | Your Telegram User ID |
 
-4. **Schedule**:
-   - The workflow runs automatically every day at **08:00 WIB** (`01:00 UTC`).
+4. **Schedule (Modify Hours & Multiple Times)**:
+   - Edit `.github/workflows/streak.yml`.
+   - GitHub Actions cron runs in **UTC** (Conversion: `UTC = WIB - 7 hours`).
+
+| Desired Times (WIB) | Equivalent (UTC) | Cron Syntax in `streak.yml` |
+|---|---|---|
+| **08:00 WIB** (Once daily) | 01:00 UTC | `cron: '0 1 * * *'` |
+| **08:00 & 20:00 WIB** (Twice daily) | 01:00 & 13:00 UTC | `cron: '0 1,13 * * *'` |
+| **08:00, 14:00, 20:00 WIB** (3 times daily) | 01:00, 07:00, 13:00 UTC | `cron: '0 1,7,13 * * *'` |
+| **Every 6 hours** (4 times daily) | 00:00, 06:00, 12:00, 18:00 UTC | `cron: '0 */6 * * *'` |
+
    - To test immediately: Go to **Actions** -> **TikTok Daily Streak** -> **Run workflow**.
+
+---
+
+## 💻 Local Multiple Times Scheduling (Windows)
+
+To send multiple times a day on this computer, create tasks in Windows Task Scheduler:
+
+```powershell
+# Send at 08:00 WIB
+schtasks /Create /TN "TikTokStreak_08" /TR "pythonw.exe C:\Users\Fritz\Desktop\streaktiktok\main.py" /SC DAILY /ST 08:00 /F
+
+# Send at 14:00 WIB
+schtasks /Create /TN "TikTokStreak_14" /TR "pythonw.exe C:\Users\Fritz\Desktop\streaktiktok\main.py" /SC DAILY /ST 14:00 /F
+
+# Send at 20:00 WIB
+schtasks /Create /TN "TikTokStreak_20" /TR "pythonw.exe C:\Users\Fritz\Desktop\streaktiktok\main.py" /SC DAILY /ST 20:00 /F
+```
+
+To remove a local scheduled task:
+```powershell
+schtasks /Delete /TN "TikTokStreak_08" /F
+```
 
 ---
 

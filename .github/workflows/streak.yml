@@ -2,7 +2,14 @@ name: TikTok Daily Streak
 
 on:
   schedule:
-    # 01:00 UTC = 08:00 WIB (Jakarta Time)
+    # Schedule uses UTC time (UTC = WIB - 7 hours)
+    # Examples:
+    #   Once a day at 08:00 WIB (01:00 UTC):
+    #     - cron: '0 1 * * *'
+    #   Twice a day at 08:00 and 20:00 WIB (01:00 and 13:00 UTC):
+    #     - cron: '0 1,13 * * *'
+    #   Three times a day at 08:00, 14:00, and 20:00 WIB (01:00, 07:00, 13:00 UTC):
+    #     - cron: '0 1,7,13 * * *'
     - cron: '0 1 * * *'
   workflow_dispatch:
 
