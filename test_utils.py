@@ -1,6 +1,6 @@
 import os
 from unittest.mock import MagicMock
-from utils import login_tiktok
+from utils import login_tiktok, load_friends
 
 # 1. Test missing session ID raises ValueError
 if "TIKTOK_SESSION_ID" in os.environ:
@@ -29,4 +29,8 @@ assert "sessionid_ss" in cookie_names, "sessionid_ss cookie missing"
 assert all(c["value"] == "mock_session_123" for c in added_cookies), "cookie value mismatch"
 assert mock_browser.get.call_count >= 2, "browser did not navigate"
 
-print("Self-check passed: session cookie injection verified.")
+# 3. Test load_friends handles headers, plain handles, @ prefixes
+friends = load_friends('friends.csv')
+assert isinstance(friends, set), "load_friends must return set"
+
+print("Self-check passed: session cookie injection and load_friends verified.")

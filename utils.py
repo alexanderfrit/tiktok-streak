@@ -9,7 +9,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time, re, csv, os, logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+logger = logging.getLogger("tiktok-streak")
+
+
 def init_browser(headless=True):
+    logger.info("Initializing Chrome browser (headless=%s)...", headless)
     chrome_options = Options()
     chrome_options.add_argument("--disable-notifications")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -19,9 +35,8 @@ def init_browser(headless=True):
     if headless:
         chrome_options.add_argument("--headless=new")
     browser = webdriver.Chrome(options=chrome_options)
-
     wait = WebDriverWait(browser, 20)
-
+    logger.info("Browser initialized successfully.")
     return browser, wait
 
 
@@ -29,8 +44,10 @@ def login_tiktok(browser, wait, username=None, password=None):
     # ponytail: sessionid cookie injection; automated credentials login bypassed, add when headless re-auth flow needed.
     session_id = os.getenv("TIKTOK_SESSION_ID")
     if not session_id:
+        logger.error("TIKTOK_SESSION_ID missing from .env")
         raise ValueError("TIKTOK_SESSION_ID not found in .env")
 
+    logger.info("Injecting session cookies into browser...")
     browser.get("https://www.tiktok.com")
     for cookie_name in ("sessionid", "sessionid_ss"):
         browser.add_cookie({
@@ -42,69 +59,111 @@ def login_tiktok(browser, wait, username=None, password=None):
             "httpOnly": True,
         })
 
+    logger.info("Navigating to messages endpoint...")
     browser.get("https://www.tiktok.com/messages?lang=vi")
     time.sleep(3)
     if "login" in browser.current_url:
+        logger.error("Session invalid or expired. Check TIKTOK_SESSION_ID in .env.")
         raise RuntimeError("Session invalid or expired. Check TIKTOK_SESSION_ID in .env.")
-    print("Session authenticated")
+    logger.info("Session authenticated successfully.")
+
+
+def load_friends(filepath='friends.csv'):
+    friends = set()
+    if not os.path.exists(filepath):
+        return friends
+    with open(filepath, mode='r', encoding='utf-8') as file:
+        for line in file:
+            cleaned = line.strip().lstrip('@')
+            if cleaned and cleaned.lower() != 'username':
+                friends.add(cleaned)
+    return friends
 
 
 def get_all_friends(browser, wait):
+    logger.info("Opening messages page to gather friends...")
     browser.get('https://www.tiktok.com/messages?lang=vi')
 
+    logger.info("Waiting for conversation list to load...")
     all_user = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-2tydh5-PInfoNickname")))
+    total_chats = len(all_user)
+    logger.info("Found %d conversation threads.", total_chats)
 
-    my_friends = []
-    with open('friends.csv', mode='r', newline='') as file:
-        reader = csv.DictReader(file)
-        my_friends = [row['Username'] for row in reader]
+    my_friends = load_friends('friends.csv')
+    logger.info("Loaded %d existing friends from friends.csv.", len(my_friends))
 
-    for user in all_user:
+    added_count = 0
+    for idx, user in enumerate(all_user, start=1):
+        logger.info("[%d/%d] Inspecting chat thread...", idx, total_chats)
         user.click()
         time.sleep(2)
         profile_element = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-1qxabns-StyledLink")))[0]
         href = profile_element.get_attribute("href")
-        username = re.search(r"/@(.+)", href).group(1)
+        match = re.search(r"/@([^/?]+)", href)
+        if not match:
+            logger.warning("[%d/%d] Could not parse username from %s", idx, total_chats, href)
+            continue
+        username = match.group(1)
 
-        with open('friends.csv', mode='a', newline='') as file:
-            if username in my_friends:
-                continue
+        if username in my_friends:
+            logger.info("[%d/%d] @%s already in friends.csv, skipping.", idx, total_chats, username)
+            continue
+
+        with open('friends.csv', mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             if file.tell() == 0:
                 writer.writerow(['Username'])
             writer.writerow([username])
+        my_friends.add(username)
+        added_count += 1
+        logger.info("[%d/%d] Saved new friend @%s to friends.csv.", idx, total_chats, username)
 
-    browser.quit()
+    logger.info("Gathering complete. %d new friends added (total: %d).", added_count, len(my_friends))
 
 
 def auto_send_message(browser, wait):
+    logger.info("Opening messages page for auto-send...")
     browser.get('https://www.tiktok.com/messages?lang=vi')
 
-    
-    my_friends = []
-    with open('friends.csv', mode='r', newline='') as file:
-        reader = csv.DictReader(file)
-        my_friends = [row['Username'] for row in reader]
+    my_friends = load_friends('friends.csv')
+    logger.info("Loaded %d target friends from friends.csv.", len(my_friends))
 
+    logger.info("Waiting for conversation list to load...")
     all_user = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-1mez8np-PInfoNickname")))
+    total_chats = len(all_user)
+    logger.info("Found %d conversation threads.", total_chats)
 
-    for user in all_user:
+    message_text = os.getenv('MESSAGE')
+    if not message_text:
+        logger.warning("MESSAGE environment variable is empty.")
+
+    sent_count = 0
+    for idx, user in enumerate(all_user, start=1):
+        logger.info("[%d/%d] Opening chat...", idx, total_chats)
         user.click()
         time.sleep(2)
         profile_element = wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "css-1qxabns-StyledLink")))[0]
         href = profile_element.get_attribute("href")
-        username = re.search(r"/@(.+)", href).group(1)
+        match = re.search(r"/@([^/?]+)", href)
+        if not match:
+            logger.warning("[%d/%d] Could not parse username from %s", idx, total_chats, href)
+            continue
+        username = match.group(1)
 
         if username not in my_friends:
+            logger.info("[%d/%d] @%s not in friends.csv, skipping.", idx, total_chats, username)
             continue
 
-        try: 
-            print("Sending message to", username)
+        try:
+            logger.info("[%d/%d] Sending message to @%s...", idx, total_chats, username)
             message_input = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "public-DraftStyleDefault-block")))
             message_input.click()
-            message_input.send_keys(os.getenv('MESSAGE'))
+            message_input.send_keys(message_text)
             message_input.send_keys(Keys.RETURN)
+            sent_count += 1
+            logger.info("[%d/%d] Message sent to @%s.", idx, total_chats, username)
+        except Exception as e:
+            logger.error("[%d/%d] Failed sending message to @%s: %s", idx, total_chats, username, e)
 
-        except:
-            print("Can't get user name")
+    logger.info("Auto send complete. Sent %d messages.", sent_count)
 
