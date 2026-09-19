@@ -17,6 +17,7 @@ from src.actions import (
     send_streak_message,
 )
 from src.browser import parse_cookie_payload
+from src.share import parse_aweme_id
 
 # 1. Test WIB timestamp format (YYYY-MM-DD HH:MM:SS WIB)
 wib_ts = get_wib_timestamp()
@@ -118,4 +119,36 @@ assert parse_cookie_payload('[{"name": "sessionid", "value": "xyz"}]') == {"sess
 assert parse_cookie_payload("sessionid=foo; sid_tt=foo") == {"sessionid": "foo", "sid_tt": "foo"}
 assert parse_cookie_payload("rawtoken") == {"sessionid": "rawtoken", "sessionid_ss": "rawtoken", "sid_tt": "rawtoken"}
 
-print("All 11 test suites in test_runner.py passed successfully!")
+# 12. Test Video URL Parsing (aweme id extraction)
+assert parse_aweme_id("https://www.tiktok.com/@user/video/7684838545659317524") == "7684838545659317524"
+assert parse_aweme_id("https://www.tiktok.com/@user/video/7684838545659317524?is_from_webapp=1") == "7684838545659317524"
+assert parse_aweme_id("https://www.tiktok.com/@u/photo/1234567890123456789") == "1234567890123456789"
+assert parse_aweme_id("7684838545659317524") == "7684838545659317524"
+assert parse_aweme_id("") is None
+assert parse_aweme_id("https://vt.tiktok.com/abc") is None
+
+# 13. Test video config: env fallback + share_times
+with patch.dict(os.environ, {
+    "TIKTOK_SESSION_ID": "c",
+    "STREAK_VIDEO_URL": "https://www.tiktok.com/@u/video/1111111111111111111",
+    "SHARE_TIMES": "3",
+}, clear=True):
+    accs = load_accounts(config_file="non_existent.json")
+    assert accs[0].video_url.endswith("1111111111111111111")
+    assert accs[0].share_times == 3
+
+# 14. Test video config: per-account value in accounts.json wins
+sample_video = [{"name": "A", "session_id": "c1", "friends": ["f1"],
+                 "video_url": "https://www.tiktok.com/@u/video/2222222222222222222",
+                 "share_times": 2}]
+with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tf:
+    json.dump(sample_video, tf)
+    tf_video = tf.name
+try:
+    accs = load_accounts(config_file=tf_video)
+    assert accs[0].video_url.endswith("2222222222222222222")
+    assert accs[0].share_times == 2
+finally:
+    os.remove(tf_video)
+
+print("All 14 test suites in test_runner.py passed successfully!")

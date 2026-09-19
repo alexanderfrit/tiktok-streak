@@ -12,6 +12,8 @@ class AccountConfig:
     session_id: str
     friends: list = field(default_factory=list)
     message: str = "🔥 Daily Streak"
+    video_url: str = ""
+    share_times: int = 2
 
 
 def clean_handle(raw: str) -> str:
@@ -46,6 +48,8 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                         session_id=item.get("session_id", "").strip(),
                         friends=friends,
                         message=item.get("message", "🔥 Daily Streak"),
+                        video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", "")).strip(),
+                        share_times=int(item.get("share_times", os.getenv("SHARE_TIMES", "2")) or 2),
                     )
                 )
             if accounts:
@@ -68,6 +72,8 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                         session_id=item.get("session_id", "").strip(),
                         friends=friends,
                         message=item.get("message", "🔥 Daily Streak"),
+                        video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", "")).strip(),
+                        share_times=int(item.get("share_times", os.getenv("SHARE_TIMES", "2")) or 2),
                     )
                 )
             if accounts:
@@ -94,6 +100,8 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                 session_id=session_id,
                 friends=friends,
                 message=message,
+                video_url=os.getenv("STREAK_VIDEO_URL", "").strip(),
+                share_times=int(os.getenv("SHARE_TIMES", "2") or 2),
             )
         ]
 

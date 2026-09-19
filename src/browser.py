@@ -7,7 +7,7 @@ from .exceptions import SessionExpiredError
 logger = logging.getLogger("tiktok-streak")
 
 
-def init_browser(headless: bool = None) -> tuple:
+def init_browser(headless: bool = None, capture: bool = False) -> tuple:
     if headless is None:
         env_headless = os.getenv("HEADLESS", "true").strip().lower()
         headless = env_headless not in ("false", "0", "no")
@@ -25,6 +25,10 @@ def init_browser(headless: bool = None) -> tuple:
 
     if headless:
         chrome_options.add_argument("--headless=new")
+
+    if capture:
+        # Enable network traffic logging so capture scripts can inspect DM requests.
+        chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     browser = webdriver.Chrome(options=chrome_options)
 
