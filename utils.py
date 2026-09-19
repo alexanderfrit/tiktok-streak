@@ -1,4 +1,9 @@
-"""Backward-compatible shim pointing to modular src/ package."""
+"""Deprecated backward-compatible shim for the old flat-module layout.
+
+Not used by main.py or the test suite. Prefer importing from src.* directly.
+`auto_send_message` here still reads os.getenv("MESSAGE") and diverges from the
+account-aware flow in main.py - do not wire it into the live path.
+"""
 import os
 from src.browser import init_browser, authenticate_session, dump_debug_diagnostics
 from src.config import load_friends_csv, load_accounts, AccountConfig

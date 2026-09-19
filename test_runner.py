@@ -16,6 +16,7 @@ from src.actions import (
     type_human_like,
     send_streak_message,
 )
+from src.browser import parse_cookie_payload
 
 # 1. Test WIB timestamp format (YYYY-MM-DD HH:MM:SS WIB)
 wib_ts = get_wib_timestamp()
@@ -99,4 +100,22 @@ with patch("src.actions.open_inbox_chat") as mock_open, \
     assert status["sent"] is True
     assert status["error"] is None
 
-print("All 9 test suites in test_runner.py passed successfully!")
+# 10. Test Send Verification: message still in composer => not sent
+mock_browser.current_url = "https://www.tiktok.com/messages?lang=vi"
+with patch("src.actions.open_inbox_chat"), \
+     patch("src.actions.find_element_by_candidates") as mock_find, \
+     patch("time.sleep", return_value=None):
+    mock_input = MagicMock()
+    mock_input.text = "hello"  # composer retains the text, RETURN did not submit
+    mock_find.return_value = mock_input
+    status = send_streak_message(mock_browser, "friend1", "hello")
+    assert status["sent"] is False
+    assert "not confirmed" in (status["error"] or "")
+
+# 11. Test Cookie Payload Parsing (JSON dict / JSON list / header string / raw token)
+assert parse_cookie_payload('{"sessionid": "abc", "sid_tt": "abc"}') == {"sessionid": "abc", "sid_tt": "abc"}
+assert parse_cookie_payload('[{"name": "sessionid", "value": "xyz"}]') == {"sessionid": "xyz"}
+assert parse_cookie_payload("sessionid=foo; sid_tt=foo") == {"sessionid": "foo", "sid_tt": "foo"}
+assert parse_cookie_payload("rawtoken") == {"sessionid": "rawtoken", "sessionid_ss": "rawtoken", "sid_tt": "rawtoken"}
+
+print("All 11 test suites in test_runner.py passed successfully!")

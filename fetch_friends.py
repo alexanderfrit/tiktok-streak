@@ -1,19 +1,16 @@
 from dotenv import load_dotenv
 import csv, logging, os, re, time
 from src.browser import init_browser, authenticate_session
-from src.actions import find_elements_by_candidates, find_element_by_candidates
+from src.actions import (
+    find_elements_by_candidates,
+    find_element_by_candidates,
+    CHAT_ITEM_CANDIDATES,
+)
 from selenium.webdriver.common.by import By
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("tiktok-streak")
-
-CHAT_ITEM_CANDIDATES = [
-    (By.CSS_SELECTOR, '[data-e2e="chat-item"]'),
-    (By.CSS_SELECTOR, 'div[class*="PInfoNickname"]'),
-    (By.XPATH, "//*[contains(@class, 'Nickname') or contains(@class, 'InfoNickname')]"),
-    (By.CSS_SELECTOR, 'div[role="listitem"]'),
-]
 
 CHAT_HEADER_LINK_CANDIDATES = [
     (By.CSS_SELECTOR, 'div[data-e2e="chat-header"] a[href*="/@"]'),

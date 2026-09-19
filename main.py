@@ -1,4 +1,4 @@
-import logging, sys, time
+import logging, os, random, sys, time
 from src.browser import init_browser, authenticate_session
 from src.config import load_accounts
 from src.actions import send_streak_message
@@ -61,8 +61,13 @@ def run() -> None:
                 all_results.append(acc_result)
                 continue
 
-            for f_idx, friend in enumerate(account.friends, start=1):
-                logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(account.friends), friend)
+            # Shuffle order + cap so runs don't hit friends in a fixed pattern.
+            friends = list(account.friends)
+            random.shuffle(friends)
+            cap = int(os.getenv("DAILY_CAP") or 0)
+
+            for f_idx, friend in enumerate(friends, start=1):
+                logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(friends), friend)
                 res = send_streak_message(
                     browser=browser,
                     friend=friend,
@@ -75,6 +80,13 @@ def run() -> None:
                 else:
                     err = f"@{friend}: {res['error']}"
                     acc_result["failures"].append(err)
+
+                if cap and acc_result["sent"] >= cap:
+                    logger.info("[%s] Daily cap of %d reached; stopping.", account.name, cap)
+                    break
+
+                if f_idx < len(friends):
+                    time.sleep(random.uniform(3.0, 8.0))
 
             all_results.append(acc_result)
 

@@ -164,6 +164,16 @@ def send_streak_message(browser, friend: str, message_text: str) -> dict:
         time.sleep(random.uniform(1.5, 2.5))
         check_rate_limits(browser)
 
+        # Confirm the send: if our text is still sitting in the composer, RETURN didn't submit.
+        try:
+            leftover = (msg_input.text or "").strip()
+            if leftover and leftover == message_text.strip():
+                status["error"] = "Message still present in composer after RETURN; send not confirmed."
+                logger.error("Streak message to @%s not confirmed sent.", friend)
+                return status
+        except Exception:
+            pass  # composer element re-rendered (stale) => send was accepted
+
         logger.info("Streak message successfully sent to @%s.", friend)
         status["sent"] = True
     except Exception as e:
