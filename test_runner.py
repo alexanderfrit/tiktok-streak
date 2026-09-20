@@ -170,4 +170,25 @@ try:
 finally:
     os.remove(tf_photo)
 
-print("All 15 test suites in test_runner.py passed successfully!")
+# 16. Test GUI wiring: secret names cover the workflow, browser reader is importable
+try:
+    from gui.app import SECRET_NAMES as GUI_SECRETS
+    from gui import browsers as gui_browsers
+    _gui_ok = True
+except Exception as _e:
+    _gui_ok = False
+    _gui_err = str(_e)
+assert _gui_ok, f"GUI modules failed to import: {_gui_err}"
+
+# every secrets.* referenced by the workflow must be settable by the GUI
+_wf = open(".github/workflows/streak.yml", encoding="utf-8").read()
+_wf_secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", _wf))
+assert _wf_secrets, "no secrets referenced in the workflow?"
+assert _wf_secrets.issubset(set(GUI_SECRETS)), \
+    f"workflow uses secrets the GUI cannot set: {_wf_secrets - set(GUI_SECRETS)}"
+
+# browser source listing must not raise (returns [] on unsupported platforms)
+_sources = gui_browsers.list_sources()
+assert isinstance(_sources, list)
+
+print("All 16 test suites in test_runner.py passed successfully!")
