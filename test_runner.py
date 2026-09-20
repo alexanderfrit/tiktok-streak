@@ -1,4 +1,4 @@
-import os, re, json, tempfile
+import os, re, json, tempfile, shutil, base64
 from unittest.mock import MagicMock, patch
 from selenium.webdriver.common.by import By
 
@@ -286,3 +286,24 @@ with patch.object(_br, "grab_session", side_effect=_br.BrowserLocked("locked")):
 assert _rc["ok"] is False and _rc.get("locked") is True, _rc
 
 print("All 26 test suites in test_runner.py passed successfully!")
+
+# 27. Custom photo: a data URL is decoded to a file and its path returned;
+# with nothing uploaded the default/fallback path is kept.
+from src import photo_prep as _pp
+_prev_cwd = os.getcwd()
+_tmpdir = tempfile.mkdtemp()
+try:
+    os.chdir(_tmpdir)
+    _png = base64.b64encode(b"\x89PNG\r\n\x1a\nFAKE").decode()
+    _out = _pp.resolve(f"data:image/png;base64,{_png}")
+    assert _out == "assets/custom_photo.png", _out
+    assert open(_out, "rb").read().endswith(b"FAKE")
+    _jpg = base64.b64encode(b"JPEGDATA").decode()
+    assert _pp.resolve(f"data:image/jpeg;base64,{_jpg}") == "assets/custom_photo.jpg"
+    assert _pp.resolve("") == _pp.DEFAULT
+    assert _pp.resolve("", "assets/mine.png") == "assets/mine.png"
+finally:
+    os.chdir(_prev_cwd)
+    shutil.rmtree(_tmpdir, ignore_errors=True)
+
+print("All 27 test suites in test_runner.py passed successfully!")

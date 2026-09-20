@@ -59,6 +59,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Prepare custom photo
+        # The GUI uploads a small image as a data URL secret; src.photo_prep
+        # writes it to a file and exports PHOTO_PATH (via GITHUB_ENV).
+        env:
+          PHOTO_DATA_URL: ${{ secrets.PHOTO_DATA_URL }}
+          PHOTO_PATH: ${{ secrets.PHOTO_PATH }}
+        run: python -m src.photo_prep
+
       - name: Run TikTok Streak Auto Send
         env:
           TIKTOK_ACCOUNTS_JSON: ${{ secrets.TIKTOK_ACCOUNTS_JSON }}
@@ -69,7 +77,6 @@ jobs:
           # Fall back to shipped defaults when the secret is unset (empty is falsy).
           STREAK_VIDEO_URL: ${{ secrets.STREAK_VIDEO_URL || 'https://www.tiktok.com/@yutta/video/7684838545659317524' }}
           SHARE_TIMES: ${{ secrets.SHARE_TIMES || '2' }}
-          PHOTO_PATH: ${{ secrets.PHOTO_PATH || 'assets/default_photo.png' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HEADLESS: "true"

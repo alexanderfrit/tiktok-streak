@@ -76,6 +76,10 @@ let ST = {
   videoUrl: "",
   shareTimes: 2,
   photoPath: "",
+  photoDataUrl: "",
+  multi: false,
+  accounts: [],
+  sources: null,
   tgToken: "",
   tgChatId: "",
 };
@@ -100,8 +104,35 @@ function showLog(text) {
   if (!el) { el = document.createElement("div"); el.className = "log"; panel.appendChild(el); }
   el.style.display = "block"; el.textContent = text;
 }
-function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function openExt(url){ const a=document.createElement("a"); a.href=url; a.target="_blank"; a.click(); }
+// Downscale + re-encode an image to a small JPEG data URL that fits a GitHub
+// secret (~48 KB cap, and base64 adds ~33%). Returns a Promise<dataURL>.
+function shrinkImage(file, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxSide = 720;
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);   // avoid black on transparency
+      ctx.drawImage(img, 0, 0, w, h);
+      let q = 0.7, out = cv.toDataURL("image/jpeg", q);
+      while (out.length > maxBytes && q > 0.2) { q -= 0.1; out = cv.toDataURL("image/jpeg", q); }
+      if (out.length > maxBytes) return reject(new Error("Masih terlalu besar setelah dikompres."));
+      resolve(out);
+    };
+    img.onerror = () => reject(new Error("Tidak bisa membaca gambar itu."));
+    const rd = new FileReader();
+    rd.onload = () => { img.src = rd.result; };
+    rd.onerror = () => reject(new Error("Gagal membaca file."));
+    rd.readAsDataURL(file);
+  });
+}
 
 /* ---------- STEP 0: GitHub ---------- */
 function stepGithub() {
@@ -282,13 +313,63 @@ function stepTelegram() {
 }
 
 /* ---------- STEP 3: Aktifkan ---------- */
+function acctOptions(sel) {
+  return (ST.sources || []).map(s => {
+    let tag = s.has_tiktok ? " ✅ TikTok" : (s.locked ? " 🔒 terbuka" : "");
+    return `<option value="${esc(s.id)}" ${sel === s.id ? "selected" : ""}>${esc(s.label)}${tag}</option>`;
+  }).join("");
+}
+function acctRow(a, i) {
+  const status = a.username ? `✅ @${esc(a.username)}`
+    : (a.error ? `❌ ${esc(a.error)}` : "belum dibaca");
+  const del = ST.accounts.length > 1
+    ? `<button class="ghost" data-acct-del="${i}">Hapus akun ini</button>` : "";
+  return `<div class="acct">
+    <label>Akun ${i + 1} — pilih browser</label>
+    <div class="row">
+      <div><select data-acct-src="${i}">${acctOptions(a.sourceId)}</select></div>
+      <button class="ghost" data-acct-read="${i}">Baca sesi</button>
+    </div>
+    <div class="hint" data-acct-status="${i}">${status}</div>
+    <label>Teman tujuan akun ini (pisahkan dengan koma)</label>
+    <input data-acct-friends="${i}" value="${esc(a.friends || "")}" placeholder="alice, bob" />
+    <label>Pesan akun ini (opsional)</label>
+    <input data-acct-msg="${i}" value="${esc(a.message || "")}" placeholder="${esc(ST.message)}" />
+    <div class="btns">${del}</div>
+  </div>`;
+}
+function syncRunFields() {
+  const g = id => document.getElementById(id);
+  if (g("message")) ST.message = g("message").value;
+  if (g("friends")) ST.friends = g("friends").value.trim();
+  if (g("name")) ST.repoName = g("name").value.trim();
+  if (g("video")) ST.videoUrl = g("video").value.trim();
+  if (g("shares")) ST.shareTimes = parseInt(g("shares").value.trim() || "2", 10);
+  ST.accounts.forEach((a, i) => {
+    const s = g("acct-src-" + i) || document.querySelector(`[data-acct-src="${i}"]`);
+    const f = document.querySelector(`[data-acct-friends="${i}"]`);
+    const m = document.querySelector(`[data-acct-msg="${i}"]`);
+    if (s) a.sourceId = s.value;
+    if (f) a.friends = f.value.trim();
+    if (m) a.message = m.value;
+  });
+}
 function stepRun() {
+  const photoPrev = ST.photoDataUrl
+    ? `<img src="${esc(ST.photoDataUrl)}" alt="foto" style="max-height:64px;border-radius:6px;margin-top:8px" />` : "";
   panel.innerHTML = `
     <h2>Aktifkan &amp; jalankan</h2>
-    <p class="hint">Aplikasi akan membuat salinan bot di akun GitHub kamu dan menyalakannya.
-      Bot jalan otomatis tiap hari, gratis.</p>
+    <p class="hint">Aplikasi membuat salinan bot di akun GitHub kamu dan menyalakannya. Bot jalan otomatis tiap hari, gratis.</p>
+    <label>Jenis akun</label>
+    <div class="row">
+      <label style="margin:0"><input type="radio" name="mode" value="single" ${ST.multi ? "" : "checked"} /> 1 akun</label>
+      <label style="margin:0"><input type="radio" name="mode" value="multi" ${ST.multi ? "checked" : ""} /> Beberapa akun</label>
+    </div>
+    <div id="acctbox"></div>
     <label>Pesan streak</label><input type="text" id="message" value="${esc(ST.message)}" />
-    <label>Teman tujuan (pisahkan dengan koma)</label><input type="text" id="friends" value="${esc(ST.friends)}" placeholder="alice, bob" />
+    <label>Foto yang dikirim (opsional)</label>
+    <input type="file" id="photo" accept="image/*" />
+    ${photoPrev}
     <div class="btns"><button class="big" id="go">🚀 Aktifkan &amp; jalankan</button></div>
     <details>
       <summary>Pengaturan lanjutan</summary>
@@ -298,23 +379,54 @@ function stepRun() {
     </details>
     <div class="log"></div>
     <div class="msg"></div>`;
+
+  // mode toggle
+  panel.querySelectorAll('[name="mode"]').forEach(r => r.onchange = async () => {
+    syncRunFields();
+    ST.multi = r.value === "multi";
+    if (ST.multi && ST.accounts.length === 0) ST.accounts = [{ sourceId: "", friends: "", message: "" }];
+    await renderAccounts();
+  });
+
+  // photo upload -> data URL. GitHub secrets cap at ~48 KB, so the image is
+  // re-encoded to a small JPEG that fits (a streak photo needn't be high-res).
+  document.getElementById("photo").onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    setMsg("<span class='spinner'></span> Menyiapkan foto…", "info");
+    try {
+      ST.photoDataUrl = await shrinkImage(f, 45000);
+      setMsg("✅ Foto siap dikirim (" + Math.round(ST.photoDataUrl.length / 1024) + " KB).", "ok");
+    } catch (err) {
+      ST.photoDataUrl = "";
+      setMsg("❌ " + esc(err && err.message || err) + " Coba foto lain.", "err");
+    }
+  };
+
   document.getElementById("go").onclick = async () => {
-    ST.message = document.getElementById("message").value;
-    ST.friends = document.getElementById("friends").value.trim();
-    const nameEl = document.getElementById("name"); if (nameEl) ST.repoName = nameEl.value.trim();
-    const vidEl = document.getElementById("video"); if (vidEl) ST.videoUrl = vidEl.value.trim();
-    const shEl = document.getElementById("shares"); if (shEl) ST.shareTimes = parseInt(shEl.value.trim() || "2", 10);
+    syncRunFields();
+    if (!ST.multi && !ST.username) return setMsg("Hubungkan akun TikTok dulu (langkah 2).", "err");
+    if (!ST.multi && !ST.friends) return setMsg("Isi minimal satu teman tujuan.", "err");
 
-    if (!ST.username) return setMsg("Hubungkan akun TikTok dulu (langkah 2).", "err");
-    if (!ST.friends) return setMsg("Isi minimal satu teman tujuan.", "err");
-
-    const secrets = {
-      TIKTOK_SESSION_ID: ST.sessionid,
-      MESSAGE: ST.message,
-      FRIENDS_LIST: ST.friends,
-    };
-    if (ST.cookieText) secrets.TIKTOK_COOKIES = ST.cookieText;
+    const secrets = {};
+    if (ST.multi) {
+      const accts = ST.accounts.filter(a => a.sessionid && a.friends);
+      if (accts.length < 1) return setMsg("Tiap akun butuh sesi yang sudah dibaca dan daftar teman.", "err");
+      secrets.TIKTOK_ACCOUNTS_JSON = JSON.stringify(accts.map(a => {
+        const o = { name: a.username || ("akun_" + (ST.accounts.indexOf(a) + 1)),
+                    session_id: a.sessionid,
+                    friends: a.friends.split(",").map(s => s.trim()).filter(Boolean) };
+        if (a.message) o.message = a.message;
+        return o;
+      }));
+    } else {
+      secrets.TIKTOK_SESSION_ID = ST.sessionid;
+      secrets.MESSAGE = ST.message;
+      secrets.FRIENDS_LIST = ST.friends;
+      if (ST.cookieText) secrets.TIKTOK_COOKIES = ST.cookieText;
+    }
     if (ST.videoUrl) { secrets.STREAK_VIDEO_URL = ST.videoUrl; secrets.SHARE_TIMES = String(ST.shareTimes); }
+    if (ST.photoDataUrl) secrets.PHOTO_DATA_URL = ST.photoDataUrl;
     if (ST.tgToken) secrets.TELEGRAM_BOT_TOKEN = ST.tgToken;
     if (ST.tgChatId) secrets.TELEGRAM_CHAT_ID = ST.tgChatId;
 
@@ -328,7 +440,49 @@ function stepRun() {
     if (!r.ok) return setMsg("❌ Gagal: " + esc(r.error) + "<br><small>Coba lagi, atau buka Actions untuk detail.</small>", "err");
     renderDone(r);
   };
+  renderAccounts();
   addNav(-1);
+}
+async function renderAccounts() {
+  const box = document.getElementById("acctbox");
+  if (!box) return;
+  if (!ST.multi) {
+    box.innerHTML = `<label>Teman tujuan (pisahkan dengan koma)</label>
+      <input type="text" id="friends" value="${esc(ST.friends)}" placeholder="alice, bob" />`;
+    return;
+  }
+  if (ST.sources === null) {
+    const r = await api().list_browsers();
+    ST.sources = (r.ok ? r.sources : []);
+  }
+  box.innerHTML = ST.accounts.map((a, i) => acctRow(a, i)).join("") +
+    `<div class="btns"><button class="ghost" id="addacct">+ Tambah akun</button></div>`;
+  box.querySelectorAll("[data-acct-read]").forEach(b => b.onclick = async () => {
+    syncRunFields();
+    const i = Number(b.dataset.acctRead);
+    const a = ST.accounts[i];
+    const sid = a.sourceId || (box.querySelector(`[data-acct-src="${i}"]`) || {}).value;
+    if (!sid) return setMsg("Pilih browser dulu untuk akun ini.", "err");
+    box.querySelector(`[data-acct-status="${i}"]`).innerHTML = "<span class='spinner'></span> membaca…";
+    const rc = await api().read_cookies(sid);
+    if (!rc.ok) { a.error = rc.error; a.sessionid = ""; a.username = ""; return renderAccounts(); }
+    a.sessionid = rc.sessionid; a.cookieText = rc.cookie_text;
+    const v = await api().check_session(a.sessionid);
+    if (!v.ok) { a.error = "sesi tidak valid — login ulang di browser itu"; a.username = ""; return renderAccounts(); }
+    a.username = v.username; a.error = "";
+    renderAccounts();
+  });
+  box.querySelectorAll("[data-acct-del]").forEach(b => b.onclick = () => {
+    syncRunFields();
+    ST.accounts.splice(Number(b.dataset.acctDel), 1);
+    renderAccounts();
+  });
+  const add = document.getElementById("addacct");
+  if (add) add.onclick = () => {
+    syncRunFields();
+    ST.accounts.push({ sourceId: "", friends: "", message: "" });
+    renderAccounts();
+  };
 }
 
 function renderDone(r) {
@@ -381,10 +535,17 @@ function addNav(nextStep, onBefore) {
 
 function render() {
   renderSteps();
-  if (ST.step === 0) stepGithub();
-  else if (ST.step === 1) stepTikTok();
-  else if (ST.step === 2) stepTelegram();
-  else stepRun();
+  try {
+    if (ST.step === 0) stepGithub();
+    else if (ST.step === 1) stepTikTok();
+    else if (ST.step === 2) stepTelegram();
+    else stepRun();
+  } catch (e) {
+    // A step that throws must never leave the old panel under a new chip.
+    panel.innerHTML = `<h2>Ada masalah menampilkan langkah ini</h2>
+      <p class="hint">Muat ulang jendela ini. Kalau tetap, laporkan pesan di bawah.</p>
+      <div class="msg err" style="display:block">${esc(e && e.message || e)}</div>`;
+  }
 }
 
 window.addEventListener("pywebviewready", async () => {
