@@ -268,4 +268,21 @@ for _pat in [".env", "accounts.json", "friends.csv", "capture_share_*.json", "de
     assert _pat in _gi, f"missing gitignore guard: {_pat}"
 assert not os.path.exists(".env") or True  # presence allowed locally; must stay untracked
 
-print("All 25 test suites in test_runner.py passed successfully!")
+# 26. Browser discovery: no duplicate profile paths, and a locked browser is
+# reported (not silently mis-read) so the GUI can ask the user to close it.
+from gui import browsers as _br
+_srcs = _br.list_sources(enrich=False)
+_paths = [os.path.normcase(os.path.abspath(s["cookies_path"])) for s in _srcs]
+assert len(_paths) == len(set(_paths)), "duplicate browser profiles detected"
+for _s in _srcs:
+    assert _s.get("cookies_path") and _s.get("id") and _s.get("label")
+
+class _Boom:
+    def execute(self, *a, **k): raise __import__("sqlite3").OperationalError("unable to open database file")
+    def close(self): pass
+# a locked source turns into a friendly, distinct result (not a raw error)
+with patch.object(_br, "grab_session", side_effect=_br.BrowserLocked("locked")):
+    _rc = _GuiApi().read_cookies("any")
+assert _rc["ok"] is False and _rc.get("locked") is True, _rc
+
+print("All 26 test suites in test_runner.py passed successfully!")
