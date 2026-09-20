@@ -191,4 +191,16 @@ assert _wf_secrets.issubset(set(GUI_SECRETS)), \
 _sources = gui_browsers.list_sources()
 assert isinstance(_sources, list)
 
-print("All 16 test suites in test_runner.py passed successfully!")
+# 17. Per-account session must win over a global TIKTOK_COOKIES dump
+from src.browser import authenticate_session
+_injected = {}
+_mock_b = MagicMock()
+_mock_b.current_url = "https://www.tiktok.com/messages?lang=vi"
+_mock_b.add_cookie.side_effect = lambda c: _injected.__setitem__(c["name"], c["value"])
+with patch("time.sleep", return_value=None), \
+     patch.dict(os.environ, {"TIKTOK_COOKIES": "sessionid=STALE; ttwid=keep"}, clear=True):
+    authenticate_session(_mock_b, "FRESH_ACCT_SID", "Acct")
+assert _injected["sessionid"] == "FRESH_ACCT_SID", _injected
+assert _injected["ttwid"] == "keep"
+
+print("All 17 test suites in test_runner.py passed successfully!")

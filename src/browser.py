@@ -103,13 +103,11 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
     browser.get("https://www.tiktok.com")
     browser.delete_all_cookies()
 
-    cookies_to_inject = parse_cookie_payload(session_id)
-
-    # Merge additional cookies from TIKTOK_COOKIES if available
-    extra_env = os.getenv("TIKTOK_COOKIES", "").strip()
-    if extra_env:
-        extra_cookies = parse_cookie_payload(extra_env)
-        cookies_to_inject.update(extra_cookies)
+    # Start from the optional global extras, then let the per-account session
+    # win. A full cookie dump in TIKTOK_COOKIES carries its own sessionid; merging
+    # it last would clobber every account's session and cause bogus "expired".
+    cookies_to_inject = parse_cookie_payload(os.getenv("TIKTOK_COOKIES", "").strip())
+    cookies_to_inject.update(parse_cookie_payload(session_id))
 
     for c_name, c_val in cookies_to_inject.items():
         if not c_name or not c_val:
