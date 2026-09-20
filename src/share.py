@@ -84,8 +84,17 @@ WS_HOOK_JS = r"""
   var _send = _WS.prototype.send;
   _WS.prototype.send = function (data) {
     try {
-      var u8 = (typeof data === "string") ? null : new Uint8Array(data.buffer || data);
-      window.__sent.push({ t: Date.now(), url: this.url, sock: window.__socks.indexOf(this), b64: u8 ? window.__pb.b64(u8) : null });
+      var u8 = (typeof data === "string") ? window.__pb.enc(data) : new Uint8Array(data.buffer || data);
+      var b64 = window.__pb.b64(u8);
+      window.__sent.push({ t: Date.now(), url: this.url, sock: window.__socks.indexOf(this), b64: b64 });
+      // Remember the latest borrowable SEND_MESSAGE frame. A reload between the
+      // text send and the share forge wipes window.__sent; this survives it.
+      try {
+        var text = window.__pb.utf8(u8);
+        if (text.indexOf("client_message_id") >= 0 && text.indexOf("aweType") >= 0) {
+          sessionStorage.setItem("__tmplB64", b64);
+        }
+      } catch (e) {}
     } catch (e) {}
     return _send.apply(this, arguments);
   };
@@ -259,12 +268,18 @@ return (function () {
   for (var i = sent.length - 1; i >= 0; i--) {
     if (!sent[i].b64) continue;
     try {
-      var blob = new TextDecoder().decode(window.__pb.b64dec(sent[i].b64));
+      var blob = window.__pb.utf8(window.__pb.b64dec(sent[i].b64));
       if (blob.indexOf("client_message_id") >= 0 && blob.indexOf("aweType") >= 0) {
         return { b64: sent[i].b64, sock: sent[i].sock };
       }
     } catch (e) {}
   }
+  // A reload between the text send and the share forge wipes window.__sent;
+  // reuse the SEND_MESSAGE frame stashed for this account.
+  try {
+    var b = sessionStorage.getItem("__tmplB64");
+    if (b) return { b64: b, sock: -1, stale: true };
+  } catch (e) {}
   return null;
 })();
 """
@@ -329,8 +344,18 @@ def find_template(browser, timeout: float = 8.0) -> dict | None:
     while time.time() < end:
         template = browser.execute_script(FIND_TEMPLATE_JS)
         if template:
+            if template.get("stale"):
+                logger.info("Reusing stashed SEND_MESSAGE frame (post-reload).")
             return template
         time.sleep(0.5)
+    try:
+        diag = browser.execute_script(
+            "var s=window.__sent||[];"
+            "return {seen:s.length, binary:s.filter(function(x){return x.b64}).length};"
+        )
+        logger.warning("find_template: no SEND_MESSAGE frame after %.0fs (%s).", timeout, diag)
+    except Exception:
+        pass
     return None
 
 

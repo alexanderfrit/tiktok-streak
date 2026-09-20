@@ -216,4 +216,15 @@ with patch("time.sleep", return_value=None):
     assert find_template(_js_browser, timeout=5.0) == {"b64": "x", "sock": 1}
 assert _js_browser.execute_script.call_count == 3
 
-print("All 19 test suites in test_runner.py passed successfully!")
+# 20. find_template surfaces a stashed (post-reload) frame
+_js_browser2 = MagicMock()
+_js_browser2.execute_script.return_value = {"b64": "y", "sock": -1, "stale": True}
+with patch("time.sleep", return_value=None):
+    assert find_template(_js_browser2, timeout=1.0) == {"b64": "y", "sock": -1, "stale": True}
+
+# 21. WS hook records string frames too (must not skip them as b64=null)
+from src.share import WS_HOOK_JS
+assert "window.__pb.enc(data)" in WS_HOOK_JS, "WS hook must encode string frames"
+assert "__tmplB64" in WS_HOOK_JS, "WS hook must stash the borrowable frame"
+
+print("All 21 test suites in test_runner.py passed successfully!")

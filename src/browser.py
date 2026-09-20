@@ -102,6 +102,12 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
     logger.info("[%s] Injecting session cookies...", account_name)
     browser.get("https://www.tiktok.com")
     browser.delete_all_cookies()
+    # Drop any SEND_MESSAGE frame stashed for the previous account so a share
+    # frame is never reused across accounts. (Same tab, so sessionStorage lives.)
+    try:
+        browser.execute_script("try{sessionStorage.removeItem('__tmplB64')}catch(e){}")
+    except Exception:
+        pass
 
     # Start from the optional global extras, then let the per-account session
     # win. A full cookie dump in TIKTOK_COOKIES carries its own sessionid; merging
