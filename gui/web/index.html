@@ -232,7 +232,14 @@ async function fillSources() {
   const r = await api().list_browsers();
   if (!r.ok) { sel.innerHTML = "<option>error</option>"; return setMsg("❌ " + esc(r.error), "err"); }
   if (!r.sources.length) { sel.innerHTML = "<option value=''>(tak ada browser didukung)</option>"; return; }
-  sel.innerHTML = r.sources.map(s => `<option value="${esc(s.id)}">${esc(s.label)}</option>`).join("");
+  sel.innerHTML = r.sources.map(s => {
+    let tag = "";
+    if (s.has_tiktok) tag = " ✅ sudah login TikTok";
+    else if (s.locked) tag = " 🔒 browser sedang terbuka";
+    return `<option value="${esc(s.id)}">${esc(s.label)}${tag}</option>`;
+  }).join("");
+  const first = r.sources.find(s => s.has_tiktok && !s.locked);
+  if (first) sel.value = first.id;
 }
 
 /* ---------- STEP 2: Telegram ---------- */

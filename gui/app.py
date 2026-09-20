@@ -84,6 +84,10 @@ class Api:
             return {"ok": True, "sessionid": data["sessionid"],
                     "cookie_text": data["cookie_text"],
                     "count": len(data["cookies"])}
+        except browsers.BrowserLocked:
+            return {"ok": False, "locked": True,
+                    "error": "Browser itu sedang terbuka, jadi datanya terkunci. "
+                             "Tutup browser tersebut, lalu coba lagi."}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
