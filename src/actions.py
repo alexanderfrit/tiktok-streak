@@ -18,12 +18,12 @@ CHAT_ITEM_CANDIDATES = [
     (By.CSS_SELECTOR, 'div[class*="ConversationItem"]'),
 ]
 
-PROFILE_MESSAGE_BUTTON_CANDIDATES = [
-    (By.CSS_SELECTOR, '[data-e2e="message-button"]'),
-    (By.XPATH, "//div[@data-e2e='user-page']//button[contains(., 'Message') or contains(., 'Nhắn tin')]"),
-    (By.XPATH, "//main//button[contains(., 'Message') or contains(., 'Nhắn tin')]"),
-    (By.XPATH, "//header//button[contains(., 'Message') or contains(., 'Nhắn tin')]"),
-    (By.CSS_SELECTOR, 'div[data-e2e="user-page"] button[class*="ButtonMessage"]'),
+INBOX_SEARCH_CANDIDATES = [
+    (By.CSS_SELECTOR, 'input[data-e2e="search-user-input"]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="Search" i]'),
+    (By.CSS_SELECTOR, 'input[placeholder*="Tìm" i]'),
+    (By.CSS_SELECTOR, 'div[class*="SearchBar"] input'),
+    (By.CSS_SELECTOR, 'input[type="search"]'),
 ]
 
 MESSAGE_INPUT_CANDIDATES = [
@@ -116,34 +116,49 @@ def check_rate_limits(browser) -> None:
 
 
 def open_inbox_chat(browser, friend: str) -> None:
-    # 1. Search in visible conversation threads on the left pane
-    if "/messages" in browser.current_url:
-        dismiss_modals(browser)
-        try:
-            threads = find_elements_by_candidates(browser, CHAT_ITEM_CANDIDATES, "inbox conversation threads", timeout=4.0)
-            for thread in threads:
-                if friend.lower() in thread.text.lower():
-                    logger.info("Found active thread for @%s in inbox.", friend)
-                    safe_click(browser, thread)
-                    time.sleep(random.uniform(1.5, 2.5))
-                    return
-        except Exception:
-            pass
-
-    # 2. Open via profile page
-    logger.info("Opening @%s profile directly...", friend)
-    browser.get(f"https://www.tiktok.com/@{friend}")
-    time.sleep(random.uniform(3.0, 4.5))
+    # Inbox-only: the bot must never touch a public profile route. Find the
+    # thread in the existing conversation list, or use the inbox search box,
+    # or fail with a clear error. Order: existing thread -> search box.
+    if "/messages" not in browser.current_url:
+        browser.get("https://www.tiktok.com/messages?lang=en")
+        time.sleep(random.uniform(3.0, 4.5))
     dismiss_modals(browser)
 
+    # 1. Existing conversation thread in the left pane.
     try:
-        msg_button = find_element_by_candidates(
-            browser, PROFILE_MESSAGE_BUTTON_CANDIDATES, f"Message button on @{friend} profile", timeout=8.0
+        threads = find_elements_by_candidates(browser, CHAT_ITEM_CANDIDATES, "inbox conversation threads", timeout=4.0)
+        for thread in threads:
+            if friend.lower() in thread.text.lower():
+                logger.info("Found existing inbox thread for @%s.", friend)
+                safe_click(browser, thread)
+                time.sleep(random.uniform(1.5, 2.5))
+                return
+    except Exception:
+        pass
+
+    # 2. Inbox search box (no public profile navigation).
+    try:
+        search = find_element_by_candidates(browser, INBOX_SEARCH_CANDIDATES, "inbox search box", timeout=4.0)
+        safe_click(browser, search)
+        search.clear()
+        type_human_like(search, friend)
+        time.sleep(random.uniform(1.5, 2.5))
+        results = find_elements_by_candidates(
+            browser, CHAT_ITEM_CANDIDATES, "inbox search results", timeout=5.0
         )
-        safe_click(browser, msg_button)
-        time.sleep(random.uniform(2.0, 3.5))
-    except TimeoutError:
-        raise DMBlockedError(f"Direct Message button not available for @{friend} (mutual follow required or DMs restricted).")
+        for item in results:
+            if friend.lower() in item.text.lower():
+                logger.info("Found @%s via inbox search.", friend)
+                safe_click(browser, item)
+                time.sleep(random.uniform(1.5, 2.5))
+                return
+    except Exception as e:
+        logger.debug("Inbox search for @%s failed: %s", friend, e)
+
+    raise DMBlockedError(
+        f"Could not open @{friend} from the inbox (no existing thread, search found no match). "
+        f"DMs may be restricted or a mutual follow is required."
+    )
 
 
 def send_streak_message(browser, friend: str, message_text: str) -> dict:

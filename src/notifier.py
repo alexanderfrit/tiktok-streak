@@ -66,16 +66,22 @@ def notify_streak_summary(results: list, total_duration: int) -> bool:
         name = acc.get("name", "Account")
         friends_total = acc.get("friends_total", 0)
         sent = acc.get("sent", 0)
+        shares = acc.get("shares_sent", 0)
+        photos = acc.get("photos_sent", 0)
         failures = acc.get("failures", [])
 
         status_flag = "✓" if not failures else "⚠️"
-        lines.append(f"👤 *{name}*: {sent}/{friends_total} streak(s) sent {status_flag}")
+        lines.append(f"👤 *{name}* {status_flag}")
+        lines.append(f"   💬 text: {sent}/{friends_total}")
+        lines.append(f"   🎬 video share: {shares}")
+        lines.append(f"   🖼️ photo: {photos}")
 
+        # Every failure, in full - not a truncated sample. Failures are the whole
+        # point of the alert, so nothing is dropped.
         if failures:
-            for fail in failures[:3]:
-                lines.append(f"   ❌ {fail}")
-            if len(failures) > 3:
-                lines.append(f"   ... and {len(failures) - 3} more issue(s)")
+            lines.append(f"   ❌ {len(failures)} failure(s):")
+            for fail in failures:
+                lines.append(f"      • {fail}")
         lines.append("")
 
     lines.append(f"⏱️ Total Duration: `{total_duration}s`")
