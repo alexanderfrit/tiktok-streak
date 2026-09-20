@@ -102,12 +102,78 @@ WS_HOOK_JS = r"""
 """
 
 
+# The page sends DMs over HTTP, not the socket: `POST /v1/message/send` with a
+# protobuf body (ground truth in the capture dumps). This hook keeps the last
+# outgoing message/send request (url + body + headers) so a share card can be
+# replayed over the same transport. `window.__pb` (from WS_HOOK_JS) provides the
+# base64 helper. The request body is a Uint8Array; we b64 it on capture.
+HTTP_SEND_HOOK_JS = r"""
+(function () {
+  if (window.__httpHook) return; window.__httpHook = true;
+  window.__httpSend = null;
+  function toU8(b) {
+    try {
+      if (b == null) return null;
+      if (b instanceof Uint8Array) return b;
+      if (typeof b === 'string') return new TextEncoder().encode(b);
+      if (b.buffer) return new Uint8Array(b.buffer);
+    } catch (e) {}
+    return null;
+  }
+  function keep(url, method, headers, body) {
+    try {
+      if (String(url).indexOf('/v1/message/send') < 0) return;
+      var u8 = toU8(body); if (!u8 || !u8.length) return;
+      var pb = window.__pb; if (!pb) return;
+      var hk = {};
+      if (headers) {
+        if (typeof headers.forEach === 'function' && typeof headers.get === 'function') {
+          headers.forEach(function (v, k) { hk[k] = v; });            // Headers object
+        } else if (Array.isArray(headers)) {
+          headers.forEach(function (p) { hk[p[0]] = p[1]; });
+        } else {
+          for (var k in headers) hk[k] = headers[k];
+        }
+      }
+      window.__httpSend = { url: String(url), method: method || 'POST', headers: hk, b64: pb.b64(u8) };
+      try {
+        sessionStorage.setItem('__httpSendB64', window.__httpSend.b64);
+        sessionStorage.setItem('__httpSendUrl', window.__httpSend.url);
+      } catch (e) {}
+    } catch (e) {}
+  }
+  var _fetch = window.fetch;
+  if (_fetch) {
+    window.fetch = function (input, init) {
+      try {
+        var u = (typeof input === 'string') ? input : (input && input.url);
+        var m = (init && init.method) || (input && input.method) || 'GET';
+        var h = (init && init.headers) || (input && typeof input !== 'string' && input.headers) || null;
+        keep(u, m, h, init && init.body);
+      } catch (e) {}
+      return _fetch.apply(this, arguments);
+    };
+  }
+  var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, u) { this.__m = m; this.__u = u; return _open.apply(this, arguments); };
+  XMLHttpRequest.prototype.send = function (b) {
+    try { keep(this.__u, this.__m, null, b); } catch (e) {}
+    return _send.apply(this, arguments);
+  };
+})();
+"""
+
+
 def install_ws_hook(browser) -> None:
-    """Install the WebSocket hook; must run before the page creates its sockets."""
+    """Install the socket + HTTP-send hooks; must run before the page navigates."""
     try:
         browser.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": WS_HOOK_JS})
     except Exception as e:
         logger.warning("Failed installing WS hook: %s", e)
+    try:
+        browser.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": HTTP_SEND_HOOK_JS})
+    except Exception as e:
+        logger.warning("Failed installing HTTP send hook: %s", e)
 
 
 def parse_aweme_id(url: str) -> str | None:
@@ -285,6 +351,62 @@ return (function () {
 """
 
 
+# Replay the captured HTTP send with the payload swapped to a share card. The
+# page's own request rides POST /v1/message/send, so a forged socket frame is
+# never seen by the server. Body layout (ground truth): f8(imreq).f100(msgbody)
+# .f4 = JSON payload, .f6 = content type, .f8 = client_message_id, .f5 = headers.
+# Falls back to the frame stashed in sessionStorage if the page reloaded since
+# the text send. Returns {ok,status,body} or {ok:false,error}.
+def _forge_http_async_js(share_json: str) -> str:
+    import json as _json
+    return """
+var cb = arguments[arguments.length - 1];
+(function () {
+  var pb = window.__pb, get = pb.get;
+  if (!pb) return cb({ ok: false, error: 'no __pb (hook not installed)' });
+  var cap = window.__httpSend;
+  if (!cap || !cap.b64) {
+    try {
+      var b = sessionStorage.getItem('__httpSendB64');
+      var u = sessionStorage.getItem('__httpSendUrl');
+      if (b && u) cap = { b64: b, url: u, headers: {}, method: 'POST' };
+    } catch (e) {}
+  }
+  if (!cap || !cap.b64) return cb({ ok: false, error: 'no captured HTTP send' });
+
+  var body;
+  try { body = pb.read(pb.b64dec(cap.b64)); } catch (e) { return cb({ ok: false, error: 'read body: ' + e }); }
+  var f8 = get(body, 8); if (!f8) return cb({ ok: false, error: 'body.f8 missing' });
+  var imreq = pb.read(f8.val);
+  var f100 = get(imreq, 100); if (!f100) return cb({ ok: false, error: 'imreq.f100 missing' });
+  var mb = pb.read(f100.val);
+  var f4 = get(mb, 4); if (!f4) return cb({ ok: false, error: 'msgbody.f4 (payload) missing' });
+
+  var newCid = pb.uuid();
+  f4.val = pb.enc(shareJson);
+  var f6 = get(mb, 6); if (f6) f6.val = 8;
+  var f8c = get(mb, 8); if (f8c) f8c.val = pb.enc(newCid);
+  for (var i = 0; i < mb.length; i++) {
+    if (mb[i].tag !== 5) continue;
+    var hf = pb.read(mb[i].val), k = get(hf, 1), v = get(hf, 2);
+    if (k && v && pb.utf8(k.val) === 's:client_message_id') { v.val = pb.enc(newCid); mb[i].val = pb.write(hf); }
+  }
+  f100.val = pb.write(mb);
+  f8.val = pb.write(imreq);
+  var out = pb.write(body);
+
+  var headers = {};
+  var src = cap.headers || {};
+  for (var hk in src) { var lk = hk.toLowerCase(); if (lk === 'content-type' || lk.indexOf('x-') === 0) headers[hk] = src[hk]; }
+  if (!headers['content-type'] && !headers['Content-Type']) headers['content-type'] = 'application/x-protobuf';
+
+  fetch(cap.url, { method: cap.method || 'POST', headers: headers, body: out, credentials: 'include' })
+    .then(function (r) { return r.text().then(function (t) { cb({ ok: true, status: r.status, body: t.slice(0, 800) }); }); })
+    .catch(function (e) { cb({ ok: false, error: String(e) }); });
+})();
+""" % _json.dumps(share_json)
+
+
 def send_share_card(browser, friend: str, item_id: str, template: dict = None, share_json: str = None) -> dict:
     """Send one video-share card to `friend`.
 
@@ -293,16 +415,37 @@ def send_share_card(browser, friend: str, item_id: str, template: dict = None, s
     {sent, error}.
     """
     try:
-        if template is None:
-            template = browser.execute_script(FIND_TEMPLATE_JS)
-        if not template:
-            return {"sent": False, "error": "No SEND_MESSAGE template frame; send a text first."}
         if share_json is None:
             detail = fetch_item_detail(browser, item_id)
             if not detail.get("ok"):
                 return {"sent": False, "error": f"item_detail failed: {detail.get('error')}"}
             share_json = build_share_json(item_id, detail["data"])
 
+        # 1. Preferred: replay the page's own HTTP send with the payload swapped.
+        # The page sends DMs over POST /v1/message/send, so a forged socket frame
+        # is never seen by the server (a run of WS-forge attempts never delivered).
+        browser.set_script_timeout(25)
+        hres = browser.execute_async_script(_forge_http_async_js(share_json)) or {}
+        if hres.get("ok"):
+            body = hres.get("body") or ""
+            logger.info("[%s] share HTTP status=%s body=%s", friend, hres.get("status"), body[:300])
+            import re as _re
+            m = _re.search(r'"status_code"\s*:\s*(\d+)', body)
+            if m:
+                if m.group(1) == "0":
+                    return {"sent": True, "error": None}
+                return {"sent": False, "error": f"status_code={m.group(1)}: {body[:200]}"}
+            if hres.get("status") == 200:
+                return {"sent": True, "error": None}
+            return {"sent": False, "error": f"HTTP {hres.get('status')}: {body[:200]}"}
+        http_err = hres.get("error")
+        logger.warning("[%s] HTTP share replay unavailable (%s); trying socket forge.", friend, http_err)
+
+        # 2. Fallback: forge on the live socket (only works if the page sent over WS).
+        if template is None:
+            template = browser.execute_script(FIND_TEMPLATE_JS)
+        if not template:
+            return {"sent": False, "error": f"no HTTP send captured ({http_err}) and no SEND_MESSAGE frame"}
         res = browser.execute_script(_forge_js(template["b64"], share_json, template.get("sock", -1))) or {}
         if res.get("error"):
             return {"sent": False, "error": res["error"]}
