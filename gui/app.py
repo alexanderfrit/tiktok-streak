@@ -27,7 +27,8 @@ WORKFLOW_FILE = "streak.yml"
 # Secret names the workflow consumes (see .github/workflows/streak.yml).
 SECRET_NAMES = [
     "TIKTOK_SESSION_ID", "TIKTOK_ACCOUNTS_JSON", "TIKTOK_COOKIES",
-    "MESSAGE", "FRIENDS_LIST", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+    "MESSAGE", "FRIENDS_LIST", "STREAK_VIDEO_URL", "SHARE_TIMES", "PHOTO_PATH",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
 ]
 
 _CONF_DIR = os.path.join(os.path.expanduser("~"), ".tiktok-streak-gui")

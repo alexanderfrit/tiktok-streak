@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger("tiktok-streak")
 
+# Shipped defaults, used when a per-account value and the matching env var are
+# both unset. Set the env/secret to an empty string to disable the feature.
+DEFAULT_VIDEO_URL = "https://www.tiktok.com/@yutta/video/7684838545659317524"
+DEFAULT_PHOTO_PATH = "assets/default_photo.png"
+
 
 @dataclass
 class AccountConfig:
@@ -12,9 +17,9 @@ class AccountConfig:
     session_id: str
     friends: list = field(default_factory=list)
     message: str = "🔥 Daily Streak"
-    video_url: str = ""
+    video_url: str = DEFAULT_VIDEO_URL
     share_times: int = 2
-    photo_path: str = ""
+    photo_path: str = DEFAULT_PHOTO_PATH
 
 
 def clean_handle(raw: str) -> str:
@@ -49,9 +54,9 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                         session_id=item.get("session_id", "").strip(),
                         friends=friends,
                         message=item.get("message", "🔥 Daily Streak"),
-                        video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", "")).strip(),
+                        video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", DEFAULT_VIDEO_URL)).strip(),
                         share_times=int(item.get("share_times", os.getenv("SHARE_TIMES", "2")) or 2),
-                        photo_path=(item.get("photo_path") or os.getenv("PHOTO_PATH", "")).strip(),
+                        photo_path=(item.get("photo_path") or os.getenv("PHOTO_PATH", DEFAULT_PHOTO_PATH)).strip(),
                     )
                 )
             if accounts:
@@ -74,9 +79,9 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                         session_id=item.get("session_id", "").strip(),
                         friends=friends,
                         message=item.get("message", "🔥 Daily Streak"),
-                        video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", "")).strip(),
+                        video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", DEFAULT_VIDEO_URL)).strip(),
                         share_times=int(item.get("share_times", os.getenv("SHARE_TIMES", "2")) or 2),
-                        photo_path=(item.get("photo_path") or os.getenv("PHOTO_PATH", "")).strip(),
+                        photo_path=(item.get("photo_path") or os.getenv("PHOTO_PATH", DEFAULT_PHOTO_PATH)).strip(),
                     )
                 )
             if accounts:
@@ -103,9 +108,9 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                 session_id=session_id,
                 friends=friends,
                 message=message,
-                video_url=os.getenv("STREAK_VIDEO_URL", "").strip(),
+                video_url=os.getenv("STREAK_VIDEO_URL", DEFAULT_VIDEO_URL).strip(),
                 share_times=int(os.getenv("SHARE_TIMES", "2") or 2),
-                photo_path=os.getenv("PHOTO_PATH", "").strip(),
+                photo_path=os.getenv("PHOTO_PATH", DEFAULT_PHOTO_PATH).strip(),
             )
         ]
 
