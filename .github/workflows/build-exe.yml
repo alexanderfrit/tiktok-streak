@@ -1,0 +1,57 @@
+name: Build Windows setup app
+
+# Produce a download-and-run .exe (no Python needed on the user's PC).
+# Tag a release to publish:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-gui.txt pyinstaller
+
+      - name: Build the app
+        run: >
+          pyinstaller --noconfirm --onedir --name TikTokStreakSetup
+          --add-data "gui/web/index.html;gui/web"
+          --collect-all webview
+          --collect-all keyring
+          --hidden-import win32crypt
+          --hidden-import Crypto.Cipher.AES
+          --hidden-import nacl
+          run_gui.py
+
+      - name: Zip the app folder
+        run: Compress-Archive -Path dist/TikTokStreakSetup/* -DestinationPath dist/TikTokStreakSetup-windows.zip
+
+      - name: Upload as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TikTokStreakSetup-windows
+          path: dist/TikTokStreakSetup-windows.zip
+
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TikTokStreakSetup-windows.zip

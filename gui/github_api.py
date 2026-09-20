@@ -134,18 +134,33 @@ class GitHub:
 # --------------------------------------------------------------------------
 
 def device_flow_start() -> dict:
+    """Begin Device Flow. Returns the verification code/URL for the user to enter.
+
+    Needs OAUTH_CLIENT_ID (a registered OAuth App's public client id). Scope
+    `repo workflow` lets the app write secrets and dispatch the workflow in the
+    user's own fork; classic `repo workflow` (not a fine-grained PAT) keeps this
+    a one-click authorize.
+    """
     if not OAUTH_CLIENT_ID:
-        raise GitHubError("Device Flow needs OAUTH_CLIENT_ID (register an OAuth App).")
+        raise GitHubError("Device Flow is not configured (no OAuth client id).")
     req = urllib.request.Request(
         DEVICE_CODE_URL,
         data=urllib.parse.urlencode({"client_id": OAUTH_CLIENT_ID,
                                      "scope": "repo workflow"}).encode(),
         headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
+        d = json.loads(r.read().decode())
+    if not d.get("device_code"):
+        raise GitHubError(f"Device flow start failed: {d.get('error_description') or d}")
+    return d
 
 
-def device_flow_poll(device_code: str, interval: int = 5, timeout: int = 300) -> str:
+def device_flow_poll(device_code: str, interval: int = 5, timeout: int = 600) -> str:
+    """Wait for the user to authorize; return the access token.
+
+    Honors the server's interval and `slow_down`. GitHub sends
+    `authorization_pending` until the user approves, then the token.
+    """
     end = time.time() + timeout
     while time.time() < end:
         req = urllib.request.Request(
@@ -160,10 +175,15 @@ def device_flow_poll(device_code: str, interval: int = 5, timeout: int = 300) ->
             d = json.loads(r.read().decode())
         if d.get("access_token"):
             return d["access_token"]
-        if d.get("error") == "authorization_pending":
+        err = d.get("error")
+        if err == "authorization_pending":
             time.sleep(interval)
             continue
-        raise GitHubError(f"Device flow error: {d.get('error')}")
+        if err == "slow_down":
+            interval += 5
+            time.sleep(interval)
+            continue
+        raise GitHubError(f"Device flow error: {d.get('error_description') or err}")
     raise GitHubError("Device flow timed out.")
 
 

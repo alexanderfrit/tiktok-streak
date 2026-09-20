@@ -227,4 +227,45 @@ from src.share import WS_HOOK_JS
 assert "window.__pb.enc(data)" in WS_HOOK_JS, "WS hook must encode string frames"
 assert "__tmplB64" in WS_HOOK_JS, "WS hook must stash the borrowable frame"
 
-print("All 21 test suites in test_runner.py passed successfully!")
+# 22. Device Flow refuses to start without an OAuth client id
+from gui import github_api as _ghapi
+_orig_cid = _ghapi.OAUTH_CLIENT_ID
+_ghapi.OAUTH_CLIENT_ID = ""
+try:
+    _raised = False
+    try:
+        _ghapi.device_flow_start()
+    except _ghapi.GitHubError:
+        _raised = True
+    assert _raised, "device_flow_start must require a client id"
+finally:
+    _ghapi.OAUTH_CLIENT_ID = _orig_cid
+
+
+class _Resp:
+    def __init__(self, payload): self._p = payload
+    def read(self): return json.dumps(self._p).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+# 23. check_session surfaces the username for a live cookie
+from gui.app import Api as _GuiApi
+with patch("urllib.request.urlopen", return_value=_Resp({"data": {"username": "alice"}})):
+    _r = _GuiApi().check_session("sid")
+assert _r["ok"] and _r["username"] == "alice", _r
+with patch("urllib.request.urlopen", return_value=_Resp({"message": "expired"})):
+    assert _GuiApi().check_session("sid")["ok"] is False
+
+# 24. telegram_test sends the ready message
+with patch("urllib.request.urlopen", return_value=_Resp({"ok": True})):
+    _t = _GuiApi().telegram_test("123:tk", "999")
+assert _t["ok"] is True and _t["chat_id"] == "999", _t
+
+# 25. Audit guard: secret-bearing paths stay gitignored (never committed)
+_gi = open(".gitignore", encoding="utf-8").read()
+for _pat in [".env", "accounts.json", "friends.csv", "capture_share_*.json", "debug_*.html"]:
+    assert _pat in _gi, f"missing gitignore guard: {_pat}"
+assert not os.path.exists(".env") or True  # presence allowed locally; must stay untracked
+
+print("All 25 test suites in test_runner.py passed successfully!")

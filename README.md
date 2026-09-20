@@ -44,6 +44,19 @@ tiktok-streak/
 Prefer not to touch tokens, secrets and JSON by hand? There is a desktop wizard
 (`gui/`) that walks you through the whole setup in one window — GitHub login,
 fork, enabling Actions, writing every secret, Telegram, and the TikTok session.
+No GitHub or coding knowledge needed.
+
+### Download &amp; use (no Python required)
+
+Grab the latest `TikTokStreakSetup-windows.zip` from the
+**Releases** page, unzip it, and double-click
+`TikTokStreakSetup.exe`.
+
+> Windows SmartScreen may warn that the app is unsigned — click **More info →
+> Run anyway**. The app uses Microsoft Edge WebView2, which is preinstalled on
+> Windows 11 and most Windows 10 machines.
+
+### Run it from source
 
 ```bash
 pip install -r requirements.txt -r requirements-gui.txt
@@ -52,10 +65,10 @@ python -m gui.app
 
 What it does for you:
 
-1. **GitHub** — paste a fine-grained PAT (scopes: `Contents`, `Workflows`,
-   `Secrets`, `Administration` read/write). It forks the source repo into your
-   account, **enables Actions** (forks have them off by default) and writes all
-   repo secrets with correct names and formats.
+1. **GitHub** — one click to "Sign in with GitHub" (OAuth Device Flow; no token
+   to create). It forks the source repo into your account, **enables Actions**
+   (forks have them off by default) and writes all repo secrets with correct
+   names and formats. A manual-token fallback is under *Advanced*.
 2. **TikTok** — reads the `sessionid` straight from your installed browser's
    cookie store (Chrome, Edge, Brave, Chromium, Vivaldi, Opera, Firefox on
    Windows). Log in to TikTok in that browser first, then click *Read cookies*.
