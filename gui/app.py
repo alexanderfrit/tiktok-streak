@@ -118,6 +118,73 @@ class Api:
         tok = _load_token()
         return {"ok": True, "token": tok}
 
+    # ---- github sign-in (Device Flow) ----------------------------------
+    def github_login_start(self) -> dict:
+        """Begin 1-click GitHub sign-in; returns the code + URL for the user."""
+        try:
+            from gui.github_api import device_flow_start, device_flow_poll, GitHubError  # noqa
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        try:
+            d = device_flow_start()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        # stash the poll info for github_login_poll (device_code stays server-side)
+        return {"ok": True,
+                "user_code": d.get("user_code"),
+                "verification_uri": d.get("verification_uri"),
+                "device_code": d.get("device_code"),
+                "interval": d.get("interval", 5),
+                "expires_in": d.get("expires_in", 900)}
+
+    def github_login_poll(self, device_code: str, interval: int = 5) -> dict:
+        """Block until the user authorizes (or timeout). Saves the token on success."""
+        try:
+            from gui.github_api import device_flow_poll, GitHub
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        try:
+            token = device_flow_poll(device_code, interval=int(interval or 5))
+            me = GitHub(token).whoami()
+            where = _save_token(token.strip())
+            return {"ok": True, "token": token, "login": me.get("login"), "stored": where}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def open_url(self, url: str) -> dict:
+        """Open a URL in the user's default browser (for the device-code page)."""
+        import webbrowser
+        try:
+            webbrowser.open(url)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---- tiktok session check ------------------------------------------
+    def check_session(self, sessionid: str) -> dict:
+        """Verify a sessionid is live; return the logged-in username.
+
+        Catches an expired cookie up front instead of failing silently in the run.
+        """
+        import urllib.request, urllib.error
+        sid = (sessionid or "").strip()
+        if not sid:
+            return {"ok": False, "error": "sessionid is empty"}
+        req = urllib.request.Request(
+            "https://www.tiktok.com/passport/web/account/info/?aid=1459",
+            headers={"Cookie": f"sessionid={sid}",
+                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode("utf-8", "ignore"))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        d = data.get("data") or {}
+        username = d.get("username") or d.get("unique_id") or d.get("screen_name")
+        if username:
+            return {"ok": True, "username": username}
+        return {"ok": False, "error": data.get("message") or "session invalid or expired"}
+
     def provision(self, opts: dict) -> dict:
         """Fork/create repo, enable Actions, set secrets, optionally dispatch.
 
@@ -217,21 +284,60 @@ class Api:
         # most recent chat id
         return {"ok": True, "chat_id": ids[-1], "all": sorted(set(ids))}
 
+    def telegram_test(self, token: str, chat_id: str = "") -> dict:
+        """Send a test message so the user sees the bot working immediately."""
+        import urllib.request, urllib.parse
+        token = (token or "").strip()
+        if not token:
+            return {"ok": False, "error": "bot token empty"}
+        cid = (chat_id or "").strip()
+        if not cid:
+            got = self.telegram_find_chat_id(token)
+            if not got.get("ok"):
+                return got
+            cid = got["chat_id"]
+        data = urllib.parse.urlencode({"chat_id": cid, "text": "Bot kamu siap ✅"}).encode()
+        try:
+            with urllib.request.urlopen(
+                f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=15
+            ) as r:
+                ok = json.loads(r.read().decode("utf-8", "ignore")).get("ok")
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": bool(ok), "chat_id": cid, "error": None if ok else "sendMessage failed"}
+
+    def run_now(self, token: str, full_name: str, ref: str = "") -> dict:
+        """Dispatch the workflow on demand (the dashboard's Run now button)."""
+        try:
+            gh = GitHub(token)
+            r = ref or gh.default_branch(full_name)
+            gh.dispatch(full_name, WORKFLOW_FILE, r)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ---- meta ----------------------------------------------------------
     def secret_names(self) -> dict:
         return {"ok": True, "names": SECRET_NAMES, "source_repo": DEFAULT_SOURCE_REPO}
+
+
+def _index_path() -> str:
+    """Locate web/index.html, both from source and from a PyInstaller bundle."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, "gui", "web", "index.html")
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "web", "index.html")
 
 
 def main() -> None:
     try:
         import webview
     except ImportError:
-        print("PyWebview is not installed. Run:  pip install -r requirements.txt")
+        print("PyWebview is not installed. Run:  pip install -r requirements.txt -r requirements-gui.txt")
         raise SystemExit(1)
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    index = os.path.join(here, "web", "index.html")
-    webview.create_window("TikTok Streak - Setup", index, js_api=Api(),
+    webview.create_window("TikTok Streak - Setup", _index_path(), js_api=Api(),
                           width=980, height=760, min_size=(820, 640))
     webview.start()
 
