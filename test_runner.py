@@ -151,4 +151,23 @@ try:
 finally:
     os.remove(tf_video)
 
-print("All 14 test suites in test_runner.py passed successfully!")
+# 15. Test photo config: env fallback + per-account value wins
+with patch.dict(os.environ, {
+    "TIKTOK_SESSION_ID": "c",
+    "PHOTO_PATH": "assets/dummy_photo.png",
+}, clear=True):
+    accs = load_accounts(config_file="non_existent.json")
+    assert accs[0].photo_path == "assets/dummy_photo.png"
+
+sample_photo = [{"name": "A", "session_id": "c1", "friends": ["f1"],
+                 "photo_path": "assets/custom.png"}]
+with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tf:
+    json.dump(sample_photo, tf)
+    tf_photo = tf.name
+try:
+    accs = load_accounts(config_file=tf_photo)
+    assert accs[0].photo_path == "assets/custom.png"
+finally:
+    os.remove(tf_photo)
+
+print("All 15 test suites in test_runner.py passed successfully!")

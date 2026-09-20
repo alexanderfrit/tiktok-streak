@@ -320,3 +320,212 @@ def send_share_card(browser, friend: str, item_id: str, template: dict = None, s
 
 def find_template(browser) -> dict | None:
     return browser.execute_script(FIND_TEMPLATE_JS)
+
+
+# ---- Photo (media) card ---------------------------------------------------
+#
+# The media button ([data-e2e="dm-new-media-btn"]) renders per-session in the
+# automation browser (probe: ~3/4 fresh loads, instantly when present; some
+# loads never show it). So we open the conversation and, if it is absent,
+# reload the inbox and try again. A "fallback without the button" was tested
+# (injecting our own <input type=file>, drop/paste) and does NOT work - TikTok's
+# handler is bound to its own input - so the button is required.
+#
+# Mechanism (proven): click the button -> TikTok creates a detached
+# <input id="im-file-input-select" type=file> and calls .click() on it. Our
+# guard (installed before navigation, MEDIA_FILE_GUARD_JS) keeps that input in
+# the DOM instead of opening the OS picker; we then set its file with Selenium,
+# TikTok opens the "Send media" modal, and we click its Send button.
+
+MEDIA_FILE_GUARD_JS = r"""
+(function () {
+  if (window.__fiGuard) return;
+  window.__fiGuard = true;
+  window.__fi = null;
+  var _click = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file') {
+      try {
+        this.id = this.id || 'im-file-input-select';
+        if (!this.isConnected) document.body.appendChild(this);
+        this.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;';
+        window.__fi = this;
+      } catch (e) {}
+      return;  // do NOT open the OS file picker
+    }
+    return _click.apply(this, arguments);
+  };
+})();
+"""
+
+# Open @friend's conversation from the inbox list (nickname element), no public
+# profile route. __NAME__ is replaced with the JSON-quoted handle.
+# Match both directions: the thread's nickname may be a display name ("cel")
+# that the handle ("celuley") contains, or vice versa.
+OPEN_THREAD_JS = r"""
+return (function () {
+  var name = __NAME__;
+  var t = name.toLowerCase();
+  function match(txt) {
+    if (!txt) return false;
+    txt = txt.trim().toLowerCase();
+    if (!txt) return false;
+    return txt === t || txt.indexOf('@' + t) >= 0 || t.indexOf(txt) >= 0;
+  }
+  var cands = ['p[class*="PInfoNickname"]', '[data-e2e="dm-new-conversation-nickname"]', '[data-e2e="dm-new-conversation-item"]'];
+  for (var c = 0; c < cands.length; c++) {
+    var nodes = document.querySelectorAll(cands[c]);
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.offsetParent === null) continue;
+      var txt = n.innerText || '';
+      if (match(txt) && txt.trim().length < 60) { n.click(); return { sel: cands[c], txt: txt.trim().slice(0, 40) }; }
+    }
+  }
+  return null;
+})();
+"""
+
+MEDIA_BTN_JS = "return !!document.querySelector('[data-e2e=\"dm-new-media-btn\"]');"
+
+CLICK_MEDIA_JS = r"""
+return (function () {
+  var mb = document.querySelector('[data-e2e="dm-new-media-btn"]');
+  if (!mb) return false;
+  var label = mb.closest('label') || document.querySelector('label[class*="LabelMedia"]');
+  try { (label || mb).click(); return true; } catch (e) { return false; }
+})();
+"""
+
+# Click the media modal's Send button (text like "Send (1)"), whole document.
+CLICK_SEND_JS = r"""
+return (function () {
+  var out = { clicked: false };
+  var nodes = document.querySelectorAll('button, [role="button"]');
+  var best = null;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.offsetParent === null) continue;
+    var t = (n.innerText || '').trim();
+    if (!t || t.length > 24) continue;
+    if (/^send\b/i.test(t)) {
+      var isBtn = n.tagName.toLowerCase() === 'button';
+      if (!best || (isBtn && best.tagName.toLowerCase() !== 'button')) best = n;
+    }
+  }
+  if (!best) return out;
+  try { best.click(); out.clicked = true; } catch (e) { out.err = String(e); }
+  return out;
+})();
+"""
+
+
+def install_media_guard(browser) -> None:
+    """Install the file-input guard; must run before the inbox navigation."""
+    try:
+        browser.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": MEDIA_FILE_GUARD_JS})
+    except Exception as e:
+        logger.warning("Failed installing media file guard: %s", e)
+
+
+def _media_button_present(browser) -> bool:
+    try:
+        return bool(browser.execute_script(MEDIA_BTN_JS))
+    except Exception:
+        return False
+
+
+def _wait_media_button(browser, timeout: float) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        if _media_button_present(browser):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def send_photo_card(browser, friend: str, photo_path: str,
+                    open_retries: int = 4, per_try_wait: float = 8.0) -> dict:
+    """Send one photo to @friend via the inbox media button.
+
+    Retries by reloading the inbox when the media button does not render.
+    Requires the WS hook (install_ws_hook) so the send can be confirmed via the
+    picture_card frame, and the file guard (install_media_guard) installed
+    before navigation. Returns {sent, error}.
+    """
+    import json as _json, os as _os
+    from selenium.webdriver.common.by import By
+
+    if not _os.path.exists(photo_path):
+        return {"sent": False, "error": f"photo not found: {photo_path}"}
+
+    try:
+        opened = False
+        for attempt in range(1, open_retries + 1):
+            if attempt > 1 or "/messages" not in browser.current_url:
+                browser.get("https://www.tiktok.com/messages?lang=en")
+                time.sleep(4)
+            browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))
+            time.sleep(2)
+            if _wait_media_button(browser, per_try_wait):
+                opened = True
+                logger.info("[%s] media button present (attempt %d).", friend, attempt)
+                break
+            logger.warning("[%s] media button missing (attempt %d/%d); reloading inbox.",
+                           friend, attempt, open_retries)
+
+        if not opened:
+            return {"sent": False, "error": "media button never rendered after retries"}
+
+        before_recv = browser.execute_script("return (window.__recv || []).length;") or 0
+        browser.execute_script(CLICK_MEDIA_JS)
+
+        # The guard parks TikTok's file input in the DOM; wait for it.
+        inp = None
+        for _ in range(20):
+            els = browser.find_elements(By.ID, "im-file-input-select")
+            if els:
+                inp = els[0]
+                break
+            time.sleep(0.5)
+        if inp is None:
+            return {"sent": False, "error": "file input not captured (guard not triggered)"}
+
+        inp.send_keys(photo_path)
+
+        clicked = False
+        for _ in range(20):
+            if (browser.execute_script(CLICK_SEND_JS) or {}).get("clicked"):
+                clicked = True
+                break
+            time.sleep(0.5)
+        if not clicked:  # real-click fallback
+            for xp in ["//button[starts-with(normalize-space(.), 'Send')]",
+                       "//button[contains(., 'Send')]"]:
+                els = [e for e in browser.find_elements(By.XPATH, xp) if e.is_displayed()]
+                if els:
+                    els[-1].click()
+                    clicked = True
+                    break
+        if not clicked:
+            return {"sent": False, "error": "Send button in media modal not found"}
+
+        # Confirm via the picture_card frame the server echoes on the socket.
+        import base64 as _b64
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            recv = browser.execute_script("return (window.__recv || []).slice(%d);" % int(before_recv)) or []
+            for r in recv:
+                if not r.get("b64"):
+                    continue
+                try:
+                    blob = _b64.b64decode(r["b64"]).decode("latin1", "ignore")
+                except Exception:
+                    continue
+                if "picture_card" in blob or "decrypt_key" in blob:
+                    return {"sent": True, "error": None}
+            time.sleep(0.5)
+        return {"sent": False, "error": "no picture_card frame seen (timeout)"}
+    except Exception as e:
+        logger.error("Photo card to @%s failed: %s", friend, e)
+        return {"sent": False, "error": str(e)}

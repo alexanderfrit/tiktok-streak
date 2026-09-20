@@ -14,6 +14,7 @@ class AccountConfig:
     message: str = "🔥 Daily Streak"
     video_url: str = ""
     share_times: int = 2
+    photo_path: str = ""
 
 
 def clean_handle(raw: str) -> str:
@@ -50,6 +51,7 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                         message=item.get("message", "🔥 Daily Streak"),
                         video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", "")).strip(),
                         share_times=int(item.get("share_times", os.getenv("SHARE_TIMES", "2")) or 2),
+                        photo_path=(item.get("photo_path") or os.getenv("PHOTO_PATH", "")).strip(),
                     )
                 )
             if accounts:
@@ -74,6 +76,7 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                         message=item.get("message", "🔥 Daily Streak"),
                         video_url=(item.get("video_url") or os.getenv("STREAK_VIDEO_URL", "")).strip(),
                         share_times=int(item.get("share_times", os.getenv("SHARE_TIMES", "2")) or 2),
+                        photo_path=(item.get("photo_path") or os.getenv("PHOTO_PATH", "")).strip(),
                     )
                 )
             if accounts:
@@ -102,6 +105,7 @@ def load_accounts(config_file: str = "accounts.json") -> list:
                 message=message,
                 video_url=os.getenv("STREAK_VIDEO_URL", "").strip(),
                 share_times=int(os.getenv("SHARE_TIMES", "2") or 2),
+                photo_path=os.getenv("PHOTO_PATH", "").strip(),
             )
         ]
 

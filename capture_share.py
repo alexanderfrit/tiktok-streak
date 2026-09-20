@@ -49,6 +49,22 @@ HOOK_JS = r"""
       if (typeof data === 'string') return { kind: 'str', text: data };
       if (data instanceof ArrayBuffer) return { kind: 'arraybuffer', data: bufInfo(data) };
       if (data && data.buffer) return { kind: 'view', data: bufInfo(data.buffer) };
+      if (typeof FormData !== 'undefined' && data instanceof FormData) {
+        var entries = [];
+        try {
+          data.forEach(function (v, k) {
+            if (typeof File !== 'undefined' && v instanceof File) {
+              entries.push({ key: k, file: v.name, type: v.type, size: v.size });
+            } else if (typeof Blob !== 'undefined' && v instanceof Blob) {
+              entries.push({ key: k, blob: v.size });
+            } else {
+              entries.push({ key: k, value: String(v).slice(0, 400) });
+            }
+          });
+        } catch (e) {}
+        return { kind: 'formdata', entries: entries };
+      }
+      if (typeof File !== 'undefined' && data instanceof File) return { kind: 'file', name: data.name, type: data.type, size: data.size };
       if (typeof Blob !== 'undefined' && data instanceof Blob) return { kind: 'blob', size: data.size };
       return { kind: typeof data, text: String(data).slice(0, 2000) };
     } catch (e) { return { kind: 'err', err: String(e) }; }
@@ -105,11 +121,19 @@ HOOK_JS = r"""
   var _fetch = window.fetch;
   if (_fetch) {
     window.fetch = function (input, init) {
+      var u = (typeof input === 'string') ? input : (input && input.url);
+      try { rec({ dir: 'fetch', url: u, method: (init && init.method) || 'GET', payload: toPayload(init && init.body), t: Date.now() }); } catch (e) {}
+      var p = _fetch.apply(this, arguments);
       try {
-        var u = (typeof input === 'string') ? input : (input && input.url);
-        rec({ dir: 'fetch', url: u, method: (init && init.method) || 'GET', payload: toPayload(init && init.body), t: Date.now() });
+        p.then(function (r) {
+          try {
+            r.clone().text().then(function (txt) {
+              rec({ dir: 'fetch-resp', url: u, status: r.status, text: String(txt).slice(0, 6000), t: Date.now() });
+            }).catch(function () {});
+          } catch (e) {}
+        }).catch(function () {});
       } catch (e) {}
-      return _fetch.apply(this, arguments);
+      return p;
     };
   }
 
@@ -118,6 +142,17 @@ HOOK_JS = r"""
   XMLHttpRequest.prototype.open = function (m, u) { this.__m = m; this.__u = u; return _open.apply(this, arguments); };
   XMLHttpRequest.prototype.send = function (b) {
     try { rec({ dir: 'xhr', url: this.__u, method: this.__m, payload: toPayload(b), t: Date.now() }); } catch (e) {}
+    try {
+      var self = this;
+      self.addEventListener('load', function () {
+        try {
+          var txt = '';
+          try { txt = self.responseText; } catch (e) { txt = ''; }
+          if (!txt && self.response) { try { txt = JSON.stringify(self.response); } catch (e) { txt = ''; } }
+          rec({ dir: 'xhr-resp', url: self.__u, status: self.status, text: String(txt).slice(0, 6000), t: Date.now() });
+        } catch (e) {}
+      });
+    } catch (e) {}
     return _send.apply(this, arguments);
   };
 })();
