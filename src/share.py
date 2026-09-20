@@ -116,7 +116,9 @@ HTTP_SEND_HOOK_JS = r"""
       if (b == null) return null;
       if (b instanceof Uint8Array) return b;
       if (typeof b === 'string') return new TextEncoder().encode(b);
-      if (b.buffer) return new Uint8Array(b.buffer);
+      if (b instanceof ArrayBuffer) return new Uint8Array(b);
+      if (b.buffer) return new Uint8Array(b.buffer);  // ArrayBufferView (DataView etc.)
+      if (b instanceof Blob) return null;  // async; caller can't await here
     } catch (e) {}
     return null;
   }
@@ -383,7 +385,7 @@ var cb = arguments[arguments.length - 1];
   var f4 = get(mb, 4); if (!f4) return cb({ ok: false, error: 'msgbody.f4 (payload) missing' });
 
   var newCid = pb.uuid();
-  f4.val = pb.enc(shareJson);
+  f4.val = pb.enc(__SHAREJSON__);
   var f6 = get(mb, 6); if (f6) f6.val = 8;
   var f8c = get(mb, 8); if (f8c) f8c.val = pb.enc(newCid);
   for (var i = 0; i < mb.length; i++) {
@@ -404,7 +406,7 @@ var cb = arguments[arguments.length - 1];
     .then(function (r) { return r.text().then(function (t) { cb({ ok: true, status: r.status, body: t.slice(0, 800) }); }); })
     .catch(function (e) { cb({ ok: false, error: String(e) }); });
 })();
-""" % _json.dumps(share_json)
+""".replace("__SHAREJSON__", _json.dumps(share_json))
 
 
 def send_share_card(browser, friend: str, item_id: str, template: dict = None, share_json: str = None) -> dict:
@@ -421,56 +423,58 @@ def send_share_card(browser, friend: str, item_id: str, template: dict = None, s
                 return {"sent": False, "error": f"item_detail failed: {detail.get('error')}"}
             share_json = build_share_json(item_id, detail["data"])
 
-        # 1. Preferred: replay the page's own HTTP send with the payload swapped.
-        # The page sends DMs over POST /v1/message/send, so a forged socket frame
-        # is never seen by the server (a run of WS-forge attempts never delivered).
+        # 1. Socket forge - proven transport. The page emits a SEND_MESSAGE frame
+        # for the text send; borrow it, swap in the share payload, re-sign, send
+        # on the live im-ws socket. Confirmed by the server echo in __recv.
+        socket_err = None
+        if template is None:
+            template = browser.execute_script(FIND_TEMPLATE_JS)
+        if template:
+            res = browser.execute_script(_forge_js(template["b64"], share_json, template.get("sock", -1))) or {}
+            if res.get("error"):
+                socket_err = res["error"]
+            else:
+                deadline = time.time() + 6
+                while time.time() < deadline:
+                    recv = browser.execute_script("return (window.__recv||[]).slice(%d);" % int(res.get("recv_before", 0))) or []
+                    for r in recv:
+                        if not r.get("b64"):
+                            continue
+                        try:
+                            import base64 as _b64
+                            blob = _b64.b64decode(r["b64"]).decode("latin1", "ignore")
+                        except Exception:
+                            continue
+                        if item_id in blob and '"aweType":800' in blob:
+                            return {"sent": True, "error": None}
+                        if '"status_code":' in blob:
+                            import re as _re
+                            code = _re.search(r'"status_code":(\d+)', blob)
+                            if code and code.group(1) != "0":
+                                return {"sent": False, "error": f"status_code={code.group(1)}"}
+                    time.sleep(0.5)
+                socket_err = "no server ack for share card (timeout)"
+        else:
+            socket_err = "no SEND_MESSAGE template frame"
+
+        # 2. Fallback: replay the page's own HTTP send with the payload swapped.
+        # Some runs send the text over POST /v1/message/send with no socket frame,
+        # so the socket forge finds no template; this covers that case.
+        logger.info("[%s] socket forge unavailable (%s); trying HTTP replay.", friend, socket_err)
         browser.set_script_timeout(25)
         hres = browser.execute_async_script(_forge_http_async_js(share_json)) or {}
         if hres.get("ok"):
             body = hres.get("body") or ""
-            logger.info("[%s] share HTTP status=%s body=%s", friend, hres.get("status"), body[:300])
             import re as _re
             m = _re.search(r'"status_code"\s*:\s*(\d+)', body)
             if m:
                 if m.group(1) == "0":
                     return {"sent": True, "error": None}
-                return {"sent": False, "error": f"status_code={m.group(1)}: {body[:200]}"}
+                return {"sent": False, "error": f"socket({socket_err}); HTTP status_code={m.group(1)}: {body[:200]}"}
             if hres.get("status") == 200:
                 return {"sent": True, "error": None}
-            return {"sent": False, "error": f"HTTP {hres.get('status')}: {body[:200]}"}
-        http_err = hres.get("error")
-        logger.warning("[%s] HTTP share replay unavailable (%s); trying socket forge.", friend, http_err)
-
-        # 2. Fallback: forge on the live socket (only works if the page sent over WS).
-        if template is None:
-            template = browser.execute_script(FIND_TEMPLATE_JS)
-        if not template:
-            return {"sent": False, "error": f"no HTTP send captured ({http_err}) and no SEND_MESSAGE frame"}
-        res = browser.execute_script(_forge_js(template["b64"], share_json, template.get("sock", -1))) or {}
-        if res.get("error"):
-            return {"sent": False, "error": res["error"]}
-
-        # confirm: a frame echoing our itemId (aweType 800) means the server accepted it
-        deadline = time.time() + 6
-        while time.time() < deadline:
-            recv = browser.execute_script("return (window.__recv||[]).slice(%d);" % int(res.get("recv_before", 0))) or []
-            for r in recv:
-                if not r.get("b64"):
-                    continue
-                try:
-                    import base64 as _b64
-                    blob = _b64.b64decode(r["b64"]).decode("latin1", "ignore")
-                except Exception:
-                    continue
-                if item_id in blob and '"aweType":800' in blob:
-                    return {"sent": True, "error": None}
-                if '"status_code":' in blob:
-                    import re as _re
-                    code = _re.search(r'"status_code":(\d+)', blob)
-                    if code and code.group(1) != "0":
-                        return {"sent": False, "error": f"status_code={code.group(1)}"}
-            time.sleep(0.5)
-        return {"sent": False, "error": "no server ack for share card (timeout)"}
+            return {"sent": False, "error": f"socket({socket_err}); HTTP {hres.get('status')}: {body[:200]}"}
+        return {"sent": False, "error": f"socket({socket_err}); HTTP replay ({hres.get('error')})"}
     except Exception as e:
         logger.error("Share card to @%s failed: %s", friend, e)
         return {"sent": False, "error": str(e)}

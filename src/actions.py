@@ -117,24 +117,27 @@ def check_rate_limits(browser) -> None:
 
 def open_inbox_chat(browser, friend: str) -> None:
     # Inbox-only: the bot must never touch a public profile route. Find the
-    # thread in the existing conversation list, or use the inbox search box,
-    # or fail with a clear error. Order: existing thread -> search box.
+    # thread in the existing conversation list (bidirectional nickname match,
+    # same as the media path), or use the inbox search box, or fail clearly.
+    import json as _json
+    from .share import OPEN_THREAD_JS
+
     if "/messages" not in browser.current_url:
         browser.get("https://www.tiktok.com/messages?lang=en")
         time.sleep(random.uniform(3.0, 4.5))
     dismiss_modals(browser)
 
-    # 1. Existing conversation thread in the left pane.
+    # 1. Existing conversation thread in the left pane. The thread shows the
+    # display name ("cel"), which the handle ("celuley") may not contain either
+    # way in a naive substring test - OPEN_THREAD_JS matches both directions.
     try:
-        threads = find_elements_by_candidates(browser, CHAT_ITEM_CANDIDATES, "inbox conversation threads", timeout=4.0)
-        for thread in threads:
-            if friend.lower() in thread.text.lower():
-                logger.info("Found existing inbox thread for @%s.", friend)
-                safe_click(browser, thread)
-                time.sleep(random.uniform(1.5, 2.5))
-                return
-    except Exception:
-        pass
+        hit = browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))
+        if hit:
+            logger.info("Opened @%s from the inbox list (matched %r).", friend, hit.get("txt"))
+            time.sleep(random.uniform(1.5, 2.5))
+            return
+    except Exception as e:
+        logger.debug("Inbox list match for @%s failed: %s", friend, e)
 
     # 2. Inbox search box (no public profile navigation).
     try:
@@ -143,15 +146,11 @@ def open_inbox_chat(browser, friend: str) -> None:
         search.clear()
         type_human_like(search, friend)
         time.sleep(random.uniform(1.5, 2.5))
-        results = find_elements_by_candidates(
-            browser, CHAT_ITEM_CANDIDATES, "inbox search results", timeout=5.0
-        )
-        for item in results:
-            if friend.lower() in item.text.lower():
-                logger.info("Found @%s via inbox search.", friend)
-                safe_click(browser, item)
-                time.sleep(random.uniform(1.5, 2.5))
-                return
+        hit = browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))
+        if hit:
+            logger.info("Found @%s via inbox search (matched %r).", friend, hit.get("txt"))
+            time.sleep(random.uniform(1.5, 2.5))
+            return
     except Exception as e:
         logger.debug("Inbox search for @%s failed: %s", friend, e)
 
