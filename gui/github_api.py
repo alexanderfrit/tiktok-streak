@@ -21,7 +21,7 @@ DEVICE_CODE_URL = "https://github.com/login/device/code"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 
 # Set this to your registered GitHub OAuth App's client id to enable Device Flow.
-OAUTH_CLIENT_ID = ""
+OAUTH_CLIENT_ID = "Ov23liH6R2uxBFftAzIk"
 
 
 class GitHubError(RuntimeError):
