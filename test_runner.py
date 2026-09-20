@@ -203,4 +203,17 @@ with patch("time.sleep", return_value=None), \
 assert _injected["sessionid"] == "FRESH_ACCT_SID", _injected
 assert _injected["ttwid"] == "keep"
 
-print("All 17 test suites in test_runner.py passed successfully!")
+# 18. Photo path is made absolute (ChromeDriver rejects relative paths)
+from src.share import send_photo_card, find_template
+_rel = "assets/nope_missing.png"
+_res = send_photo_card(MagicMock(), "f", _rel)
+assert os.path.isabs(_res["error"].split("photo not found: ")[-1]), _res
+
+# 19. find_template retries until the SEND_MESSAGE frame appears
+_js_browser = MagicMock()
+_js_browser.execute_script.side_effect = [None, None, {"b64": "x", "sock": 1}]
+with patch("time.sleep", return_value=None):
+    assert find_template(_js_browser, timeout=5.0) == {"b64": "x", "sock": 1}
+assert _js_browser.execute_script.call_count == 3
+
+print("All 19 test suites in test_runner.py passed successfully!")

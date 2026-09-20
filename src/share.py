@@ -318,8 +318,20 @@ def send_share_card(browser, friend: str, item_id: str, template: dict = None, s
         return {"sent": False, "error": str(e)}
 
 
-def find_template(browser) -> dict | None:
-    return browser.execute_script(FIND_TEMPLATE_JS)
+def find_template(browser, timeout: float = 8.0) -> dict | None:
+    """Return a borrowable SEND_MESSAGE frame, waiting up to `timeout` for one.
+
+    The frame reaches the socket a beat after the page sends our text message,
+    so a single immediate read races and can miss it (seen as "no share
+    template frame" for a later account in the same run).
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        template = browser.execute_script(FIND_TEMPLATE_JS)
+        if template:
+            return template
+        time.sleep(0.5)
+    return None
 
 
 # ---- Photo (media) card ---------------------------------------------------
@@ -456,6 +468,9 @@ def send_photo_card(browser, friend: str, photo_path: str,
     import json as _json, os as _os
     from selenium.webdriver.common.by import By
 
+    # ChromeDriver rejects a relative path for a file input ("path is not
+    # absolute"), so resolve against the working directory first.
+    photo_path = _os.path.abspath(photo_path)
     if not _os.path.exists(photo_path):
         return {"sent": False, "error": f"photo not found: {photo_path}"}
 
