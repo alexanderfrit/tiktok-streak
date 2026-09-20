@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>TikTok Streak - Setup</title>
+<style>
+  :root { --bg:#121212; --panel:#1b1b1e; --line:#2c2c31; --fg:#eaeaea; --muted:#9a9aa2;
+          --accent:#fe2c55; --ok:#3fb950; --bad:#f85149; --btn:#2a2a2f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 "Segoe UI",Roboto,system-ui,sans-serif; }
+  header { padding:16px 22px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
+  .steps { display:flex; gap:6px; padding:10px 22px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .chip { padding:4px 10px; border-radius:20px; background:var(--btn); color:var(--muted); font-size:12px; }
+  .chip.active { background:var(--accent); color:#fff; }
+  .chip.done { background:#1f3d24; color:var(--ok); }
+  main { padding:22px; max-width:760px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; }
+  h2 { font-size:15px; margin:0 0 4px; }
+  p.hint { color:var(--muted); margin:0 0 14px; }
+  label { display:block; margin:12px 0 4px; font-size:13px; color:var(--muted); }
+  input[type=text], input[type=password], textarea, select {
+    width:100%; padding:9px 11px; background:#0e0e10; color:var(--fg);
+    border:1px solid var(--line); border-radius:7px; font:13px monospace; }
+  textarea { min-height:74px; resize:vertical; }
+  .row { display:flex; gap:10px; align-items:flex-end; }
+  .row > div { flex:1; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px;
+           padding:9px 15px; font-size:13px; cursor:pointer; }
+  button.ghost { background:var(--btn); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .btns { margin-top:16px; display:flex; gap:10px; }
+  .msg { margin-top:12px; padding:9px 11px; border-radius:7px; font-size:13px; display:none; }
+  .msg.ok { display:block; background:#12261a; color:var(--ok); border:1px solid #1f3d24; }
+  .msg.err { display:block; background:#2a1416; color:var(--bad); border:1px solid #3d1f22; }
+  .msg.info { display:block; background:#141826; color:#8ab4f8; border:1px solid #1f2436; }
+  .log { font:12px monospace; background:#0e0e10; border:1px solid var(--line);
+         border-radius:7px; padding:10px; white-space:pre-wrap; max-height:220px; overflow:auto; display:none; }
+  .browser { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+  a { color:#8ab4f8; }
+  small code { background:#0e0e10; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="connDot"></span>
+  <h1>TikTok Streak &mdash; Setup</h1>
+</header>
+<div class="steps" id="steps"></div>
+<main>
+  <div class="panel" id="panel"></div>
+</main>
+
+<script>
+const api = () => window.pywebview && window.pywebview.api;
+let ST = {
+  step: 0,
+  token: "",
+  login: "",
+  sourceRepo: "alexanderfrit/tiktok-streak",
+  repoName: "",
+  owner: "",
+  sessionid: "",
+  cookieText: "",
+  message: "🔥 Daily Streak",
+  friends: "",
+  videoUrl: "",
+  shareTimes: 2,
+  photoPath: "",
+  tgToken: "",
+  tgChatId: "",
+};
+
+const STEPS = ["GitHub", "TikTok", "Telegram", "Repo & Run"];
+const panel = document.getElementById("panel");
+const stepsEl = document.getElementById("steps");
+const connDot = document.getElementById("connDot");
+
+function renderSteps() {
+  stepsEl.innerHTML = STEPS.map((s, i) =>
+    `<span class="chip ${i === ST.step ? "active" : (i < ST.step ? "done" : "")}">${i+1}. ${s}</span>`
+  ).join("");
+}
+function setMsg(html, kind) {
+  let el = panel.querySelector(".msg");
+  if (!el) { el = document.createElement("div"); el.className = "msg"; panel.appendChild(el); }
+  el.className = "msg " + kind; el.innerHTML = html;
+}
+function showLog(text) {
+  let el = panel.querySelector(".log");
+  if (!el) { el = document.createElement("div"); el.className = "log"; panel.appendChild(el); }
+  el.style.display = "block"; el.textContent = text;
+}
+function esc(s){ return (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ---------- STEP 0: GitHub ---------- */
+function stepGithub() {
+  panel.innerHTML = `
+    <h2>Connect GitHub</h2>
+    <p class="hint">A token lets the app fork the repo, enable Actions and write secrets for you.
+      Create a fine-grained PAT with <code>Contents</code>, <code>Workflows</code>,
+      <code>Secrets</code> and <code>Administration</code> read/write.</p>
+    <label>GitHub token (PAT)</label>
+    <input type="password" id="tok" placeholder="ghp_... / github_pat_..." value="${esc(ST.token)}" />
+    <div class="btns">
+      <button id="connect">Connect</button>
+      <button class="ghost" id="openPat">Create token</button>
+    </div>
+    <div class="msg"></div>`;
+  document.getElementById("openPat").onclick = () =>
+    window.pywebview.api; // opening system browser is done via commit flow; keep instructions visible
+  document.getElementById("openPat").onclick = () => {
+    const a = document.createElement("a");
+    a.href = "https://github.com/settings/tokens?type=beta"; a.target = "_blank"; a.click();
+  };
+  document.getElementById("connect").onclick = async () => {
+    const tok = document.getElementById("tok").value.trim();
+    if (!tok) return setMsg("Enter a token.", "err");
+    setMsg("Checking…", "info");
+    const r = await api().save_token(tok);
+    if (!r.ok) return setMsg("❌ " + esc(r.error), "err");
+    ST.token = tok; ST.login = r.login; ST.owner = r.login;
+    connDot.style.background = "var(--ok)";
+    setMsg("✅ Connected as <b>" + esc(r.login) + "</b> (token stored in " + esc(r.stored) + ").", "ok");
+    setTimeout(() => { ST.step = 1; render(); }, 700);
+  };
+}
+
+/* ---------- STEP 1: TikTok ---------- */
+async function stepTikTok() {
+  panel.innerHTML = `
+    <h2>Connect TikTok</h2>
+    <p class="hint">Log in to TikTok in your normal browser, then read the session cookie here.
+      Reading works best when that browser is <b>closed</b>. Safari is not supported on Windows.</p>
+    <div class="row">
+      <div><label>Browser</label><select id="src"></select></div>
+      <button class="ghost" id="reload">Rescan</button>
+      <button id="grab">Read cookies</button>
+    </div>
+    <label>Or paste the cookie value manually (fallback)</label>
+    <textarea id="paste" placeholder="sessionid=...; or just the sessionid value"></textarea>
+    <div class="btns"><button class="ghost" id="usepaste">Use pasted value</button></div>
+    <label>sessionid</label>
+    <input type="text" id="sid" value="${esc(ST.sessionid)}" />
+    <div class="msg"></div>`;
+  await fillSources();
+  document.getElementById("reload").onclick = fillSources;
+  document.getElementById("grab").onclick = async () => {
+    const id = document.getElementById("src").value;
+    if (!id) return setMsg("No browser source found.", "err");
+    setMsg("Reading cookies… (close the browser if it errors)", "info");
+    const r = await api().read_cookies(id);
+    if (!r.ok) return setMsg("❌ " + esc(r.error), "err");
+    ST.sessionid = r.sessionid; ST.cookieText = r.cookie_text;
+    document.getElementById("sid").value = r.sessionid;
+    setMsg(r.sessionid ? "✅ sessionid captured (" + r.count + " cookies)." : "⚠️ No sessionid found — are you logged in?", r.sessionid ? "ok" : "err");
+  };
+  document.getElementById("usepaste").onclick = async () => {
+    const raw = document.getElementById("paste").value.trim();
+    if (!raw) return setMsg("Nothing pasted.", "err");
+    const r = await api().parse_cookie(raw);
+    if (!r.ok) return setMsg("❌ " + esc(r.error), "err");
+    ST.sessionid = r.sessionid; ST.cookieText = r.cookie_text || raw;
+    document.getElementById("sid").value = r.sessionid;
+    setMsg(r.sessionid ? "✅ Parsed sessionid." : "⚠️ Could not find a sessionid in that text.", r.sessionid ? "ok" : "err");
+  };
+  addNav(2);
+}
+async function fillSources() {
+  const sel = document.getElementById("src");
+  sel.innerHTML = "<option>loading…</option>";
+  const r = await api().list_browsers();
+  if (!r.ok) { sel.innerHTML = "<option>error</option>"; return setMsg("❌ " + esc(r.error), "err"); }
+  if (!r.sources.length) { sel.innerHTML = "<option value=''>(no supported browser found)</option>"; return; }
+  sel.innerHTML = r.sources.map(s => `<option value="${esc(s.id)}">${esc(s.label)}</option>`).join("");
+}
+
+/* ---------- STEP 2: Telegram ---------- */
+function stepTelegram() {
+  panel.innerHTML = `
+    <h2>Telegram notifications <span class="hint">(optional)</span></h2>
+    <p class="hint">Telegram has no API to create a bot, so this one step happens in the app.
+      1) Open <a href="#" id="bf">@BotFather</a> and send <code>/newbot</code>.
+      2) Paste the token below, press Start in your bot, then click Find chat id.</p>
+    <label>Bot token</label>
+    <input type="password" id="tgtok" value="${esc(ST.tgToken)}" placeholder="123456789:ABC..." />
+    <div class="btns">
+      <button id="openBF">Open BotFather</button>
+      <button class="ghost" id="findcid">Find chat id</button>
+      <button class="ghost" id="skip">Skip</button>
+    </div>
+    <label>Chat id</label>
+    <input type="text" id="cid" value="${esc(ST.tgChatId)}" />
+    <div class="msg"></div>`;
+  document.getElementById("openBF").onclick = (e) => { e.preventDefault(); const a=document.createElement("a"); a.href="https://t.me/BotFather"; a.target="_blank"; a.click(); };
+  document.getElementById("bf").onclick = document.getElementById("openBF").onclick;
+  document.getElementById("findcid").onclick = async () => {
+    const tok = document.getElementById("tgtok").value.trim();
+    ST.tgToken = tok;
+    setMsg("Checking updates… (press Start in your bot first)", "info");
+    const r = await api().telegram_find_chat_id(tok);
+    if (!r.ok) return setMsg("❌ " + esc(r.error), "err");
+    document.getElementById("cid").value = r.chat_id; ST.tgChatId = r.chat_id;
+    setMsg("✅ Chat id: <b>" + esc(r.chat_id) + "</b>", "ok");
+  };
+  document.getElementById("skip").onclick = () => { ST.step = 3; render(); };
+  addNav(3, async () => { ST.tgToken = document.getElementById("tgtok").value.trim();
+                          ST.tgChatId = document.getElementById("cid").value.trim(); });
+}
+
+/* ---------- STEP 3: Repo & Run ---------- */
+function stepRun() {
+  panel.innerHTML = `
+    <h2>Repository &amp; options</h2>
+    <p class="hint">The app will fork the source repo into your account, enable Actions and write all secrets.</p>
+    <div class="row">
+      <div><label>Source repo</label><input type="text" id="src_r" value="${esc(ST.sourceRepo)}" /></div>
+      <div><label>New repo name</label><input type="text" id="name" value="${esc(ST.repoName || 'tiktok-streak')}" /></div>
+    </div>
+    <label>Message</label><input type="text" id="message" value="${esc(ST.message)}" />
+    <label>Friends (comma separated)</label><input type="text" id="friends" value="${esc(ST.friends)}" placeholder="alice, bob" />
+    <div class="row">
+      <div><label>Video URL (optional)</label><input type="text" id="video" value="${esc(ST.videoUrl)}" /></div>
+      <div><label>Share times</label><input type="text" id="shares" value="${esc(ST.shareTimes)}" /></div>
+    </div>
+    <label>Photo path (optional, on the runner)</label><input type="text" id="photo" value="${esc(ST.photoPath)}" />
+    <div class="btns"><button id="go">Fork, configure &amp; run</button></div>
+    <div class="log"></div>
+    <div class="msg"></div>`;
+  document.getElementById("go").onclick = async () => {
+    ST.sourceRepo = document.getElementById("src_r").value.trim();
+    ST.repoName = document.getElementById("name").value.trim();
+    ST.message = document.getElementById("message").value;
+    ST.friends = document.getElementById("friends").value.trim();
+    ST.videoUrl = document.getElementById("video").value.trim();
+    ST.shareTimes = parseInt(document.getElementById("shares").value.trim() || "2", 10);
+    ST.photoPath = document.getElementById("photo").value.trim();
+
+    if (!ST.sessionid) return setMsg("sessionid is empty — go back to the TikTok step.", "err");
+    if (!ST.repoName) return setMsg("Repo name is empty.", "err");
+
+    const secrets = {
+      TIKTOK_SESSION_ID: ST.sessionid,
+      MESSAGE: ST.message,
+      FRIENDS_LIST: ST.friends,
+    };
+    if (ST.cookieText) secrets.TIKTOK_COOKIES = ST.cookieText;
+    if (ST.videoUrl) { secrets.STREAK_VIDEO_URL = ST.videoUrl; secrets.SHARE_TIMES = String(ST.shareTimes); }
+    if (ST.photoPath) secrets.PHOTO_PATH = ST.photoPath;
+    if (ST.tgToken) secrets.TELEGRAM_BOT_TOKEN = ST.tgToken;
+    if (ST.tgChatId) secrets.TELEGRAM_CHAT_ID = ST.tgChatId;
+
+    setMsg("Working… this can take ~30s.", "info");
+    showLog("Starting…");
+    const r = await api().provision({
+      token: ST.token, source_repo: ST.sourceRepo, owner: ST.owner,
+      repo_name: ST.repoName, secrets, dispatch: true,
+    });
+    showLog((r.steps || []).join("\n"));
+    if (!r.ok) return setMsg("❌ " + esc(r.error), "err");
+    let extra = `<br>Repo: <a href="https://github.com/${esc(r.full_name)}" target="_blank">${esc(r.full_name)}</a>`;
+    if (r.actions_url) extra += ` &middot; <a href="${esc(r.actions_url)}" target="_blank">Actions</a>`;
+    if (r.run && r.run.html_url) extra += `<br>Run: <b>${esc(r.run.status || "")}</b> ${esc(r.run.conclusion || "")} — <a href="${esc(r.run.html_url)}" target="_blank">open</a>`;
+    setMsg("✅ Done." + extra, "ok");
+  };
+  addNav(-1);
+}
+
+function addNav(nextStep, onBefore) {
+  const btns = panel.querySelector(".btns") || panel;
+  const wrap = document.createElement("div");
+  wrap.className = "btns";
+  if (ST.step > 0) {
+    const back = document.createElement("button");
+    back.className = "ghost"; back.textContent = "← Back";
+    back.onclick = () => { ST.step--; render(); };
+    wrap.appendChild(back);
+  }
+  if (nextStep >= 0) {
+    const nx = document.createElement("button");
+    nx.textContent = "Continue →";
+    nx.onclick = async () => { if (onBefore) await onBefore(); ST.step = nextStep; render(); };
+    wrap.appendChild(nx);
+  }
+  panel.appendChild(wrap);
+}
+
+function render() {
+  renderSteps();
+  if (ST.step === 0) stepGithub();
+  else if (ST.step === 1) stepTikTok();
+  else if (ST.step === 2) stepTelegram();
+  else stepRun();
+}
+
+window.addEventListener("pywebviewready", async () => {
+  connDot.style.background = "var(--accent)";
+  try { const r = await api().load_token(); if (r && r.token) ST.token = r.token; } catch (e) {}
+  render();
+});
+// Fallback if pywebviewready fired before this script attached
+setTimeout(() => { if (!panel.innerHTML) render(); }, 400);
+</script>
+</body>
+</html>

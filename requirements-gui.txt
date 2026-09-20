@@ -1,0 +1,11 @@
+# Desktop-only dependencies for the setup GUI (gui/).
+# Kept separate from requirements.txt so the Linux GitHub Actions runner never
+# tries to install pywin32. Install on your PC with:
+#     pip install -r requirements.txt -r requirements-gui.txt
+#
+# Bounds, not exact pins - run `pip freeze` afterwards if you want to lock them.
+pywebview>=5
+PyNaCl>=1.5            # sealed-box encryption for GitHub Actions secrets
+pycryptodome>=3.19     # AES-GCM for Chromium cookie decryption
+pywin32>=306; sys_platform == "win32"   # DPAPI for Chromium cookie key
+keyring>=24            # optional; OS keychain for the GitHub token

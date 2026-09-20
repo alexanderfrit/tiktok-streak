@@ -4,30 +4,13 @@ import logging, os, urllib.parse, urllib.request
 logger = logging.getLogger("tiktok-streak")
 
 
-def get_wib_timestamp() -> str:
-    wib = timezone(timedelta(hours=7))
-    return datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S WIB")
-
-
-def notify_telegram(title: str, details: str, action_tip: str = None, is_error: bool = False) -> bool:
+def _post_telegram(text: str) -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         logger.debug("Telegram credentials not set; skipping notification.")
         return False
 
-    status_icon = "❌" if is_error else "✅"
-    wib_time = get_wib_timestamp()
-
-    msg_lines = [
-        f"{status_icon} *{title}*",
-        f"🕒 `{wib_time}`",
-        f"📝 {details}",
-    ]
-    if action_tip:
-        msg_lines.append(f"💡 *Action:* `{action_tip}`")
-
-    text = "\n".join(msg_lines)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = urllib.parse.urlencode({
         "chat_id": chat_id,
@@ -35,7 +18,6 @@ def notify_telegram(title: str, details: str, action_tip: str = None, is_error: 
         "parse_mode": "Markdown",
         "disable_web_page_preview": "true",
     }).encode("utf-8")
-
     try:
         req = urllib.request.Request(
             url,
@@ -49,12 +31,27 @@ def notify_telegram(title: str, details: str, action_tip: str = None, is_error: 
         return False
 
 
-def notify_streak_summary(results: list, total_duration: int) -> bool:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        return False
+def get_wib_timestamp() -> str:
+    wib = timezone(timedelta(hours=7))
+    return datetime.now(wib).strftime("%Y-%m-%d %H:%M:%S WIB")
 
+
+def notify_telegram(title: str, details: str, action_tip: str = None, is_error: bool = False) -> bool:
+    status_icon = "❌" if is_error else "✅"
+    wib_time = get_wib_timestamp()
+
+    msg_lines = [
+        f"{status_icon} *{title}*",
+        f"🕒 `{wib_time}`",
+        f"📝 {details}",
+    ]
+    if action_tip:
+        msg_lines.append(f"💡 *Action:* `{action_tip}`")
+
+    return _post_telegram("\n".join(msg_lines))
+
+
+def notify_streak_summary(results: list, total_duration: int) -> bool:
     has_failures = any(r.get("failures") for r in results)
     status_icon = "⚠️" if has_failures else "✅"
     wib_time = get_wib_timestamp()
@@ -82,24 +79,4 @@ def notify_streak_summary(results: list, total_duration: int) -> bool:
         lines.append("")
 
     lines.append(f"⏱️ Total Duration: `{total_duration}s`")
-    text = "\n".join(lines)
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": "true",
-    }).encode("utf-8")
-
-    try:
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception as e:
-        logger.warning("Failed sending Telegram summary: %s", e)
-        return False
+    return _post_telegram("\n".join(lines))

@@ -1,7 +1,8 @@
-import logging, sys, time
+import logging, os, random, sys, time
 from src.browser import init_browser, authenticate_session
 from src.config import load_accounts
 from src.actions import send_streak_message
+from src.share import install_ws_hook, install_media_guard, parse_aweme_id, find_template, send_share_card, send_photo_card
 from src.notifier import notify_streak_summary, notify_telegram
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
@@ -36,12 +37,19 @@ def run() -> None:
     try:
         browser, wait = init_browser(headless=headless)
 
+        # Hook WebSockets before any navigation so the IM client's sockets are captured.
+        install_ws_hook(browser)
+        # Guard the DM file input before navigation so photo sends work too.
+        install_media_guard(browser)
+
         for a_idx, account in enumerate(accounts, start=1):
             logger.info("--- [%d/%d] Processing Account: %s ---", a_idx, len(accounts), account.name)
             acc_result = {
                 "name": account.name,
                 "friends_total": len(account.friends),
                 "sent": 0,
+                "shares_sent": 0,
+                "photos_sent": 0,
                 "failures": [],
             }
 
@@ -61,8 +69,16 @@ def run() -> None:
                 all_results.append(acc_result)
                 continue
 
-            for f_idx, friend in enumerate(account.friends, start=1):
-                logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(account.friends), friend)
+            # Shuffle order + cap so runs don't hit friends in a fixed pattern.
+            friends = list(account.friends)
+            random.shuffle(friends)
+            cap = int(os.getenv("DAILY_CAP") or 0)
+            item_id = parse_aweme_id(account.video_url) if account.video_url else None
+            if account.video_url and not item_id:
+                logger.warning("[%s] Could not parse video id from video_url=%r.", account.name, account.video_url)
+
+            for f_idx, friend in enumerate(friends, start=1):
+                logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(friends), friend)
                 res = send_streak_message(
                     browser=browser,
                     friend=friend,
@@ -75,6 +91,42 @@ def run() -> None:
                 else:
                     err = f"@{friend}: {res['error']}"
                     acc_result["failures"].append(err)
+
+                # Send N video-share cards (streak progression needs more than one).
+                if item_id and account.share_times > 0:
+                    template = find_template(browser)
+                    if not template:
+                        acc_result["failures"].append(f"@{friend}: no share template frame")
+                    else:
+                        sent_here = 0
+                        for s_idx in range(account.share_times):
+                            sres = send_share_card(browser, friend, item_id, template=template)
+                            if sres["sent"]:
+                                sent_here += 1
+                                acc_result["shares_sent"] += 1
+                                logger.info("[%s] Share card %d/%d delivered to @%s.", account.name, s_idx + 1, account.share_times, friend)
+                            else:
+                                acc_result["failures"].append(f"@{friend} share {s_idx + 1}: {sres['error']}")
+                            if s_idx + 1 < account.share_times:
+                                time.sleep(random.uniform(1.5, 3.0))
+                        if sent_here == 0:
+                            logger.warning("[%s] No share cards delivered to @%s.", account.name, friend)
+
+                # Send 1 photo (streak progression also needs a media message).
+                if account.photo_path:
+                    pres = send_photo_card(browser, friend, account.photo_path)
+                    if pres["sent"]:
+                        acc_result["photos_sent"] += 1
+                        logger.info("[%s] Photo delivered to @%s.", account.name, friend)
+                    else:
+                        acc_result["failures"].append(f"@{friend} photo: {pres['error']}")
+
+                if cap and acc_result["sent"] >= cap:
+                    logger.info("[%s] Daily cap of %d reached; stopping.", account.name, cap)
+                    break
+
+                if f_idx < len(friends):
+                    time.sleep(random.uniform(3.0, 8.0))
 
             all_results.append(acc_result)
 

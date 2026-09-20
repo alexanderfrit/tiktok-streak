@@ -1,13 +1,13 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
-import logging, os, time
+import json, logging, os, time
 from .exceptions import SessionExpiredError
 
 logger = logging.getLogger("tiktok-streak")
 
 
-def init_browser(headless: bool = None) -> tuple:
+def init_browser(headless: bool = None, capture: bool = False) -> tuple:
     if headless is None:
         env_headless = os.getenv("HEADLESS", "true").strip().lower()
         headless = env_headless not in ("false", "0", "no")
@@ -25,6 +25,10 @@ def init_browser(headless: bool = None) -> tuple:
 
     if headless:
         chrome_options.add_argument("--headless=new")
+
+    if capture:
+        # Enable network traffic logging so capture scripts can inspect DM requests.
+        chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     browser = webdriver.Chrome(options=chrome_options)
 
@@ -134,10 +138,13 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
 
 
 def dump_debug_diagnostics(browser, label: str = "timeout") -> None:
+    # Timestamp the artifact so repeated failures in one run don't clobber each other.
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    name = f"debug_{label}_{stamp}"
     try:
-        browser.save_screenshot(f"debug_{label}.png")
-        with open(f"debug_{label}.html", "w", encoding="utf-8") as file:
+        browser.save_screenshot(f"{name}.png")
+        with open(f"{name}.html", "w", encoding="utf-8") as file:
             file.write(browser.page_source)
-        logger.info("Saved diagnostics: debug_%s.png, debug_%s.html", label, label)
+        logger.info("Saved diagnostics: %s.png, %s.html", name, name)
     except Exception as e:
         logger.warning("Failed saving debug diagnostics: %s", e)

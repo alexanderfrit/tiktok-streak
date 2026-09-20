@@ -8,3 +8,11 @@ friends.csv
 accounts.json
 debug_*.png
 debug_*.html
+capture_share_*.json
+capture_ws_*.json
+probe_*.json
+_*.txt
+_*.log
+_*.json
+_*.py
+_meta_verify.json

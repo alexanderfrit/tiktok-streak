@@ -39,6 +39,40 @@ tiktok-streak/
 
 ---
 
+## 🖥️ One-Click Setup GUI (Recommended)
+
+Prefer not to touch tokens, secrets and JSON by hand? There is a desktop wizard
+(`gui/`) that walks you through the whole setup in one window — GitHub login,
+fork, enabling Actions, writing every secret, Telegram, and the TikTok session.
+
+```bash
+pip install -r requirements.txt -r requirements-gui.txt
+python -m gui.app
+```
+
+What it does for you:
+
+1. **GitHub** — paste a fine-grained PAT (scopes: `Contents`, `Workflows`,
+   `Secrets`, `Administration` read/write). It forks the source repo into your
+   account, **enables Actions** (forks have them off by default) and writes all
+   repo secrets with correct names and formats.
+2. **TikTok** — reads the `sessionid` straight from your installed browser's
+   cookie store (Chrome, Edge, Brave, Chromium, Vivaldi, Opera, Firefox on
+   Windows). Log in to TikTok in that browser first, then click *Read cookies*.
+   Close the browser if reading fails (the cookie DB is locked while it runs).
+   A **manual paste** field is always available as a fallback (Safari and any
+   browser without on-disk cookies are not supported).
+3. **Telegram** — reminders only; it links you to `@BotFather` (Telegram has no
+   API to create a bot) and auto-detects your chat id via `getUpdates`.
+4. **Repo & Run** — sets your message, friends, video share and photo options,
+   then dispatches the workflow and shows the run status.
+
+The GUI needs `pywebview`, `PyNaCl` and (Windows) `pywin32` + `pycryptodome`;
+these ship in `requirements-gui.txt` and are **not** installed on the cloud
+runner, so the automated workflow is unaffected.
+
+---
+
 ## 🛠️ Quick Start (Local Setup)
 
 ### 1. Install Dependencies

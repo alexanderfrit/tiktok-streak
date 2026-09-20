@@ -16,6 +16,8 @@ from src.actions import (
     type_human_like,
     send_streak_message,
 )
+from src.browser import parse_cookie_payload
+from src.share import parse_aweme_id
 
 # 1. Test WIB timestamp format (YYYY-MM-DD HH:MM:SS WIB)
 wib_ts = get_wib_timestamp()
@@ -99,4 +101,94 @@ with patch("src.actions.open_inbox_chat") as mock_open, \
     assert status["sent"] is True
     assert status["error"] is None
 
-print("All 9 test suites in test_runner.py passed successfully!")
+# 10. Test Send Verification: message still in composer => not sent
+mock_browser.current_url = "https://www.tiktok.com/messages?lang=vi"
+with patch("src.actions.open_inbox_chat"), \
+     patch("src.actions.find_element_by_candidates") as mock_find, \
+     patch("time.sleep", return_value=None):
+    mock_input = MagicMock()
+    mock_input.text = "hello"  # composer retains the text, RETURN did not submit
+    mock_find.return_value = mock_input
+    status = send_streak_message(mock_browser, "friend1", "hello")
+    assert status["sent"] is False
+    assert "not confirmed" in (status["error"] or "")
+
+# 11. Test Cookie Payload Parsing (JSON dict / JSON list / header string / raw token)
+assert parse_cookie_payload('{"sessionid": "abc", "sid_tt": "abc"}') == {"sessionid": "abc", "sid_tt": "abc"}
+assert parse_cookie_payload('[{"name": "sessionid", "value": "xyz"}]') == {"sessionid": "xyz"}
+assert parse_cookie_payload("sessionid=foo; sid_tt=foo") == {"sessionid": "foo", "sid_tt": "foo"}
+assert parse_cookie_payload("rawtoken") == {"sessionid": "rawtoken", "sessionid_ss": "rawtoken", "sid_tt": "rawtoken"}
+
+# 12. Test Video URL Parsing (aweme id extraction)
+assert parse_aweme_id("https://www.tiktok.com/@user/video/7684838545659317524") == "7684838545659317524"
+assert parse_aweme_id("https://www.tiktok.com/@user/video/7684838545659317524?is_from_webapp=1") == "7684838545659317524"
+assert parse_aweme_id("https://www.tiktok.com/@u/photo/1234567890123456789") == "1234567890123456789"
+assert parse_aweme_id("7684838545659317524") == "7684838545659317524"
+assert parse_aweme_id("") is None
+assert parse_aweme_id("https://vt.tiktok.com/abc") is None
+
+# 13. Test video config: env fallback + share_times
+with patch.dict(os.environ, {
+    "TIKTOK_SESSION_ID": "c",
+    "STREAK_VIDEO_URL": "https://www.tiktok.com/@u/video/1111111111111111111",
+    "SHARE_TIMES": "3",
+}, clear=True):
+    accs = load_accounts(config_file="non_existent.json")
+    assert accs[0].video_url.endswith("1111111111111111111")
+    assert accs[0].share_times == 3
+
+# 14. Test video config: per-account value in accounts.json wins
+sample_video = [{"name": "A", "session_id": "c1", "friends": ["f1"],
+                 "video_url": "https://www.tiktok.com/@u/video/2222222222222222222",
+                 "share_times": 2}]
+with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tf:
+    json.dump(sample_video, tf)
+    tf_video = tf.name
+try:
+    accs = load_accounts(config_file=tf_video)
+    assert accs[0].video_url.endswith("2222222222222222222")
+    assert accs[0].share_times == 2
+finally:
+    os.remove(tf_video)
+
+# 15. Test photo config: env fallback + per-account value wins
+with patch.dict(os.environ, {
+    "TIKTOK_SESSION_ID": "c",
+    "PHOTO_PATH": "assets/dummy_photo.png",
+}, clear=True):
+    accs = load_accounts(config_file="non_existent.json")
+    assert accs[0].photo_path == "assets/dummy_photo.png"
+
+sample_photo = [{"name": "A", "session_id": "c1", "friends": ["f1"],
+                 "photo_path": "assets/custom.png"}]
+with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tf:
+    json.dump(sample_photo, tf)
+    tf_photo = tf.name
+try:
+    accs = load_accounts(config_file=tf_photo)
+    assert accs[0].photo_path == "assets/custom.png"
+finally:
+    os.remove(tf_photo)
+
+# 16. Test GUI wiring: secret names cover the workflow, browser reader is importable
+try:
+    from gui.app import SECRET_NAMES as GUI_SECRETS
+    from gui import browsers as gui_browsers
+    _gui_ok = True
+except Exception as _e:
+    _gui_ok = False
+    _gui_err = str(_e)
+assert _gui_ok, f"GUI modules failed to import: {_gui_err}"
+
+# every secrets.* referenced by the workflow must be settable by the GUI
+_wf = open(".github/workflows/streak.yml", encoding="utf-8").read()
+_wf_secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", _wf))
+assert _wf_secrets, "no secrets referenced in the workflow?"
+assert _wf_secrets.issubset(set(GUI_SECRETS)), \
+    f"workflow uses secrets the GUI cannot set: {_wf_secrets - set(GUI_SECRETS)}"
+
+# browser source listing must not raise (returns [] on unsupported platforms)
+_sources = gui_browsers.list_sources()
+assert isinstance(_sources, list)
+
+print("All 16 test suites in test_runner.py passed successfully!")
