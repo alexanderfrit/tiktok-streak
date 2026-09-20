@@ -121,7 +121,7 @@ Edit `accounts.json`:
   {
     "name": "Main_Account",
     "session_id": "sessionid_cookie_1",
-    "friends": ["celuley"],
+    "friends": ["friend_one"],
     "message": "🔥 Daily Streak"
   },
   {

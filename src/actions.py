@@ -128,7 +128,7 @@ def open_inbox_chat(browser, friend: str) -> None:
     dismiss_modals(browser)
 
     # 1. Existing conversation thread in the left pane. The thread shows the
-    # display name ("cel"), which the handle ("celuley") may not contain either
+    # display name, which the handle may not contain either
     # way in a naive substring test - OPEN_THREAD_JS matches both directions.
     try:
         hit = browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))

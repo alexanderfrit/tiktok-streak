@@ -544,8 +544,8 @@ MEDIA_FILE_GUARD_JS = r"""
 
 # Open @friend's conversation from the inbox list (nickname element), no public
 # profile route. __NAME__ is replaced with the JSON-quoted handle.
-# Match both directions: the thread's nickname may be a display name ("cel")
-# that the handle ("celuley") contains, or vice versa.
+# Match both directions: the thread's nickname may be a display name that the
+# handle contains, or vice versa.
 OPEN_THREAD_JS = r"""
 return (function () {
   var name = __NAME__;
