@@ -90,6 +90,13 @@ class GitHub:
         except GitHubError:
             return False
 
+    def enable_workflow(self, full_name: str, workflow_file: str) -> None:
+        # A forked repo ships its workflows disabled. Repo-level Actions being on
+        # is not enough: dispatching a still-disabled workflow returns 422
+        # ("Cannot trigger a 'workflow_dispatch' on a disabled workflow"), so the
+        # workflow itself must be set to active first.
+        self._req("PUT", f"/repos/{full_name}/actions/workflows/{workflow_file}/enable")
+
     def secret_key(self, full_name: str) -> dict:
         return self._req("GET", f"/repos/{full_name}/actions/secrets/public-key")
 

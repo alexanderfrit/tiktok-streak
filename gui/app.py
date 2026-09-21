@@ -231,6 +231,12 @@ class Api:
 
             steps.append("Enabling Actions ...")
             gh.enable_actions(full)
+            # A fork ships its workflow disabled; dispatching it then fails 422.
+            steps.append("Enabling the workflow ...")
+            try:
+                gh.enable_workflow(full, WORKFLOW_FILE)
+            except GitHubError as e:
+                steps.append(f"(could not enable workflow yet: {e})")
 
             ref = opts.get("ref") or gh.default_branch(full)
             steps.append("Writing repository secrets ...")
@@ -316,6 +322,10 @@ class Api:
         try:
             gh = GitHub(token)
             r = ref or gh.default_branch(full_name)
+            try:
+                gh.enable_workflow(full_name, WORKFLOW_FILE)  # a disabled workflow rejects dispatch (422)
+            except GitHubError:
+                pass
             gh.dispatch(full_name, WORKFLOW_FILE, r)
             return {"ok": True}
         except Exception as e:

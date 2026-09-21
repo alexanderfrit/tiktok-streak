@@ -1,5 +1,5 @@
 from datetime import datetime, timezone, timedelta
-import logging, os, urllib.parse, urllib.request
+import logging, os, urllib.error, urllib.parse, urllib.request
 
 logger = logging.getLogger("tiktok-streak")
 
@@ -12,23 +12,31 @@ def _post_telegram(text: str) -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": "true",
-    }).encode("utf-8")
-    try:
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception as e:
-        logger.warning("Failed sending Telegram alert: %s", e)
-        return False
+    # Markdown first for nice formatting; if Telegram rejects it (400 = bad
+    # entities, e.g. an unbalanced _ in a username), resend as plain text so the
+    # alert is never lost to formatting.
+    for parse_mode in ("Markdown", None):
+        fields = {"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"}
+        if parse_mode:
+            fields["parse_mode"] = parse_mode
+        payload = urllib.parse.urlencode(fields).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError as e:
+            if parse_mode and e.code == 400:
+                continue  # retry without formatting
+            logger.warning("Failed sending Telegram alert: %s", e)
+            return False
+        except Exception as e:
+            logger.warning("Failed sending Telegram alert: %s", e)
+            return False
+    return False
 
 
 def get_wib_timestamp() -> str:
