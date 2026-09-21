@@ -628,6 +628,34 @@ def _wait_media_button(browser, timeout: float) -> bool:
     return False
 
 
+# A sent message shows up as a new chat bubble; that DOM change is a more
+# reliable "did it send" signal than the picture_card WS echo (photo sends can
+# go over HTTP, and the echo is not always delivered).
+_CHAT_ITEMS_JS = "return document.querySelectorAll('[data-e2e=\"dm-new-chat-item\"]').length;"
+
+# The media modal's Send button is on screen only while the modal is open - a
+# successful send closes it, so its presence means the send has not gone yet.
+SEND_BTN_PRESENT_JS = r"""
+return (function () {
+  var n = document.querySelectorAll('button, [role="button"]');
+  for (var i = 0; i < n.length; i++) {
+    var x = n[i];
+    if (x.offsetParent === null) continue;
+    var t = (x.innerText || '').trim();
+    if (/^send\b/i.test(t) && t.length < 24) return true;
+  }
+  return false;
+})();
+"""
+
+
+def _chat_item_count(browser) -> int:
+    try:
+        return int(browser.execute_script(_CHAT_ITEMS_JS) or 0)
+    except Exception:
+        return 0
+
+
 def send_photo_card(browser, friend: str, photo_path: str,
                     open_retries: int = 4, per_try_wait: float = 8.0) -> dict:
     """Send one photo to @friend via the inbox media button.
@@ -664,6 +692,7 @@ def send_photo_card(browser, friend: str, photo_path: str,
         if not opened:
             return {"sent": False, "error": "media button never rendered after retries"}
 
+        items_before = _chat_item_count(browser)
         before_recv = browser.execute_script("return (window.__recv || []).length;") or 0
         browser.execute_script(CLICK_MEDIA_JS)
 
@@ -680,27 +709,29 @@ def send_photo_card(browser, friend: str, photo_path: str,
 
         inp.send_keys(photo_path)
 
-        clicked = False
+        # The media modal must open (Send button appears) before we can send.
+        modal_seen = False
         for _ in range(20):
-            if (browser.execute_script(CLICK_SEND_JS) or {}).get("clicked"):
-                clicked = True
+            if browser.execute_script(SEND_BTN_PRESENT_JS):
+                modal_seen = True
                 break
             time.sleep(0.5)
-        if not clicked:  # real-click fallback
-            for xp in ["//button[starts-with(normalize-space(.), 'Send')]",
-                       "//button[contains(., 'Send')]"]:
-                els = [e for e in browser.find_elements(By.XPATH, xp) if e.is_displayed()]
-                if els:
-                    els[-1].click()
-                    clicked = True
-                    break
-        if not clicked:
-            return {"sent": False, "error": "Send button in media modal not found"}
+        if not modal_seen:
+            return {"sent": False, "error": "media preview modal did not open after choosing a file"}
 
-        # Confirm via the picture_card frame the server echoes on the socket.
+        # Click Send, then confirm by DOM. A successful send closes the modal and
+        # adds a chat bubble; if the modal is still open the click missed, so try
+        # again (up to a few times) before giving up.
         import base64 as _b64
-        deadline = time.time() + 15
+        deadline = time.time() + 20
+        clicked_once = False
         while time.time() < deadline:
+            still_modal = browser.execute_script(SEND_BTN_PRESENT_JS)
+            if not still_modal and _chat_item_count(browser) > items_before:
+                logger.info("[%s] photo confirmed by new chat bubble.", friend)
+                return {"sent": True, "error": None}
+
+            # Bonus signal: the server echoed a picture_card/decrypt_key frame.
             recv = browser.execute_script("return (window.__recv || []).slice(%d);" % int(before_recv)) or []
             for r in recv:
                 if not r.get("b64"):
@@ -710,9 +741,31 @@ def send_photo_card(browser, friend: str, photo_path: str,
                 except Exception:
                     continue
                 if "picture_card" in blob or "decrypt_key" in blob:
+                    logger.info("[%s] photo confirmed by server frame.", friend)
                     return {"sent": True, "error": None}
-            time.sleep(0.5)
-        return {"sent": False, "error": "no picture_card frame seen (timeout)"}
+
+            if still_modal:
+                # Modal still up: the send did not register. Re-click it.
+                clicked = (browser.execute_script(CLICK_SEND_JS) or {}).get("clicked")
+                if not clicked:  # real-click fallback on the modal's Send button
+                    for xp in ["//button[starts-with(normalize-space(.), 'Send')]",
+                               "//button[contains(., 'Send')]"]:
+                        els = [e for e in browser.find_elements(By.XPATH, xp) if e.is_displayed()]
+                        if els:
+                            els[-1].click()
+                            clicked = True
+                            break
+                clicked_once = clicked_once or bool(clicked)
+                if not clicked:
+                    return {"sent": False, "error": "Send button in media modal not found"}
+            time.sleep(1.0)
+
+        # Final check: the modal may have closed and the bubble appeared late.
+        if _chat_item_count(browser) > items_before:
+            return {"sent": True, "error": None}
+        if browser.execute_script(SEND_BTN_PRESENT_JS):
+            return {"sent": False, "error": "photo not sent: media modal stayed open after Send"}
+        return {"sent": False, "error": "photo send unconfirmed (no new chat bubble, no server frame)"}
     except Exception as e:
         logger.error("Photo card to @%s failed: %s", friend, e)
         return {"sent": False, "error": str(e)}
