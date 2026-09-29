@@ -649,11 +649,54 @@ return (function () {
 """
 
 
+# Content of the newest chat bubble. A bubble appearing after the Send click is
+# NOT proof the photo was delivered: TikTok renders an "unsupported media"
+# placeholder bubble (or an optimistic bubble that never syncs). Read the bubble
+# so a failed media send is not logged as success.
+LAST_CHAT_JS = r"""
+return (function () {
+  var items = document.querySelectorAll('[data-e2e="dm-new-chat-item"]');
+  if (!items.length) return null;
+  var last = items[items.length - 1];
+  return {
+    text: (last.innerText || '').trim().slice(0, 160),
+    imgs: last.querySelectorAll('img').length,
+    len: (last.innerHTML || '').length
+  };
+})();
+"""
+
+
 def _chat_item_count(browser) -> int:
     try:
         return int(browser.execute_script(_CHAT_ITEMS_JS) or 0)
     except Exception:
         return 0
+
+
+# TikTok renders a placeholder bubble when it refuses the media ("This message
+# type isn't supported"). That is a *failed* send, so it must never count as ok.
+_UNSUPPORTED_TEXT = ("isn't supported", "is not supported", "not supported",
+                     "unsupported", "không được hỗ trợ")
+
+
+def _last_chat_bubble(browser) -> dict | None:
+    try:
+        return browser.execute_script(LAST_CHAT_JS)
+    except Exception:
+        return None
+
+
+def _bubble_is_photo(b: dict | None) -> bool:
+    """True only when the newest bubble looks like a delivered photo."""
+    if not b:
+        return False
+    t = (b.get("text") or "").lower()
+    if any(s in t for s in _UNSUPPORTED_TEXT):
+        return False
+    if b.get("imgs", 0) > 0:            # a real photo bubble holds an <img>
+        return True
+    return any(s in t for s in ("sent a", "you sent", "photo", "ảnh"))
 
 
 def send_photo_card(browser, friend: str, photo_path: str,
@@ -728,6 +771,12 @@ def send_photo_card(browser, friend: str, photo_path: str,
         while time.time() < deadline:
             still_modal = browser.execute_script(SEND_BTN_PRESENT_JS)
             if not still_modal and _chat_item_count(browser) > items_before:
+                bubble = _last_chat_bubble(browser)
+                if not _bubble_is_photo(bubble):
+                    # Bubble appeared but is a placeholder / not the image: the
+                    # send failed even though a new item showed up.
+                    logger.warning("[%s] new bubble is not a photo: %s", friend, bubble)
+                    return {"sent": False, "error": f"media not delivered (bubble={bubble})"}
                 logger.info("[%s] photo confirmed by new chat bubble.", friend)
                 return {"sent": True, "error": None}
 
@@ -762,7 +811,10 @@ def send_photo_card(browser, friend: str, photo_path: str,
 
         # Final check: the modal may have closed and the bubble appeared late.
         if _chat_item_count(browser) > items_before:
-            return {"sent": True, "error": None}
+            bubble = _last_chat_bubble(browser)
+            if _bubble_is_photo(bubble):
+                return {"sent": True, "error": None}
+            return {"sent": False, "error": f"media not delivered (bubble={bubble})"}
         if browser.execute_script(SEND_BTN_PRESENT_JS):
             return {"sent": False, "error": "photo not sent: media modal stayed open after Send"}
         return {"sent": False, "error": "photo send unconfirmed (no new chat bubble, no server frame)"}
