@@ -227,7 +227,15 @@ from src.share import WS_HOOK_JS
 assert "window.__pb.enc(data)" in WS_HOOK_JS, "WS hook must encode string frames"
 assert "__tmplB64" in WS_HOOK_JS, "WS hook must stash the borrowable frame"
 
-# 22. Device Flow refuses to start without an OAuth client id
+# 22b. Photo confirm must not accept a placeholder bubble as success
+from src.share import _bubble_is_photo as _bip
+assert _bip({"text": "You sent a 📷", "imgs": 0, "len": 40}) is True
+assert _bip({"text": "You sent a 📷", "imgs": 1, "len": 400}) is True
+assert _bip({"text": "[This message type isn't supported]", "imgs": 0, "len": 20}) is False
+assert _bip({"text": "", "imgs": 0, "len": 5}) is False
+assert _bip(None) is False
+
+# 23. Device Flow refuses to start without an OAuth client id
 from gui import github_api as _ghapi
 _orig_cid = _ghapi.OAUTH_CLIENT_ID
 _ghapi.OAUTH_CLIENT_ID = ""
