@@ -111,6 +111,8 @@ HTTP_SEND_HOOK_JS = r"""
 (function () {
   if (window.__httpHook) return; window.__httpHook = true;
   window.__httpSend = null;
+  window.__mediaSend = null;   // last media (photo/share) message/send + status
+  window.__imgCommit = 0;      // count of imagex CommitImageUpload (photo uploaded)
   function toU8(b) {
     try {
       if (b == null) return null;
@@ -124,7 +126,9 @@ HTTP_SEND_HOOK_JS = r"""
   }
   function keep(url, method, headers, body) {
     try {
-      if (String(url).indexOf('/v1/message/send') < 0) return;
+      var u = String(url);
+      if (u.indexOf('CommitImageUpload') >= 0) { window.__imgCommit = (window.__imgCommit || 0) + 1; return; }
+      if (u.indexOf('/v1/message/send') < 0) return;
       var u8 = toU8(body); if (!u8 || !u8.length) return;
       var pb = window.__pb; if (!pb) return;
       var hk = {};
@@ -144,22 +148,53 @@ HTTP_SEND_HOOK_JS = r"""
       } catch (e) {}
     } catch (e) {}
   }
+  function headersObj(h) {
+    var hk = {};
+    if (h) {
+      if (typeof h.forEach === 'function' && typeof h.get === 'function') h.forEach(function (v, k) { hk[k] = v; });
+      else if (Array.isArray(h)) h.forEach(function (p) { hk[p[0]] = p[1]; });
+      else { for (var k in h) hk[k] = h[k]; }
+    }
+    return hk;
+  }
+  // A photo/share send carries media markers in its payload; a plain text DM does not.
+  function looksMedia(u8) {
+    try {
+      if (!u8) return false;
+      var s = window.__pb.utf8(u8);
+      return s.indexOf('sender_preview') >= 0 || s.indexOf('image_uri') >= 0 ||
+             s.indexOf('decrypt_key') >= 0 || s.indexOf('aweType') >= 0;
+    } catch (e) { return false; }
+  }
   var _fetch = window.fetch;
   if (_fetch) {
     window.fetch = function (input, init) {
+      var u = (typeof input === 'string') ? input : (input && input.url);
+      var m = (init && init.method) || (input && input.method) || 'GET';
+      var h = (init && init.headers) || (input && typeof input !== 'string' && input.headers) || null;
+      try { keep(u, m, h, init && init.body); } catch (e) {}
+      var p = _fetch.apply(this, arguments);
       try {
-        var u = (typeof input === 'string') ? input : (input && input.url);
-        var m = (init && init.method) || (input && input.method) || 'GET';
-        var h = (init && init.headers) || (input && typeof input !== 'string' && input.headers) || null;
-        keep(u, m, h, init && init.body);
+        if (String(u).indexOf('/v1/message/send') >= 0 && looksMedia(toU8(init && init.body))) {
+          window.__mediaSend = { t: Date.now(), headers: headersObj(h), status: null, kind: 'fetch' };
+          p.then(function (r) { try { window.__mediaSend.status = r.status; } catch (e) {} },
+                 function () { try { window.__mediaSend.status = -1; } catch (e) {} });
+        }
       } catch (e) {}
-      return _fetch.apply(this, arguments);
+      return p;
     };
   }
   var _open = XMLHttpRequest.prototype.open, _send = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open = function (m, u) { this.__m = m; this.__u = u; return _open.apply(this, arguments); };
   XMLHttpRequest.prototype.send = function (b) {
-    try { keep(this.__u, this.__m, null, b); } catch (e) {}
+    try {
+      keep(this.__u, this.__m, null, b);
+      if (String(this.__u).indexOf('/v1/message/send') >= 0 && looksMedia(toU8(b))) {
+        var xhr = this;
+        window.__mediaSend = { t: Date.now(), headers: {}, status: null, kind: 'xhr' };
+        xhr.addEventListener('loadend', function () { try { window.__mediaSend.status = xhr.status; } catch (e) {} });
+      }
+    } catch (e) {}
     return _send.apply(this, arguments);
   };
 })();
@@ -687,16 +722,39 @@ def _last_chat_bubble(browser) -> dict | None:
         return None
 
 
-def _bubble_is_photo(b: dict | None) -> bool:
-    """True only when the newest bubble looks like a delivered photo."""
+def _bubble_is_unsupported(b: dict | None) -> bool:
+    """True when the newest bubble is TikTok's 'media not supported' placeholder."""
     if not b:
         return False
     t = (b.get("text") or "").lower()
-    if any(s in t for s in _UNSUPPORTED_TEXT):
-        return False
-    if b.get("imgs", 0) > 0:            # a real photo bubble holds an <img>
-        return True
-    return any(s in t for s in ("sent a", "you sent", "photo", "ảnh"))
+    return any(s in t for s in _UNSUPPORTED_TEXT)
+
+
+def _bubble_has_image(b: dict | None) -> bool:
+    return bool(b) and b.get("imgs", 0) > 0
+
+
+# Network truth for a media send: the page uploads the image (imagex
+# CommitImageUpload) then POSTs /v1/message/send and gets 2xx. A new bubble can
+# appear optimistically and never sync, so the network status is the real proof.
+_MEDIA_NET_JS = r"""
+return (function () {
+  var m = window.__mediaSend;
+  return { commit: window.__imgCommit || 0, media: m ? { status: m.status, t: m.t } : null };
+})();
+"""
+
+
+def _media_net_state(browser) -> dict:
+    try:
+        return browser.execute_script(_MEDIA_NET_JS) or {}
+    except Exception:
+        return {}
+
+
+def _media_net_ok(state: dict) -> bool:
+    m = (state or {}).get("media")
+    return bool(m) and isinstance(m.get("status"), int) and 200 <= m["status"] < 300
 
 
 def send_photo_card(browser, friend: str, photo_path: str,
@@ -737,6 +795,8 @@ def send_photo_card(browser, friend: str, photo_path: str,
 
         items_before = _chat_item_count(browser)
         before_recv = browser.execute_script("return (window.__recv || []).length;") or 0
+        # Fresh network markers for this send.
+        browser.execute_script("window.__mediaSend = null; return 0;")
         browser.execute_script(CLICK_MEDIA_JS)
 
         # The guard parks TikTok's file input in the DOM; wait for it.
@@ -769,16 +829,22 @@ def send_photo_card(browser, friend: str, photo_path: str,
         deadline = time.time() + 20
         clicked_once = False
         while time.time() < deadline:
+            # Network is the truth: the page uploaded the image and the send
+            # came back 2xx. A bubble alone can be optimistic and never sync.
+            if _media_net_ok(_media_net_state(browser)):
+                logger.info("[%s] photo confirmed by network (media send 2xx).", friend)
+                return {"sent": True, "error": None}
+
             still_modal = browser.execute_script(SEND_BTN_PRESENT_JS)
             if not still_modal and _chat_item_count(browser) > items_before:
                 bubble = _last_chat_bubble(browser)
-                if not _bubble_is_photo(bubble):
-                    # Bubble appeared but is a placeholder / not the image: the
-                    # send failed even though a new item showed up.
-                    logger.warning("[%s] new bubble is not a photo: %s", friend, bubble)
-                    return {"sent": False, "error": f"media not delivered (bubble={bubble})"}
-                logger.info("[%s] photo confirmed by new chat bubble.", friend)
-                return {"sent": True, "error": None}
+                if _bubble_is_unsupported(bubble):
+                    logger.warning("[%s] media rejected by server: %s", friend, bubble)
+                    return {"sent": False, "error": f"media not supported (bubble={bubble})"}
+                if _bubble_has_image(bubble):
+                    logger.info("[%s] photo confirmed by new chat bubble.", friend)
+                    return {"sent": True, "error": None}
+                # text-only optimistic bubble: keep waiting for the network send
 
             # Bonus signal: the server echoed a picture_card/decrypt_key frame.
             recv = browser.execute_script("return (window.__recv || []).slice(%d);" % int(before_recv)) or []
@@ -809,15 +875,19 @@ def send_photo_card(browser, friend: str, photo_path: str,
                     return {"sent": False, "error": "Send button in media modal not found"}
             time.sleep(1.0)
 
-        # Final check: the modal may have closed and the bubble appeared late.
-        if _chat_item_count(browser) > items_before:
-            bubble = _last_chat_bubble(browser)
-            if _bubble_is_photo(bubble):
-                return {"sent": True, "error": None}
-            return {"sent": False, "error": f"media not delivered (bubble={bubble})"}
+        # Final check: the network send may have landed and the bubble appeared late.
+        if _media_net_ok(_media_net_state(browser)):
+            return {"sent": True, "error": None}
+        bubble = _last_chat_bubble(browser)
+        if _bubble_has_image(bubble):
+            return {"sent": True, "error": None}
+        net = _media_net_state(browser)
         if browser.execute_script(SEND_BTN_PRESENT_JS):
             return {"sent": False, "error": "photo not sent: media modal stayed open after Send"}
-        return {"sent": False, "error": "photo send unconfirmed (no new chat bubble, no server frame)"}
+        if _bubble_is_unsupported(bubble):
+            return {"sent": False, "error": f"media not supported (bubble={bubble})"}
+        return {"sent": False,
+                "error": f"photo send unconfirmed (no media network send; net={net}, bubble={bubble})"}
     except Exception as e:
         logger.error("Photo card to @%s failed: %s", friend, e)
         return {"sent": False, "error": str(e)}

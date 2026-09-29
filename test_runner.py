@@ -227,13 +227,21 @@ from src.share import WS_HOOK_JS
 assert "window.__pb.enc(data)" in WS_HOOK_JS, "WS hook must encode string frames"
 assert "__tmplB64" in WS_HOOK_JS, "WS hook must stash the borrowable frame"
 
-# 22b. Photo confirm must not accept a placeholder bubble as success
-from src.share import _bubble_is_photo as _bip
-assert _bip({"text": "You sent a 📷", "imgs": 0, "len": 40}) is True
-assert _bip({"text": "You sent a 📷", "imgs": 1, "len": 400}) is True
-assert _bip({"text": "[This message type isn't supported]", "imgs": 0, "len": 20}) is False
-assert _bip({"text": "", "imgs": 0, "len": 5}) is False
-assert _bip(None) is False
+# 22b. Photo confirm: network truth + placeholder detection
+from src.share import _bubble_has_image as _bhi, _bubble_is_unsupported as _biu, _media_net_ok as _mnok
+assert _bhi({"imgs": 1}) is True and _bhi({"imgs": 0}) is False and _bhi(None) is False
+assert _biu({"text": "[This message type isn't supported]"}) is True
+assert _biu({"text": "You sent a 📷"}) is False and _biu(None) is False
+assert _mnok({"media": {"status": 204}}) is True
+assert _mnok({"media": {"status": None}}) is False   # optimistic bubble, no send yet
+assert _mnok({"media": {"status": 500}}) is False
+assert _mnok({"media": None}) is False and _mnok({}) is False
+
+# 22c. HTTP hook flags media sends and imagex uploads (network confirmation)
+from src.share import HTTP_SEND_HOOK_JS as _hk
+assert "__mediaSend" in _hk and "CommitImageUpload" in _hk, "media-send hook missing"
+assert "sender_preview" in _hk and "decrypt_key" in _hk, "media marker detection missing"
+assert "looksMedia" in _hk
 
 # 23. Device Flow refuses to start without an OAuth client id
 from gui import github_api as _ghapi
