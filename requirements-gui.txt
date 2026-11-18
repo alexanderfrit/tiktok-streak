@@ -1,0 +1,12 @@
+# Desktop-only dependencies for the setup GUI (gui/).
+# Kept separate from requirements.txt so the Linux GitHub Actions runner never
+# tries to install pywin32 or Qt GUI packages. Install on your PC with:
+#     pip install -r requirements.txt -r requirements-gui.txt
+#
+# Bounds, not exact pins - run `pip freeze` afterwards if you want to lock them.
+PySide6-Fluent-Widgets>=1.11.3  # Fluent Design desktop UI (pulls in PySide6)
+Pillow>=10.0           # photo resizing / EXIF orientation / JPEG data-URL encoding
+PyNaCl>=1.5            # sealed-box encryption for GitHub Actions secrets
+pycryptodome>=3.19     # AES-GCM for Chromium cookie decryption
+pywin32>=306; sys_platform == "win32"   # DPAPI for Chromium cookie key & Credential Manager
+keyring>=24            # optional; OS keychain for stored secrets

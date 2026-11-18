@@ -1,0 +1,565 @@
+"""Fluent card widget representing one TikTok account configuration."""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
+)
+from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
+    CheckBox,
+    FlowLayout,
+    FluentIcon as FIF,
+    HeaderCardWidget,
+    InfoBar,
+    InfoBarPosition,
+    InfoLevel,
+    LineEdit,
+    PlainTextEdit,
+    PrimaryPushButton,
+    PushButton,
+    StrongBodyLabel,
+    TransparentToolButton,
+)
+
+from gui.services.i18n import tr
+from gui.services.storage import AccountProfile
+from gui.services.theme import escape_qt_mnemonic
+from gui.services.validators import (
+    export_friends_csv,
+    import_friends_csv,
+    normalize_friends,
+)
+from gui.widgets.fluent_spin_box import FluentSpinBox
+from gui.widgets.status_pill import StatusPill
+
+
+def _inbox_badge_state(profile: AccountProfile, has_cookie: bool) -> tuple[str, InfoLevel | str]:
+    method = (profile.auth_method or "").strip().lower()
+    if method in ("business_suite", "guided_blocked"):
+        return "blocked", InfoLevel.ERROR
+    if method in ("expired", "verify_expired"):
+        return "expired", InfoLevel.WARNING
+    if profile.inbox_verified and has_cookie:
+        return "verified", InfoLevel.SUCCESS
+    return "unchecked", "neutral"
+
+
+class AccountCard(HeaderCardWidget):
+    """Card for editing a single TikTok account's auth, friends, and overrides."""
+
+    changed = Signal(str)
+    request_guided_login = Signal(str)
+    request_import_browser = Signal(str)
+    request_paste_cookie = Signal(str)
+    request_verify_inbox = Signal(str)
+    request_remove = Signal(str)
+
+    def __init__(
+        self,
+        profile: AccountProfile,
+        has_cookie: bool = False,
+        multi_account: bool = False,
+        can_remove: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.profile = profile
+        self._has_cookie = bool(has_cookie)
+        self._multi_account = bool(multi_account)
+        self._can_remove = bool(can_remove)
+        self._loading = True
+        self._overrides_expanded = False
+
+        self._friends_debounce = QTimer(self)
+        self._friends_debounce.setSingleShot(True)
+        self._friends_debounce.setInterval(250)
+        self._friends_debounce.timeout.connect(self._commit_friends)
+
+        self._build_ui()
+        self.load_profile(profile, has_cookie=has_cookie, multi_account=multi_account, can_remove=can_remove)
+
+    def _build_ui(self) -> None:
+        # Header badges & remove action inside HeaderCardWidget headerLayout
+        self.usernameBadge = StatusPill("", "neutral", self)
+        self.inboxBadge = StatusPill("", "neutral", self)
+        self.removeBtn = TransparentToolButton(FIF.DELETE, self)
+        self.removeBtn.setToolTip(tr("common.delete"))
+        self.removeBtn.clicked.connect(lambda: self.request_remove.emit(self.profile.id))
+
+        self.headerLayout.addStretch(1)
+        self.headerLayout.addWidget(self.usernameBadge, 0, Qt.AlignVCenter)
+        self.headerLayout.addSpacing(8)
+        self.headerLayout.addWidget(self.inboxBadge, 0, Qt.AlignVCenter)
+        self.headerLayout.addSpacing(6)
+        self.headerLayout.addWidget(self.removeBtn, 0, Qt.AlignVCenter)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(14)
+
+        # Account label row
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
+        self.nameCaption = BodyLabel(tr("accounts.account_name"), self)
+        self.nameEdit = LineEdit(self)
+        self.nameEdit.setMinimumWidth(200)
+        self.nameEdit.setMaximumWidth(260)
+        self.nameEdit.textChanged.connect(self._on_name_changed)
+        self.authDetailLabel = CaptionLabel("", self)
+        self.authDetailLabel.setWordWrap(True)
+        name_row.addWidget(self.nameCaption)
+        name_row.addWidget(self.nameEdit)
+        name_row.addSpacing(8)
+        name_row.addWidget(self.authDetailLabel, 1)
+        body.addLayout(name_row)
+
+        # Auth actions flow layout (wraps cleanly without overflowing 840px)
+        auth_flow = FlowLayout()
+        auth_flow.setContentsMargins(0, 0, 0, 0)
+        auth_flow.setHorizontalSpacing(8)
+        auth_flow.setVerticalSpacing(8)
+        self.guidedLoginBtn = PrimaryPushButton(
+            FIF.GLOBE, escape_qt_mnemonic(tr("accounts.sign_in_browser")), self
+        )
+        self.importBrowserBtn = PushButton(
+            FIF.DOWNLOAD, escape_qt_mnemonic(tr("accounts.import_browser")), self
+        )
+        self.pasteCookieBtn = PushButton(
+            FIF.PASTE, escape_qt_mnemonic(tr("accounts.paste_cookie")), self
+        )
+        self.verifyInboxBtn = PushButton(
+            FIF.CHECKBOX, escape_qt_mnemonic(tr("accounts.verify_inbox")), self
+        )
+
+        self.guidedLoginBtn.clicked.connect(lambda: self.request_guided_login.emit(self.profile.id))
+        self.importBrowserBtn.clicked.connect(lambda: self.request_import_browser.emit(self.profile.id))
+        self.pasteCookieBtn.clicked.connect(lambda: self.request_paste_cookie.emit(self.profile.id))
+        self.verifyInboxBtn.clicked.connect(lambda: self.request_verify_inbox.emit(self.profile.id))
+
+        auth_flow.addWidget(self.guidedLoginBtn)
+        auth_flow.addWidget(self.importBrowserBtn)
+        auth_flow.addWidget(self.pasteCookieBtn)
+        auth_flow.addWidget(self.verifyInboxBtn)
+        body.addLayout(auth_flow)
+
+        # Friends section
+        friends_header = QHBoxLayout()
+        friends_header.setSpacing(8)
+        self.friendsLabel = StrongBodyLabel(tr("content.friends_label"), self)
+        self.friendsCountBadge = StatusPill("0", "neutral", self)
+        self.importCsvBtn = PushButton(
+            FIF.FOLDER_ADD, escape_qt_mnemonic(tr("content.import_csv")), self
+        )
+        self.exportCsvBtn = PushButton(
+            FIF.SAVE_AS, escape_qt_mnemonic(tr("content.export_csv")), self
+        )
+
+        self.importCsvBtn.clicked.connect(self._import_csv)
+        self.exportCsvBtn.clicked.connect(self._export_csv)
+
+        friends_header.addWidget(self.friendsLabel)
+        friends_header.addWidget(self.friendsCountBadge)
+        friends_header.addStretch(1)
+        friends_header.addWidget(self.importCsvBtn)
+        friends_header.addWidget(self.exportCsvBtn)
+        body.addLayout(friends_header)
+
+        self.friendsEdit = PlainTextEdit(self)
+        self.friendsEdit.setPlaceholderText(tr("content.friends_placeholder"))
+        self.friendsEdit.setMinimumHeight(88)
+        self.friendsEdit.setMaximumHeight(130)
+        self.friendsEdit.textChanged.connect(self._on_friends_text_changed)
+        body.addWidget(self.friendsEdit)
+
+        self.friendsWarningLabel = CaptionLabel("", self)
+        self.friendsWarningLabel.setStyleSheet("color: #c77c00;")
+        self.friendsWarningLabel.setWordWrap(True)
+        self.friendsWarningLabel.hide()
+        body.addWidget(self.friendsWarningLabel)
+
+        # Per-account overrides container (visible in multi-account mode; drawer collapsed by default)
+        self.overridesContainer = QWidget(self)
+        ov_layout = QVBoxLayout(self.overridesContainer)
+        ov_layout.setContentsMargins(0, 6, 0, 0)
+        ov_layout.setSpacing(8)
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setContentsMargins(0, 0, 0, 0)
+        toggle_row.setSpacing(8)
+        self.overridesToggleBtn = PushButton(
+            FIF.CHEVRON_RIGHT, escape_qt_mnemonic(tr("accounts.override_toggle")), self.overridesContainer
+        )
+        self.overridesToggleBtn.clicked.connect(self._toggle_overrides_drawer)
+        toggle_row.addWidget(self.overridesToggleBtn)
+        toggle_row.addStretch(1)
+        ov_layout.addLayout(toggle_row)
+
+        self.overridesDrawer = QWidget(self.overridesContainer)
+        drawer_lay = QVBoxLayout(self.overridesDrawer)
+        drawer_lay.setContentsMargins(0, 4, 0, 0)
+        drawer_lay.setSpacing(8)
+
+        self.overridesHint = CaptionLabel(tr("accounts.override_hint"), self.overridesDrawer)
+        self.overridesHint.setWordWrap(True)
+        drawer_lay.addWidget(self.overridesHint)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(1, 1)
+
+        # Row 0: Message override
+        self.ovMsgCheck = CheckBox(escape_qt_mnemonic(tr("accounts.override_message")), self.overridesDrawer)
+        self.ovMsgEdit = LineEdit(self.overridesDrawer)
+        self.ovMsgEdit.setMinimumWidth(0)
+        self.ovMsgCheck.stateChanged.connect(self._on_override_changed)
+        self.ovMsgEdit.textChanged.connect(self._on_override_changed)
+        grid.addWidget(self.ovMsgCheck, 0, 0)
+        grid.addWidget(self.ovMsgEdit, 0, 1, 1, 3)
+
+        # Row 1: Video override
+        self.ovVideoCheck = CheckBox(escape_qt_mnemonic(tr("accounts.override_video")), self.overridesDrawer)
+        self.ovVideoDisableCheck = CheckBox(
+            escape_qt_mnemonic(tr("accounts.disable_for_account")), self.overridesDrawer
+        )
+        self.ovVideoEdit = LineEdit(self.overridesDrawer)
+        self.ovVideoEdit.setMinimumWidth(0)
+        self.ovVideoEdit.setPlaceholderText("https://www.tiktok.com/@user/video/...")
+        shares_box = QHBoxLayout()
+        shares_box.setContentsMargins(0, 0, 0, 0)
+        shares_box.setSpacing(6)
+        self.ovSharesLabel = CaptionLabel(tr("accounts.override_shares"), self.overridesDrawer)
+        self.ovSharesSpin = FluentSpinBox(self.overridesDrawer)
+        self.ovSharesSpin.setRange(0, 10)
+        shares_box.addWidget(self.ovSharesLabel)
+        shares_box.addWidget(self.ovSharesSpin)
+        self.ovVideoCheck.stateChanged.connect(self._on_override_changed)
+        self.ovVideoDisableCheck.stateChanged.connect(self._on_override_changed)
+        self.ovVideoEdit.textChanged.connect(self._on_override_changed)
+        self.ovSharesSpin.valueChanged.connect(self._on_override_changed)
+        grid.addWidget(self.ovVideoCheck, 1, 0)
+        grid.addWidget(self.ovVideoEdit, 1, 1)
+        grid.addLayout(shares_box, 1, 2)
+        grid.addWidget(self.ovVideoDisableCheck, 1, 3)
+
+        # Row 2: Photo override
+        self.ovPhotoCheck = CheckBox(escape_qt_mnemonic(tr("accounts.override_photo")), self.overridesDrawer)
+        self.ovPhotoDisableCheck = CheckBox(
+            escape_qt_mnemonic(tr("accounts.disable_for_account")), self.overridesDrawer
+        )
+        self.ovPhotoEdit = LineEdit(self.overridesDrawer)
+        self.ovPhotoEdit.setMinimumWidth(0)
+        self.ovPhotoEdit.setPlaceholderText("assets/custom.png")
+        self.ovPhotoBrowseBtn = PushButton(
+            FIF.FOLDER, escape_qt_mnemonic(tr("common.browse")), self.overridesDrawer
+        )
+        self.ovPhotoCheck.stateChanged.connect(self._on_override_changed)
+        self.ovPhotoDisableCheck.stateChanged.connect(self._on_override_changed)
+        self.ovPhotoEdit.textChanged.connect(self._on_override_changed)
+        self.ovPhotoBrowseBtn.clicked.connect(self._browse_override_photo)
+        grid.addWidget(self.ovPhotoCheck, 2, 0)
+        grid.addWidget(self.ovPhotoEdit, 2, 1)
+        grid.addWidget(self.ovPhotoBrowseBtn, 2, 2)
+        grid.addWidget(self.ovPhotoDisableCheck, 2, 3)
+
+        drawer_lay.addLayout(grid)
+        self.overridesDrawer.hide()
+        ov_layout.addWidget(self.overridesDrawer)
+        body.addWidget(self.overridesContainer)
+
+        self.viewLayout.addLayout(body)
+
+    def load_profile(
+        self,
+        profile: AccountProfile,
+        has_cookie: bool | None = None,
+        multi_account: bool | None = None,
+        can_remove: bool | None = None,
+    ) -> None:
+        self._loading = True
+        try:
+            self.profile = profile
+            if has_cookie is not None:
+                self._has_cookie = bool(has_cookie)
+            if multi_account is not None:
+                self._multi_account = bool(multi_account)
+            if can_remove is not None:
+                self._can_remove = bool(can_remove)
+
+            self.setTitle(profile.name or "Main")
+            if self.nameEdit.text() != (profile.name or ""):
+                self.nameEdit.setText(profile.name or "Main")
+
+            friends_txt = "\n".join(f"@{f}" for f in profile.friends)
+            if self.friendsEdit.toPlainText().strip() != friends_txt.strip():
+                self.friendsEdit.setPlainText(friends_txt)
+
+            # Overrides
+            has_msg_ov = profile.message_override is not None
+            self.ovMsgCheck.setChecked(has_msg_ov)
+            self.ovMsgEdit.setText(profile.message_override or "")
+
+            has_vid_ov = profile.video_url_override is not None or profile.share_times_override is not None
+            self.ovVideoCheck.setChecked(has_vid_ov)
+            vid_disabled = profile.video_url_override == "" or (
+                profile.video_url_override is not None and profile.video_url_override.lower() in ("none", "off", "disabled")
+            )
+            self.ovVideoDisableCheck.setChecked(bool(has_vid_ov and vid_disabled))
+            self.ovVideoEdit.setText("" if vid_disabled else (profile.video_url_override or ""))
+            self.ovSharesSpin.setValue(profile.share_times_override if profile.share_times_override is not None else 2)
+
+            has_ph_ov = profile.photo_path_override is not None
+            self.ovPhotoCheck.setChecked(has_ph_ov)
+            ph_disabled = profile.photo_path_override == "" or (
+                profile.photo_path_override is not None and profile.photo_path_override.lower() in ("none", "off", "disabled")
+            )
+            self.ovPhotoDisableCheck.setChecked(bool(has_ph_ov and ph_disabled))
+            self.ovPhotoEdit.setText("" if ph_disabled else (profile.photo_path_override or ""))
+
+            self._sync_override_enabled_states()
+            has_active_override = (
+                profile.message_override is not None
+                or profile.video_url_override is not None
+                or profile.share_times_override is not None
+                or profile.photo_path_override is not None
+            )
+            self._set_overrides_expanded(has_active_override)
+            self.overridesContainer.setVisible(self._multi_account)
+            self.removeBtn.setVisible(self._can_remove)
+            self._refresh_badges()
+            self._update_friends_preview()
+        finally:
+            self._loading = False
+
+    def _set_overrides_expanded(self, expanded: bool) -> None:
+        self._overrides_expanded = bool(expanded)
+        self.overridesDrawer.setVisible(self._overrides_expanded)
+        self.overridesToggleBtn.setIcon(
+            FIF.CHEVRON_DOWN_MED if self._overrides_expanded else FIF.CHEVRON_RIGHT
+        )
+
+    def _toggle_overrides_drawer(self) -> None:
+        self._set_overrides_expanded(not self._overrides_expanded)
+
+    def set_cookie_present(self, has_cookie: bool) -> None:
+        self._has_cookie = bool(has_cookie)
+        self._refresh_badges()
+
+    def _refresh_badges(self) -> None:
+        if self._has_cookie and self.profile.username:
+            self.usernameBadge.setState(InfoLevel.SUCCESS, f"@{self.profile.username.lstrip('@')}")
+        elif self._has_cookie:
+            self.usernameBadge.setState("info", tr("accounts.has_tiktok_badge"))
+        else:
+            self.usernameBadge.setState(InfoLevel.WARNING, tr("accounts.no_session"))
+        self.usernameBadge.adjustSize()
+
+        state_key, level = _inbox_badge_state(self.profile, self._has_cookie)
+        inbox_key = {
+            "verified": "accounts.inbox_verified",
+            "blocked": "accounts.inbox_blocked",
+            "expired": "accounts.inbox_expired",
+        }.get(state_key, "accounts.inbox_unchecked")
+        self.inboxBadge.setState(level, tr(inbox_key))
+        self.inboxBadge.adjustSize()
+
+        detail_parts = []
+        if self.profile.auth_method:
+            detail_parts.append(self.profile.auth_method)
+        if self.profile.last_checked:
+            detail_parts.append(self.profile.last_checked)
+        self.authDetailLabel.setText(" • ".join(detail_parts))
+        self.verifyInboxBtn.setEnabled(self._has_cookie)
+
+    def _sync_override_enabled_states(self) -> None:
+        self.ovMsgEdit.setEnabled(self.ovMsgCheck.isChecked())
+
+        vid_on = self.ovVideoCheck.isChecked()
+        vid_dis = self.ovVideoDisableCheck.isChecked()
+        self.ovVideoDisableCheck.setEnabled(vid_on)
+        self.ovVideoEdit.setEnabled(vid_on and not vid_dis)
+        self.ovSharesSpin.setEnabled(vid_on and not vid_dis)
+
+        ph_on = self.ovPhotoCheck.isChecked()
+        ph_dis = self.ovPhotoDisableCheck.isChecked()
+        self.ovPhotoDisableCheck.setEnabled(ph_on)
+        self.ovPhotoEdit.setEnabled(ph_on and not ph_dis)
+        self.ovPhotoBrowseBtn.setEnabled(ph_on and not ph_dis)
+
+    def _on_name_changed(self, text: str) -> None:
+        if self._loading:
+            return
+        cleaned = text.strip() or "Main"
+        self.profile.name = cleaned
+        self.setTitle(cleaned)
+        self.changed.emit(self.profile.id)
+
+    def _on_friends_text_changed(self) -> None:
+        self._update_friends_preview()
+        if not self._loading:
+            self._friends_debounce.start()
+
+    def _update_friends_preview(self) -> list[str]:
+        handles, warnings = normalize_friends(self.friendsEdit.toPlainText())
+        self.friendsCountBadge.setState(
+            InfoLevel.SUCCESS if handles else "neutral",
+            tr("accounts.friends_count", count=len(handles)),
+        )
+        self.friendsCountBadge.adjustSize()
+
+        if warnings:
+            self.friendsWarningLabel.setText(" • ".join(warnings[:2]))
+            self.friendsWarningLabel.show()
+        else:
+            self.friendsWarningLabel.hide()
+        return handles
+
+    def _commit_friends(self) -> None:
+        handles = self._update_friends_preview()
+        if self.profile.friends != handles:
+            self.profile.friends = handles
+            self.changed.emit(self.profile.id)
+
+    def flush_edits(self) -> None:
+        """Synchronously apply any debounced edits to ``self.profile``."""
+        if self._friends_debounce.isActive():
+            self._friends_debounce.stop()
+            self._commit_friends()
+        else:
+            self.profile.friends, _ = normalize_friends(self.friendsEdit.toPlainText())
+
+    def _on_override_changed(self, *_args: Any) -> None:
+        if self._loading:
+            return
+        self._sync_override_enabled_states()
+
+        self.profile.message_override = self.ovMsgEdit.text() if self.ovMsgCheck.isChecked() else None
+
+        if not self.ovVideoCheck.isChecked():
+            self.profile.video_url_override = None
+            self.profile.share_times_override = None
+        elif self.ovVideoDisableCheck.isChecked():
+            self.profile.video_url_override = ""
+            self.profile.share_times_override = 0
+        else:
+            raw_vid = self.ovVideoEdit.text().strip()
+            self.profile.video_url_override = raw_vid if raw_vid else None
+            self.profile.share_times_override = int(self.ovSharesSpin.value())
+
+        if not self.ovPhotoCheck.isChecked():
+            self.profile.photo_path_override = None
+        elif self.ovPhotoDisableCheck.isChecked():
+            self.profile.photo_path_override = ""
+        else:
+            self.profile.photo_path_override = self.ovPhotoEdit.text().strip()
+
+        self.changed.emit(self.profile.id)
+
+    def _browse_override_photo(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("content.photo_select"),
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All Files (*)",
+        )
+        if path:
+            self.ovPhotoCheck.setChecked(True)
+            self.ovPhotoDisableCheck.setChecked(False)
+            self.ovPhotoEdit.setText(path)
+
+    def _import_csv(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("content.import_csv"),
+            "",
+            "CSV / Text (*.csv *.txt);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            imported = import_friends_csv(path)
+        except Exception as exc:
+            InfoBar.error(
+                tr("common.error"),
+                str(exc),
+                duration=4000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+            return
+        combined = list(self.profile.friends) + imported
+        merged, _ = normalize_friends("\n".join(combined))
+        self.profile.friends = merged
+        self.friendsEdit.setPlainText("\n".join(f"@{f}" for f in merged))
+        self.changed.emit(self.profile.id)
+        InfoBar.success(
+            tr("common.success"),
+            tr("accounts.friends_count", count=len(merged)),
+            duration=2500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
+    def _export_csv(self) -> None:
+        self.flush_edits()
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr("content.export_csv"),
+            str(Path.home() / "friends.csv"),
+            "CSV (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            out = export_friends_csv(path, self.profile.friends)
+            InfoBar.success(
+                tr("common.success"),
+                str(out),
+                duration=3000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+        except Exception as exc:
+            InfoBar.error(
+                tr("common.error"),
+                str(exc),
+                duration=4000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+
+    def retranslate(self) -> None:
+        self.removeBtn.setToolTip(tr("common.delete"))
+        self.nameCaption.setText(tr("accounts.account_name"))
+        self.guidedLoginBtn.setText(escape_qt_mnemonic(tr("accounts.sign_in_browser")))
+        self.importBrowserBtn.setText(escape_qt_mnemonic(tr("accounts.import_browser")))
+        self.pasteCookieBtn.setText(escape_qt_mnemonic(tr("accounts.paste_cookie")))
+        self.verifyInboxBtn.setText(escape_qt_mnemonic(tr("accounts.verify_inbox")))
+        self.friendsLabel.setText(tr("content.friends_label"))
+        self.importCsvBtn.setText(escape_qt_mnemonic(tr("content.import_csv")))
+        self.exportCsvBtn.setText(escape_qt_mnemonic(tr("content.export_csv")))
+        self.friendsEdit.setPlaceholderText(tr("content.friends_placeholder"))
+        self.overridesToggleBtn.setText(escape_qt_mnemonic(tr("accounts.override_toggle")))
+        self.overridesHint.setText(tr("accounts.override_hint"))
+        self.ovMsgCheck.setText(escape_qt_mnemonic(tr("accounts.override_message")))
+        self.ovVideoCheck.setText(escape_qt_mnemonic(tr("accounts.override_video")))
+        self.ovSharesLabel.setText(tr("accounts.override_shares"))
+        self.ovVideoDisableCheck.setText(escape_qt_mnemonic(tr("accounts.disable_for_account")))
+        self.ovPhotoCheck.setText(escape_qt_mnemonic(tr("accounts.override_photo")))
+        self.ovPhotoDisableCheck.setText(escape_qt_mnemonic(tr("accounts.disable_for_account")))
+        self.ovPhotoBrowseBtn.setText(escape_qt_mnemonic(tr("common.browse")))
+        self._refresh_badges()
+        self._update_friends_preview()
+
+
+__all__ = ["AccountCard"]

@@ -1,0 +1,1958 @@
+"""Comprehensive unit test suite for core engine (src/*, main.py) and gui/services/*."""
+from __future__ import annotations
+
+import base64
+import contextlib
+import io
+import json
+import logging
+import os
+import sqlite3
+import subprocess
+import sys
+import threading
+import types
+import urllib.error
+import zipfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class _FakeHTTPResponse:
+    def __init__(self, payload: bytes | str | dict, status: int = 200, url: str = "", headers: dict | None = None):
+        if isinstance(payload, dict):
+            self._data = json.dumps(payload).encode("utf-8")
+        elif isinstance(payload, str):
+            self._data = payload.encode("utf-8")
+        else:
+            self._data = payload
+        self.status = status
+        self._url = url
+        self.headers = headers or {}
+
+    def read(self, n: int = -1) -> bytes:
+        return self._data if n < 0 else self._data[:n]
+
+    def geturl(self) -> str:
+        return self._url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _make_http_error(url: str, code: int, body: str | dict = "") -> urllib.error.HTTPError:
+    raw = json.dumps(body).encode("utf-8") if isinstance(body, dict) else str(body).encode("utf-8")
+    return urllib.error.HTTPError(url, code, f"HTTP {code}", hdrs={}, fp=io.BytesIO(raw))
+
+
+# ===========================================================================
+# 0. Cold import safety (no Qt / Pillow / PyNaCl / Selenium / win32crypt)
+# ===========================================================================
+
+def test_gui_services_import_without_optional_gui_deps():
+    repo_root = str(Path(__file__).resolve().parents[1])
+    code = (
+        "import sys\n"
+        "blocked = {'PySide6', 'qfluentwidgets', 'PIL', 'nacl', 'Crypto', 'win32crypt', 'keyring', 'selenium'}\n"
+        "class Blocker:\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        "        if fullname.split('.')[0] in blocked:\n"
+        "            raise ModuleNotFoundError(fullname)\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Blocker())\n"
+        "import gui.services\n"
+        "assert gui.services.SECRET_NAMES\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr: {proc.stderr}\nstdout: {proc.stdout}"
+
+
+# ===========================================================================
+# 1. src/config.py
+# ===========================================================================
+
+class TestSrcConfig:
+    def test_multi_account_share_times_zero_and_explicit_disable(self, tmp_path, monkeypatch):
+        from src.config import DEFAULT_PHOTO_PATH, DEFAULT_VIDEO_URL, load_accounts
+
+        cfg_file = tmp_path / "accounts.json"
+        payload = [
+            {
+                "name": "DisabledAll",
+                "session_id": "sid_1",
+                "friends": ["@Alice", "alice", "Bob", "", None],
+                "share_times": 0,
+                "video_url": "",
+                "photo_path": "none",
+                "message": "Custom msg",
+            },
+            {
+                "name": "Sentinels",
+                "session_id": "sid_2",
+                "friends": "@carol, dave, @Carol",
+                "share_times": "none",
+                "video_url": "OFF",
+                "photo_path": "",
+            },
+            {
+                "name": "OmittedFallsBack",
+                "session_id": "sid_3",
+                "friends": ["eve"],
+            },
+        ]
+        cfg_file.write_text(json.dumps(payload), encoding="utf-8")
+
+        monkeypatch.setenv("STREAK_VIDEO_URL", "https://www.tiktok.com/@env/video/9999999999999999999")
+        monkeypatch.setenv("PHOTO_PATH", "assets/env_photo.png")
+        monkeypatch.setenv("SHARE_TIMES", "4")
+        monkeypatch.setenv("MESSAGE", "Env msg")
+        monkeypatch.delenv("DISABLE_VIDEO", raising=False)
+        monkeypatch.delenv("DISABLE_PHOTO", raising=False)
+
+        accounts = load_accounts(config_file=str(cfg_file))
+        assert len(accounts) == 3
+
+        # 1) share_times=0 stays 0, explicit ""/"none" disables without falling back
+        assert accounts[0].name == "DisabledAll"
+        assert accounts[0].friends == ["Alice", "Bob"]
+        assert accounts[0].share_times == 0
+        assert accounts[0].video_url == ""
+        assert accounts[0].photo_path == ""
+        assert accounts[0].message == "Custom msg"
+
+        # 2) Disable sentinels ("none", "OFF", "") also disable
+        assert accounts[1].friends == ["carol", "dave"]
+        assert accounts[1].share_times == 0
+        assert accounts[1].video_url == ""
+        assert accounts[1].photo_path == ""
+        assert accounts[1].message == "Env msg"
+
+        # 3) Omitted keys fall back to env
+        assert accounts[2].share_times == 4
+        assert accounts[2].video_url.endswith("9999999999999999999")
+        assert accounts[2].photo_path == "assets/env_photo.png"
+
+        # 4) Omitted keys fall back to defaults when env unset
+        monkeypatch.delenv("STREAK_VIDEO_URL")
+        monkeypatch.delenv("PHOTO_PATH")
+        monkeypatch.delenv("SHARE_TIMES")
+        monkeypatch.delenv("MESSAGE")
+        accounts_def = load_accounts(config_file=str(cfg_file))
+        assert accounts_def[2].share_times == 2
+        assert accounts_def[2].video_url == DEFAULT_VIDEO_URL
+        assert accounts_def[2].photo_path == DEFAULT_PHOTO_PATH
+        assert accounts_def[2].message == "🔥 Daily Streak"
+
+    def test_disable_env_vars_and_single_account_sentinels(self, tmp_path, monkeypatch):
+        from src.config import load_accounts, load_friends_csv
+
+        monkeypatch.chdir(tmp_path)
+        for k in list(os.environ):
+            if k in {
+                "TIKTOK_ACCOUNTS_JSON", "TIKTOK_SESSION_ID", "FRIENDS_LIST", "MESSAGE",
+                "STREAK_VIDEO_URL", "SHARE_TIMES", "PHOTO_PATH", "DISABLE_VIDEO", "DISABLE_PHOTO",
+            }:
+                monkeypatch.delenv(k, raising=False)
+
+        monkeypatch.setenv("TIKTOK_SESSION_ID", "main_sid")
+        monkeypatch.setenv("FRIENDS_LIST", "@one, two, @ONE, three")
+        monkeypatch.setenv("DISABLE_VIDEO", "true")
+        monkeypatch.setenv("DISABLE_PHOTO", "YES")
+        monkeypatch.setenv("SHARE_TIMES", "0")
+
+        accs = load_accounts(config_file=str(tmp_path / "missing.json"))
+        assert len(accs) == 1
+        assert accs[0].name == "Main"
+        assert accs[0].friends == ["one", "two", "three"]
+        assert accs[0].video_url == ""
+        assert accs[0].photo_path == ""
+        assert accs[0].share_times == 0
+
+        # Sentinels in env vars directly
+        monkeypatch.setenv("DISABLE_VIDEO", "false")
+        monkeypatch.setenv("DISABLE_PHOTO", "false")
+        monkeypatch.setenv("STREAK_VIDEO_URL", "disabled")
+        monkeypatch.setenv("PHOTO_PATH", "off")
+        accs2 = load_accounts(config_file=str(tmp_path / "missing.json"))
+        assert accs2[0].video_url == ""
+        assert accs2[0].photo_path == ""
+
+        # friends.csv fallback with BOM & dedup
+        csv_path = tmp_path / "friends.csv"
+        csv_path.write_text("\ufeffUsername\n@Alpha\nbeta\n@alpha\n\n", encoding="utf-8")
+        assert load_friends_csv(str(csv_path)) == ["Alpha", "beta"]
+
+        monkeypatch.delenv("FRIENDS_LIST")
+        accs3 = load_accounts(config_file=str(tmp_path / "missing.json"))
+        assert accs3[0].friends == ["Alpha", "beta"]
+
+    def test_invalid_accounts_json_falls_back_to_env(self, tmp_path, monkeypatch):
+        from src.config import load_accounts
+
+        bad_file = tmp_path / "accounts.json"
+        bad_file.write_text("{not valid json", encoding="utf-8")
+        monkeypatch.setenv("TIKTOK_ACCOUNTS_JSON", json.dumps([{"name": "EnvAcc", "session_id": "s1", "friends": ["f1"]}]))
+        accs = load_accounts(config_file=str(bad_file))
+        assert len(accs) == 1
+        assert accs[0].name == "EnvAcc"
+
+
+# ===========================================================================
+# 2. src/photo_prep.py
+# ===========================================================================
+
+class TestSrcPhotoPrep:
+    def test_resolve_disable_flags_and_sentinels(self, tmp_path, monkeypatch):
+        from src import photo_prep
+
+        monkeypatch.chdir(tmp_path)
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\nDATA").decode()
+        data_url = f"data:image/png;base64,{png}"
+
+        assert photo_prep.resolve(data_url, "assets/mine.png", disable_flag="true") == ""
+        assert photo_prep.resolve(data_url, "", disable_flag="1") == ""
+        assert photo_prep.resolve(data_url, "", disable_flag="Yes") == ""
+        assert photo_prep.resolve("none") == ""
+        assert photo_prep.resolve("OFF") == ""
+        assert photo_prep.resolve("", "disabled") == ""
+
+    def test_resolve_fallbacks_and_invalid_base64(self, tmp_path, monkeypatch):
+        from src import photo_prep
+
+        monkeypatch.chdir(tmp_path)
+        assert photo_prep.resolve("") == photo_prep.DEFAULT
+        assert photo_prep.resolve("", "assets/custom.png") == "assets/custom.png"
+
+        with pytest.raises(ValueError, match="Invalid PHOTO_DATA_URL"):
+            photo_prep.resolve("not-a-data-url")
+
+        with pytest.raises(ValueError, match="expected a base64 image data URL"):
+            photo_prep.resolve("data:image/png;base64,   ")
+
+        with pytest.raises(ValueError, match="Invalid base64"):
+            photo_prep.resolve("data:image/png;base64,@@@invalid@@@")
+
+    def test_resolve_writes_file_and_main_exports_github_env(self, tmp_path, monkeypatch):
+        from src import photo_prep
+
+        monkeypatch.chdir(tmp_path)
+        raw_bytes = b"WEBP_PAYLOAD"
+        b64 = base64.b64encode(raw_bytes).decode()
+        spaced_b64 = f"{b64[:4]}\n {b64[4:]}"
+        genv = tmp_path / "github_env.txt"
+
+        monkeypatch.setenv("PHOTO_DATA_URL", f"data:image/webp;base64,{spaced_b64}")
+        monkeypatch.setenv("PHOTO_PATH", "")
+        monkeypatch.setenv("DISABLE_PHOTO", "false")
+        monkeypatch.setenv("GITHUB_ENV", str(genv))
+
+        photo_prep.main()
+        out_file = tmp_path / "assets" / "custom_photo.webp"
+        assert out_file.read_bytes() == raw_bytes
+        assert "PHOTO_PATH=assets/custom_photo.webp\n" in genv.read_text(encoding="utf-8")
+
+
+# ===========================================================================
+# 3. src/browser.py
+# ===========================================================================
+
+class TestSrcBrowser:
+    def test_parse_cookie_payload_strips_crlf_across_formats(self):
+        from src.browser import parse_cookie_payload
+
+        assert parse_cookie_payload('{"sessionid": "abc\r\n", "sid_tt\n": "xyz\r"}') == {
+            "sessionid": "abc",
+            "sid_tt": "xyz",
+        }
+        assert parse_cookie_payload('[{"name": "sessionid\r", "value": "val\n"}]') == {
+            "sessionid": "val",
+        }
+        header = "Cookie: sessionid=tok1\r\n; sid_tt=\"tok2\n\"\r\nttwid=tok3"
+        assert parse_cookie_payload(header) == {
+            "sessionid": "tok1",
+            "sid_tt": "tok2",
+            "ttwid": "tok3",
+        }
+        raw_tok = "abc123\r\ndef456\n"
+        assert parse_cookie_payload(raw_tok) == {
+            "sessionid": "abc123def456",
+            "sessionid_ss": "abc123def456",
+            "sid_tt": "abc123def456",
+        }
+        assert parse_cookie_payload("   \r\n  ") == {}
+
+    def test_authenticate_session_clears_stashed_templates_and_handles_redirects(self, monkeypatch):
+        from src.browser import authenticate_session
+        from src.exceptions import InboxUnavailableError, SessionExpiredError
+
+        mock_browser = MagicMock()
+        mock_browser.current_url = "https://www.tiktok.com/messages?lang=en"
+        injected = {}
+        mock_browser.add_cookie.side_effect = lambda c: injected.__setitem__(c["name"], c["value"])
+
+        with patch("time.sleep", return_value=None):
+            monkeypatch.setenv("TIKTOK_COOKIES", "sessionid=GLOBAL; ttwid=global_ttwid")
+            authenticate_session(mock_browser, "ACC1_SID", "Acc1")
+            assert injected["sessionid"] == "ACC1_SID"
+            assert injected["ttwid"] == "global_ttwid"
+
+            injected.clear()
+            authenticate_session(mock_browser, "ACC2_SID", "Acc2")
+            assert injected["sessionid"] == "ACC2_SID"
+
+        assert mock_browser.delete_all_cookies.call_count == 2
+        scripts = [call.args[0] for call in mock_browser.execute_script.call_args_list]
+        assert len(scripts) == 2
+        for script in scripts:
+            assert "sessionStorage.removeItem('__tmplB64')" in script
+            assert "sessionStorage.removeItem('__httpSendB64')" in script
+            assert "sessionStorage.removeItem('__httpSendUrl')" in script
+            assert "window.__sent = []" in script
+            assert "window.__httpSend = null" in script
+            assert "window.__mediaSend = null" in script
+
+        # Empty session raises SessionExpiredError
+        with pytest.raises(SessionExpiredError):
+            authenticate_session(mock_browser, "", "Empty")
+
+        # Login redirect raises SessionExpiredError
+        mock_browser.current_url = "https://www.tiktok.com/login"
+        with patch("time.sleep", return_value=None), patch("src.browser.dump_debug_diagnostics") as mock_dump:
+            with pytest.raises(SessionExpiredError):
+                authenticate_session(mock_browser, "sid", "ExpiredAcc")
+            mock_dump.assert_called_once()
+
+        # Business Suite redirect raises InboxUnavailableError
+        mock_browser.current_url = "https://www.tiktok.com/business-suite/messages"
+        with patch("time.sleep", return_value=None), patch("src.browser.dump_debug_diagnostics") as mock_dump:
+            with pytest.raises(InboxUnavailableError):
+                authenticate_session(mock_browser, "sid", "BizAcc")
+            mock_dump.assert_called_once()
+
+
+# ===========================================================================
+# 4. src/actions.py & main.py
+# ===========================================================================
+
+class TestActionsAndMain:
+    def test_rate_limit_propagates_from_send_streak_message(self):
+        from src.actions import send_streak_message
+        from src.exceptions import RateLimitError
+
+        mock_browser = MagicMock()
+        toast = MagicMock()
+        toast.is_displayed.return_value = True
+        toast.text = "You are sending messages too fast"
+        mock_browser.find_elements.return_value = [toast]
+
+        with patch("src.actions.open_inbox_chat"), \
+             patch("src.actions.find_element_by_candidates", return_value=MagicMock()), \
+             patch("src.actions.dump_debug_diagnostics") as mock_dump, \
+             patch("time.sleep", return_value=None):
+            with pytest.raises(RateLimitError):
+                send_streak_message(mock_browser, "friend1", "hello")
+            mock_dump.assert_called_once()
+
+    def test_send_streak_message_respects_stop_event(self):
+        from src.actions import send_streak_message
+
+        stop = threading.Event()
+        stop.set()
+        res = send_streak_message(MagicMock(), "friend1", "hello", stop_event=stop)
+        assert res == {"friend": "friend1", "sent": False, "error": "Cancelled"}
+
+    def test_main_run_halts_on_rate_limit_without_sys_exit(self):
+        import main
+        from src.config import AccountConfig
+        from src.exceptions import RateLimitError
+
+        acc1 = AccountConfig(name="A1", session_id="s1", friends=["f1", "f2"], video_url="", share_times=0, photo_path="")
+        acc2 = AccountConfig(name="A2", session_id="s2", friends=["f3"], video_url="", share_times=0, photo_path="")
+        mock_browser = MagicMock()
+        events = []
+
+        with patch("main.init_browser", return_value=(mock_browser, MagicMock())), \
+             patch("main.install_ws_hook"), \
+             patch("main.install_media_guard"), \
+             patch("main.authenticate_session") as mock_auth, \
+             patch("main.send_streak_message", side_effect=RateLimitError("Too fast")) as mock_send, \
+             patch("main.notify_telegram") as mock_tg, \
+             patch("main.notify_streak_summary") as mock_sum, \
+             patch("time.sleep", return_value=None):
+            result = main.run(accounts_override=[acc1, acc2], progress_cb=events.append)
+
+        assert result["ok"] is False
+        assert result["critical_failure"] is True
+        assert len(result["results"]) == 1  # A2 was never started after rate limit
+        assert mock_auth.call_count == 1
+        assert mock_send.call_count == 1
+        assert any("Rate limit" in f for f in result["results"][0]["failures"])
+        assert any(e.get("stage") == "rate_limit" for e in events)
+        mock_tg.assert_called_once()
+        mock_sum.assert_called_once()
+        mock_browser.quit.assert_called_once()
+
+    def test_main_run_filters_stop_event_and_cli_exit(self):
+        import main
+        from src.config import AccountConfig
+
+        acc1 = AccountConfig(name="Primary", session_id="s1", friends=["alice", "bob"], video_url="", share_times=0, photo_path="")
+        acc2 = AccountConfig(name="Backup", session_id="s2", friends=["carol"], video_url="", share_times=0, photo_path="")
+
+        # Pre-set stop_event aborts before launching browser
+        stop = threading.Event()
+        stop.set()
+        with patch("main.init_browser") as mock_init:
+            res_stopped = main.run(accounts_override=[acc1], stop_event=stop)
+        mock_init.assert_not_called()
+        assert res_stopped["ok"] is False
+        assert res_stopped["critical_failure"] is False
+
+        # Filter mismatch returns critical_failure without sys.exit
+        with patch("main.init_browser") as mock_init:
+            res_missing = main.run(accounts_override=[acc1], only_account="Nope")
+        mock_init.assert_not_called()
+        assert res_missing["ok"] is False
+        assert res_missing["critical_failure"] is True
+
+        # only_account + only_friend filter accurately and return ok=True
+        mock_browser = MagicMock()
+        sent_calls = []
+
+        def fake_send(**kwargs):
+            sent_calls.append((kwargs["friend"], kwargs["message_text"]))
+            return {"friend": kwargs["friend"], "sent": True, "error": None}
+
+        with patch("main.init_browser", return_value=(mock_browser, MagicMock())), \
+             patch("main.install_ws_hook"), \
+             patch("main.install_media_guard"), \
+             patch("main.authenticate_session") as mock_auth, \
+             patch("main.send_streak_message", side_effect=fake_send), \
+             patch("main.notify_streak_summary"), \
+             patch("time.sleep", return_value=None):
+            res_ok = main.run(
+                accounts_override=[acc1, acc2],
+                headless=False,
+                only_account="primary",
+                only_friend="@BOB",
+            )
+
+        assert res_ok["ok"] is True
+        assert res_ok["critical_failure"] is False
+        assert mock_auth.call_count == 1
+        assert mock_auth.call_args.args[2] == "Primary"
+        assert sent_calls == [("bob", "🔥 Daily Streak")]
+        mock_browser.quit.assert_called_once()
+
+        # Empty accounts does not sys.exit in run(), but cli_main exits 1
+        with patch("main.load_accounts", return_value=[]), patch("main.notify_telegram"):
+            res_empty = main.run()
+            assert res_empty["ok"] is False and res_empty["critical_failure"] is True
+
+        with patch("main.run", return_value={"ok": False}) as mock_run:
+            with pytest.raises(SystemExit) as exc_info:
+                main.cli_main(["--headful", "--only-account", "Primary", "--only-friend", "bob"])
+            assert exc_info.value.code == 1
+            mock_run.assert_called_once_with(headless=False, only_account="Primary", only_friend="bob")
+
+
+# ===========================================================================
+# 5. gui/services/i18n.py
+# ===========================================================================
+
+class TestI18nService:
+    def test_en_id_lookup_subscribe_and_set_language(self):
+        from gui.services.i18n import I18nManager
+
+        mgr = I18nManager(default_lang="en")
+        seen = []
+
+        def on_lang(lang: str) -> None:
+            seen.append(lang)
+
+        mgr.subscribe(on_lang)
+        assert mgr.get_language() == "en"
+        assert mgr.tr("nav.accounts") == "Accounts"
+
+        # Same language does not re-fire subscribers
+        mgr.set_language("en-US")
+        assert seen == []
+
+        # Switch to Indonesian
+        assert mgr.set_language("id-ID") == "id"
+        assert seen == ["id"]
+        assert mgr.tr("nav.accounts") == "Akun"
+        assert mgr.tr("dashboard.accounts_count", count=3) == "3 akun terkonfigurasi"
+        assert mgr.tr("nonexistent.key") == "nonexistent.key"
+
+        # Unsubscribe stops notifications
+        mgr.unsubscribe(on_lang)
+        mgr.set_language("en")
+        assert seen == ["id"]
+
+    def test_friendly_error_mappings_and_secret_redaction(self):
+        from gui.services.browsers import BrowserLocked, V20EncryptedError
+        from gui.services.github_api import GitHubError
+        from gui.services.i18n import I18nManager
+        from src.exceptions import InboxUnavailableError, RateLimitError, SessionExpiredError
+
+        mgr = I18nManager("en")
+
+        assert "App-Bound Encryption" in mgr.friendly_error(V20EncryptedError("v20"))
+        assert "v20" in mgr.friendly_error("v20 encrypted", lang="id").lower()
+
+        assert "currently open" in mgr.friendly_error(BrowserLocked("locked")).lower()
+        assert "mengunci" in mgr.friendly_error("WinError 32 database is locked", lang="id").lower()
+
+        assert "Business Suite" in mgr.friendly_error(InboxUnavailableError("biz"))
+        assert "Business Suite" in mgr.friendly_error("redirected to business-suite", lang="id")
+
+        assert "session cookie" in mgr.friendly_error(SessionExpiredError("expired")).lower()
+        assert "24 hours" in mgr.friendly_error(RateLimitError("too fast")).lower()
+
+        assert "webhook" in mgr.friendly_error("Telegram 409 conflict (active webhook)").lower()
+        assert "webhook" in mgr.friendly_error("Telegram 409 webhook", lang="id").lower()
+
+        assert "422" in mgr.friendly_error(GitHubError("unprocessable", status_code=422))
+        assert "409" in mgr.friendly_error(GitHubError("conflict", status_code=409))
+        assert "409" in mgr.friendly_error("PATCH /ref -> 409", lang="id")
+
+        # Secret redaction in fallback error text
+        raw = (
+            "Error with ghp_secret1234567890 and 123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 "
+            "Authorization: Bearer topsecret Cookie: sessionid=mysecretval"
+        )
+        cleaned = mgr.friendly_error(raw)
+        assert "ghp_secret1234567890" not in cleaned
+        assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in cleaned
+        assert "topsecret" not in cleaned
+        assert "mysecretval" not in cleaned
+
+
+# ===========================================================================
+# 6. gui/services/storage.py
+# ===========================================================================
+
+class TestStorageService:
+    def test_config_store_atomic_load_save_reset(self, tmp_path):
+        from gui.services.storage import AccountProfile, AppState, ConfigStore
+
+        store = ConfigStore(tmp_path / "cfg")
+        assert store.exists() is False
+        default_state = store.load()
+        assert default_state.language == "en"
+        assert default_state.share_times == 2
+
+        state = AppState(
+            language="id",
+            theme="dark",
+            accent_mode="tiktok",
+            mode="both",
+            multi_account=True,
+            accounts=[
+                AccountProfile(
+                    id="acc1",
+                    name="Alpha",
+                    friends=["alice", "bob"],
+                    share_times_override=0,
+                    video_url_override="",
+                    username="alpha_u",
+                    inbox_verified=True,
+                )
+            ],
+            share_times=0,
+            video_enabled=False,
+            photo_enabled=False,
+            daily_cap=5,
+            local_times=["08:00", "20:00"],
+        )
+        saved_path = store.save(state)
+        assert saved_path.is_file()
+        assert store.exists() is True
+        assert not list((tmp_path / "cfg").glob("*.tmp"))
+
+        reloaded = store.load()
+        assert reloaded.language == "id"
+        assert reloaded.accent_mode == "tiktok"
+        assert reloaded.share_times == 0
+        assert reloaded.video_enabled is False
+        assert reloaded.accounts[0].share_times_override == 0
+        assert reloaded.accounts[0].video_url_override == ""
+        assert reloaded.accounts[0].inbox_verified is True
+
+        # Corrupt JSON returns defaults safely
+        saved_path.write_text("{corrupt", encoding="utf-8")
+        assert store.load().language == "en"
+
+        store.reset()
+        assert store.exists() is False
+
+    def test_secret_store_keyring_dpapi_fallback_and_clear_all(self, tmp_path, monkeypatch):
+        from gui.services.storage import SecretStore
+
+        # 1) Keyring backend
+        mem_keyring: dict[tuple[str, str], str] = {}
+        fake_keyring = types.SimpleNamespace(
+            get_password=lambda svc, k: mem_keyring.get((svc, k)),
+            set_password=lambda svc, k, v: mem_keyring.__setitem__((svc, k), v),
+            delete_password=lambda svc, k: mem_keyring.pop((svc, k), None),
+        )
+        monkeypatch.setitem(sys.modules, "keyring", fake_keyring)
+
+        ss = SecretStore(tmp_path / "sec1")
+        assert ss.set_github_token("ghp_1234567890") == "keyring"
+        assert ss.set_telegram_token("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345") == "keyring"
+        assert ss.set_account_cookie("acc1", "sessionid=abc") == "keyring"
+        assert ss.get_github_token() == "ghp_1234567890"
+        assert ss.get_account_cookie("acc1") == "sessionid=abc"
+
+        ss.clear_all(account_ids=["acc1"])
+        assert mem_keyring == {}
+        assert not ss._index_path.exists()
+
+        # 2) Keyring fails -> DPAPI fallback (mocked win32crypt so test works on any OS)
+        def fail_set(*_a):
+            raise RuntimeError("keyring size limit exceeded")
+
+        broken_keyring = types.SimpleNamespace(
+            get_password=lambda *_a: None,
+            set_password=fail_set,
+            delete_password=lambda *_a: None,
+        )
+        monkeypatch.setitem(sys.modules, "keyring", broken_keyring)
+
+        fake_win32crypt = types.SimpleNamespace(
+            CryptProtectData=lambda data, *_a: b"DPAPI_HDR:" + bytes(b ^ 0x5A for b in data),
+            CryptUnprotectData=lambda blob, *_a: ("desc", bytes(b ^ 0x5A for b in blob[len(b"DPAPI_HDR:"):])),
+        )
+        monkeypatch.setitem(sys.modules, "win32crypt", fake_win32crypt)
+
+        ss_dpapi = SecretStore(tmp_path / "sec2")
+        assert ss_dpapi.set_account_cookie("acc2", "sessionid=supersecret_cookie") == "dpapi"
+        raw_dpapi = ss_dpapi._dpapi_path.read_bytes()
+        assert b"supersecret_cookie" not in raw_dpapi  # never plaintext
+        assert ss_dpapi.get_account_cookie("acc2") == "sessionid=supersecret_cookie"
+
+        ss_dpapi.clear_all()
+        assert not ss_dpapi._dpapi_path.exists()
+
+        # 3) Neither keyring nor DPAPI available -> RuntimeError (never plaintext)
+        monkeypatch.setattr(SecretStore, "_import_win32crypt", staticmethod(lambda: None))
+        with pytest.raises(RuntimeError, match="Secure storage unavailable"):
+            ss_dpapi.set_github_token("ghp_fail")
+
+    def test_export_import_workspace_roundtrip_and_redact(self, tmp_path, monkeypatch):
+        from gui.services.storage import (
+            AccountProfile,
+            AppState,
+            SecretStore,
+            export_local_workspace,
+            import_local_workspace,
+            redact_secrets,
+        )
+
+        mem_keyring: dict[tuple[str, str], str] = {}
+        fake_keyring = types.SimpleNamespace(
+            get_password=lambda svc, k: mem_keyring.get((svc, k)),
+            set_password=lambda svc, k, v: mem_keyring.__setitem__((svc, k), v),
+            delete_password=lambda svc, k: mem_keyring.pop((svc, k), None),
+        )
+        monkeypatch.setitem(sys.modules, "keyring", fake_keyring)
+        ss = SecretStore(tmp_path / "sec")
+        ss.set_telegram_token("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+        ss.set_account_cookie("a1", "sessionid=sid_one")
+        ss.set_account_cookie("a2", "sessionid=sid_two")
+
+        # Single-account with video & photo disabled
+        ws_single = tmp_path / "ws_single"
+        ws_single.mkdir()
+        (ws_single / "accounts.json").write_text("[]", encoding="utf-8")
+        single_state = AppState(
+            multi_account=False,
+            accounts=[AccountProfile(id="a1", name="Main", friends=["alice", "bob"])],
+            message="Hi!",
+            video_enabled=False,
+            photo_enabled=False,
+            daily_cap=3,
+            headless_local=False,
+            telegram_enabled=True,
+            telegram_chat_id="777",
+        )
+        exp_single = export_local_workspace(single_state, ss, ws_single)
+        assert exp_single["mode"] == "single"
+        assert not (ws_single / "accounts.json").exists()  # stale file removed
+
+        imp_single = import_local_workspace(ws_single)
+        s_back = imp_single["state"]
+        assert s_back.multi_account is False
+        assert s_back.video_enabled is False
+        assert s_back.photo_enabled is False
+        assert s_back.daily_cap == 3
+        assert s_back.headless_local is False
+        assert s_back.telegram_enabled is True
+        assert s_back.telegram_chat_id == "777"
+        assert s_back.accounts[0].friends == ["alice", "bob"]
+        assert list(imp_single["secrets"]["accounts"].values()) == ["sessionid=sid_one"]
+
+        # Multi-account round-trip
+        ws_multi = tmp_path / "ws_multi"
+        multi_state = AppState(
+            multi_account=True,
+            accounts=[
+                AccountProfile(id="a1", name="Acc1", friends=["alice"], share_times_override=0, video_url_override=""),
+                AccountProfile(id="a2", name="Acc2", friends=["bob", "alice"], message_override="Yo"),
+            ],
+            message="DefaultMsg",
+            video_enabled=True,
+            video_url="https://www.tiktok.com/@u/video/1234567890123456789",
+            share_times=2,
+            photo_enabled=True,
+        )
+        exp_multi = export_local_workspace(multi_state, ss, ws_multi)
+        assert exp_multi["mode"] == "multi"
+        assert (ws_multi / "accounts.json").is_file()
+
+        imp_multi = import_local_workspace(ws_multi)
+        m_back = imp_multi["state"]
+        assert m_back.multi_account is True
+        assert len(m_back.accounts) == 2
+        assert m_back.accounts[0].share_times_override == 0
+        assert m_back.accounts[0].video_url_override == ""
+        assert m_back.accounts[1].message_override == "Yo"
+        assert sorted(imp_multi["secrets"]["accounts"].values()) == ["sessionid=sid_one", "sessionid=sid_two"]
+
+        # Secret redaction
+        sample = (
+            'TIKTOK_SESSION_ID=raw_cookie_123\n'
+            '{"session_id": "abc_secret", "token": "xyz"}\n'
+            'https://api.telegram.org/bot123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345/getUpdates\n'
+            'token=github_pat_1234567890abcdef custom=my_extra_secret_999'
+        )
+        red = redact_secrets(sample, extra_secrets=["my_extra_secret_999"])
+        for leak in ("raw_cookie_123", "abc_secret", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", "github_pat_1234567890abcdef", "my_extra_secret_999"):
+            assert leak not in red
+
+
+# ===========================================================================
+# 7. gui/services/validators.py
+# ===========================================================================
+
+class TestValidatorsService:
+    def test_normalize_friends_and_csv_roundtrip(self, tmp_path):
+        from gui.services.validators import export_friends_csv, import_friends_csv, normalize_friends
+
+        raw = (
+            "@Alice, bob\n"
+            "https://www.tiktok.com/@Carol?lang=en; https://m.tiktok.com/@dave/\n"
+            "@alice\n"
+            "John Doe\n"
+            "https://vt.tiktok.com/ZS12345/\n"
+            "https://www.tiktok.com/@Eve/video/7684838545659317524\n"
+            "bad!name\n"
+            "@user_one @user_two"
+        )
+        handles, warnings = normalize_friends(raw)
+        assert handles == ["Alice", "bob", "Carol", "dave", "Eve", "user_one", "user_two"]
+        assert any("duplicate" in w.lower() for w in warnings)
+        assert any("John Doe" in w for w in warnings)
+        assert any("short link" in w.lower() for w in warnings)
+        assert any("video/photo URL" in w for w in warnings)
+        assert any("bad!name" in w for w in warnings)
+
+        csv_file = tmp_path / "friends.csv"
+        export_friends_csv(csv_file, ["@First", "second", "FIRST"])
+        assert import_friends_csv(csv_file) == ["First", "second"]
+
+    def test_validate_video_url_and_short_link_redirect(self):
+        from gui.services.validators import validate_video_url
+
+        assert validate_video_url("")["valid"] is False
+        ok_full = validate_video_url("https://www.tiktok.com/@u/video/7684838545659317524")
+        assert ok_full["valid"] is True and ok_full["aweme_id"] == "7684838545659317524"
+
+        short_no_res = validate_video_url("https://vt.tiktok.com/ZSabc/", resolve_short=False)
+        assert short_no_res["valid"] is False and short_no_res["is_short_link"] is True
+
+        resp_redirect = _FakeHTTPResponse(
+            "",
+            url="https://www.tiktok.com/@creator/video/7123456789012345678?is_from_webapp=1",
+        )
+        with patch("urllib.request.urlopen", return_value=resp_redirect):
+            res_short = validate_video_url("vt.tiktok.com/ZSabc/", resolve_short=True)
+        assert res_short["valid"] is True
+        assert res_short["aweme_id"] == "7123456789012345678"
+        assert res_short["normalized_url"] == "https://www.tiktok.com/@creator/video/7123456789012345678"
+
+    def test_prepare_photo_secret_pillow(self, tmp_path):
+        PIL_Image = pytest.importorskip("PIL.Image")
+        from gui.services.validators import prepare_photo_secret
+
+        # Create a 1200x900 RGBA image with transparency
+        img_path = tmp_path / "big_alpha.png"
+        img = PIL_Image.new("RGBA", (1200, 900), (255, 0, 0, 128))
+        img.save(img_path, format="PNG")
+
+        data_url = prepare_photo_secret(img_path, max_bytes=45000)
+        assert data_url.startswith("data:image/jpeg;base64,")
+        assert len(data_url.encode("ascii")) <= 45000
+
+        jpeg_bytes = base64.b64decode(data_url.split(",", 1)[1])
+        with PIL_Image.open(io.BytesIO(jpeg_bytes)) as out_img:
+            assert out_img.format == "JPEG"
+            assert max(out_img.size) <= 720
+
+        with pytest.raises(FileNotFoundError):
+            prepare_photo_secret(tmp_path / "missing.png")
+
+    def test_repo_name_telegram_token_and_cron_math(self):
+        from gui.services.validators import (
+            cron_to_wib_summary,
+            times_to_utc_cron,
+            validate_repo_name,
+            validate_telegram_token,
+        )
+
+        assert validate_repo_name("my-tiktok_streak.1")["valid"] is True
+        assert validate_repo_name("")["valid"] is False
+        assert validate_repo_name("..")["valid"] is False
+        assert validate_repo_name("repo.git")["valid"] is False
+        assert validate_repo_name("bad/name")["valid"] is False
+
+        ok_tok = validate_telegram_token("1234567:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+        assert ok_tok["valid"] is True and ok_tok["bot_id"] == "1234567"
+        assert validate_telegram_token("123:short")["valid"] is False
+
+        assert times_to_utc_cron(["08:00"]) == "0 1 * * *"
+        assert times_to_utc_cron(["08:00", "20:00"]) == "0 1,13 * * *"
+        assert times_to_utc_cron("02:30") == "30 19 * * *"
+        with pytest.raises(ValueError, match="same minute"):
+            times_to_utc_cron(["08:00", "20:15"])
+        with pytest.raises(ValueError):
+            times_to_utc_cron([])
+
+        assert cron_to_wib_summary("0 1,13 * * *", lang="en") == "Daily at 08:00, 20:00 WIB"
+        assert cron_to_wib_summary("30 19 * * *", lang="id") == "Setiap hari pukul 02:30 WIB"
+
+
+# ===========================================================================
+# 8. gui/services/browsers.py
+# ===========================================================================
+
+class TestBrowsersService:
+    def test_chromium_key_utf8_bom_and_decrypt_checks(self, tmp_path, monkeypatch):
+        AES = pytest.importorskip("Crypto.Cipher.AES")
+        from gui.services import browsers
+
+        key = os.urandom(32)
+        raw_dpapi_blob = b"DPAPI_WRAPPED_KEY"
+        fake_win32crypt = types.SimpleNamespace(
+            CryptUnprotectData=lambda b, *_a: ("", key if b == raw_dpapi_blob else b"dpapi_plain"),
+        )
+        monkeypatch.setitem(sys.modules, "win32crypt", fake_win32crypt)
+
+        # Write Local State WITH UTF-8 BOM
+        enc_b64 = base64.b64encode(b"DPAPI" + raw_dpapi_blob).decode("ascii")
+        local_state = tmp_path / "Local State"
+        local_state.write_bytes(b"\xef\xbb\xbf" + json.dumps({"os_crypt": {"encrypted_key": enc_b64}}).encode("utf-8"))
+
+        loaded_key = browsers._chromium_key(str(tmp_path))
+        assert loaded_key == key
+
+        # < 31 length check for v10/v11
+        with pytest.raises(ValueError, match="< 31"):
+            browsers._decrypt_chromium(b"v10" + b"x" * 20, loaded_key)
+
+        # Real AES-GCM v10 decryption
+        nonce = b"0123456789ab"
+        cipher = AES.new(loaded_key, AES.MODE_GCM, nonce=nonce)
+        ct, tag = cipher.encrypt_and_digest(b"real_session_123")
+        assert browsers._decrypt_chromium(b"v10" + nonce + ct + tag, loaded_key) == "real_session_123"
+
+        # v20 raises V20EncryptedError
+        with pytest.raises(browsers.V20EncryptedError):
+            browsers._decrypt_chromium(b"v20" + b"0" * 40, loaded_key)
+
+    def test_v20_detection_domain_filter_and_expiry_ordering(self, tmp_path, monkeypatch):
+        AES = pytest.importorskip("Crypto.Cipher.AES")
+        from gui.services import browsers
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        local_app = tmp_path / "Local"
+        roam_app = tmp_path / "Roam"
+        monkeypatch.setenv("LOCALAPPDATA", str(local_app))
+        monkeypatch.setenv("APPDATA", str(roam_app))
+
+        key = b"K" * 32
+        dpapi_calls = []
+
+        def fake_unprotect(blob, *_a):
+            dpapi_calls.append(blob)
+            return ("", key)
+
+        fake_win32crypt = types.SimpleNamespace(CryptUnprotectData=fake_unprotect)
+        monkeypatch.setitem(sys.modules, "win32crypt", fake_win32crypt)
+
+        def make_v10(val: str) -> bytes:
+            nonce = b"123456789012"
+            ct, tag = AES.new(key, AES.MODE_GCM, nonce=nonce).encrypt_and_digest(val.encode("utf-8"))
+            return b"v10" + nonce + ct + tag
+
+        # Chrome profile with v20 cookies
+        chrome_dir = local_app / "Google" / "Chrome" / "User Data"
+        (chrome_dir / "Default" / "Network").mkdir(parents=True)
+        (chrome_dir / "Local State").write_text(
+            json.dumps({"os_crypt": {"encrypted_key": base64.b64encode(b"DPAPIkey").decode()}}),
+            encoding="utf-8-sig",
+        )
+        chrome_db = chrome_dir / "Default" / "Network" / "Cookies"
+        with contextlib.closing(sqlite3.connect(chrome_db)) as con:
+            con.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER)")
+            con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?, ?)", (".tiktok.com", "sessionid", "", b"v20" + b"x" * 32, 99999999999999999))
+            con.commit()
+
+        # Brave profile with v10 cookies, multiple expiries, and spoofed domain
+        brave_dir = local_app / "BraveSoftware" / "Brave-Browser" / "User Data"
+        (brave_dir / "Default" / "Network").mkdir(parents=True)
+        (brave_dir / "Local State").write_text(
+            json.dumps({"os_crypt": {"encrypted_key": base64.b64encode(b"DPAPIkey").decode()}}),
+            encoding="utf-8-sig",
+        )
+        brave_db = brave_dir / "Default" / "Network" / "Cookies"
+        now_webkit = int((1_800_000_000 + browsers._WEBKIT_EPOCH_OFFSET) * 1_000_000)
+        with contextlib.closing(sqlite3.connect(brave_db)) as con:
+            con.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER)")
+            # Spoofed non-TikTok domain must be excluded
+            con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?, ?)", ("not-tiktok.com", "sessionid", "", make_v10("spoofed"), now_webkit * 2))
+            # Expired cookie
+            con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?, ?)", (".tiktok.com", "sessionid", "", make_v10("expired_sid"), 100))
+            # Session cookie (expires_utc = 0)
+            con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?, ?)", ("tiktok.com", "sessionid", "", make_v10("session_sid"), 0))
+            # Empty blob should be skipped before DPAPI
+            con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?, ?)", (".tiktok.com", "empty_blob", "", b"", now_webkit * 2))
+            # Freshest unexpired cookie (should win!)
+            con.execute("INSERT INTO cookies VALUES (?, ?, ?, ?, ?)", ("www.tiktok.com", "sessionid", "", make_v10("fresh_sid"), now_webkit * 2))
+            con.commit()
+
+        sources = browsers.list_sources(enrich=True)
+        assert len(sources) == 2
+        # Brave (non-v20) sorts before Chrome (v20_blocked=True)
+        assert sources[0]["browser_label"] == "Brave"
+        assert sources[0]["v20_blocked"] is False
+        assert sources[0]["has_tiktok"] == 4  # excludes not-tiktok.com
+        assert sources[1]["browser_label"] == "Google Chrome"
+        assert sources[1]["v20_blocked"] is True
+
+        brave_res = browsers.read_source(sources[0])
+        assert brave_res["sessionid"] == "fresh_sid"
+        assert all(blob != b"" for blob in dpapi_calls)
+
+        with pytest.raises(browsers.V20EncryptedError):
+            browsers.read_source(sources[1])
+
+        # Locked browser during list_sources(enrich=True) reports locked=True without crashing
+        with patch.object(browsers, "_inspect_chromium_presence", side_effect=browsers.BrowserLocked("locked")):
+            locked_sources = browsers.list_sources(enrich=True)
+        assert all(s["locked"] is True for s in locked_sources)
+
+    def test_wal_shm_sidecar_copy_and_browser_locked_on_execute(self, tmp_path):
+        import shutil as _shutil
+        from gui.services import browsers
+
+        db_path = tmp_path / "Cookies"
+        con = sqlite3.connect(db_path)
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("CREATE TABLE t (v TEXT)")
+            con.execute("INSERT INTO t VALUES ('initial')")
+            con.commit()
+
+            # Write a second committed transaction kept in -wal (disable auto-checkpoint)
+            con.execute("PRAGMA wal_autocheckpoint=0")
+            con.execute("INSERT INTO t VALUES ('from_wal')")
+            con.commit()
+            assert (tmp_path / "Cookies-wal").exists()
+            assert (tmp_path / "Cookies-shm").exists()
+
+            copied_srcs = []
+            orig_copy2 = _shutil.copy2
+
+            def spy_copy2(src, dst, *a, **kw):
+                copied_srcs.append(os.path.basename(str(src)))
+                return orig_copy2(src, dst, *a, **kw)
+
+            # Force _connect to act locked so _query falls back to temp copy + -wal/-shm sidecars
+            with patch.object(browsers, "_connect", side_effect=browsers.BrowserLocked("locked")), \
+                 patch("gui.services.browsers.shutil.copy2", side_effect=spy_copy2):
+                rows = browsers._query(str(db_path), "SELECT v FROM t ORDER BY rowid")
+            assert [r[0] for r in rows] == ["initial", "from_wal"]
+            assert {"Cookies", "Cookies-wal", "Cookies-shm"}.issubset(set(copied_srcs))
+        finally:
+            con.close()
+
+        # OperationalError on execute (both primary & copied DB) raises BrowserLocked
+        class BoomCon:
+            def execute(self, *_a):
+                raise sqlite3.OperationalError("unable to open database file")
+
+            def close(self):
+                pass
+
+        with patch.object(browsers, "_connect", return_value=BoomCon()), \
+             patch("sqlite3.connect", return_value=BoomCon()):
+            with pytest.raises(browsers.BrowserLocked):
+                browsers._query(str(db_path), "SELECT 1")
+
+    def test_firefox_profiles_ini_and_disambiguation(self, tmp_path, monkeypatch):
+        from gui.services import browsers
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        roam = tmp_path / "Roam"
+        local = tmp_path / "Local"
+        monkeypatch.setenv("APPDATA", str(roam))
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+
+        ff_roam = roam / "Mozilla" / "Firefox"
+        prof1 = ff_roam / "Profiles" / "default"
+        prof1.mkdir(parents=True)
+        (ff_roam / "profiles.ini").write_text("[Profile0]\nPath=Profiles/default\nIsRelative=1\n", encoding="utf-8")
+        with contextlib.closing(sqlite3.connect(prof1 / "cookies.sqlite")) as con:
+            con.execute("CREATE TABLE moz_cookies (host TEXT, name TEXT, value TEXT, expiry INTEGER)")
+            con.execute("INSERT INTO moz_cookies VALUES ('.tiktok.com', 'sessionid', 'ff_old', 10)")
+            con.execute("INSERT INTO moz_cookies VALUES ('.tiktok.com', 'sessionid', 'ff_fresh', 9999999999)")
+            con.commit()
+
+        # Second Firefox root in Local with same profile folder name to verify ID disambiguation
+        ff_local = local / "Mozilla" / "Firefox"
+        prof2 = ff_local / "Profiles" / "default"
+        prof2.mkdir(parents=True)
+        with contextlib.closing(sqlite3.connect(prof2 / "cookies.sqlite")) as con:
+            con.execute("CREATE TABLE moz_cookies (host TEXT, name TEXT, value TEXT, expiry INTEGER)")
+            con.execute("INSERT INTO moz_cookies VALUES ('.tiktok.com', 'sessionid', 'ff_local', 9999999999)")
+            con.commit()
+
+        sources = browsers.list_sources(enrich=True)
+        assert len(sources) == 2
+        assert len({s["id"] for s in sources}) == 2  # disambiguated
+        res = browsers.read_source(sources[0])
+        assert res["sessionid"] in ("ff_fresh", "ff_local")
+
+    def test_chrome_local_state_friendly_names_skip_internal_and_firefox_ini_names(self, tmp_path, monkeypatch):
+        from gui.services import browsers
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        local = tmp_path / "Local"
+        roam = tmp_path / "Roam"
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        monkeypatch.setenv("APPDATA", str(roam))
+
+        chrome_dir = local / "Google" / "Chrome" / "User Data"
+        for folder in ("Default", "Profile 1", "Profile 2", "Profile 3", "Guest Profile", "System Profile"):
+            (chrome_dir / folder / "Network").mkdir(parents=True, exist_ok=True)
+            db = chrome_dir / folder / "Network" / "Cookies"
+            with contextlib.closing(sqlite3.connect(db)) as con:
+                con.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER)")
+                if folder == "Default":
+                    con.execute("INSERT INTO cookies VALUES ('.tiktok.com', 'sessionid', '', ?, 9999999999)", (b"v20" + b"a" * 30,))
+                con.commit()
+
+        (chrome_dir / "Local State").write_bytes(
+            b"\xef\xbb\xbf"
+            + json.dumps({
+                "profile": {
+                    "info_cache": {
+                        "Default": {"name": "Personal"},
+                        "Profile 1": {"gaia_name": "work@example.com"},
+                        "Profile 2": {"shortcut_name": "Creator"},
+                        "Profile 3": {},
+                        "Guest Profile": {"name": "Guest"},
+                    }
+                }
+            }).encode("utf-8")
+        )
+
+        # Firefox root with friendly Name= in profiles.ini
+        ff_roam = roam / "Mozilla" / "Firefox"
+        ff_prof = ff_roam / "Profiles" / "abcd1234.default-release"
+        ff_prof.mkdir(parents=True)
+        (ff_roam / "profiles.ini").write_text(
+            "[Profile0]\nName=WorkProfile\nIsRelative=1\nPath=Profiles/abcd1234.default-release\n",
+            encoding="utf-8",
+        )
+        with contextlib.closing(sqlite3.connect(ff_prof / "cookies.sqlite")) as con:
+            con.execute("CREATE TABLE moz_cookies (host TEXT, name TEXT, value TEXT, expiry INTEGER)")
+            con.execute("INSERT INTO moz_cookies VALUES ('.tiktok.com', 'sessionid', 'ff_sid', 9999999999)")
+            con.commit()
+
+        sources = browsers.list_sources(enrich=True)
+        chrome_sources = {s["profile"]: s for s in sources if s["kind"] == "chromium"}
+        assert set(chrome_sources.keys()) == {"Default", "Profile 1", "Profile 2", "Profile 3"}
+        assert "Guest Profile" not in chrome_sources
+        assert "System Profile" not in chrome_sources
+        assert chrome_sources["Default"]["display_name"] == "Personal"
+        assert chrome_sources["Default"]["label"] == "Google Chrome — Personal (Default)"
+        assert chrome_sources["Profile 1"]["display_name"] == "work@example.com"
+        assert chrome_sources["Profile 1"]["label"] == "Google Chrome — work@example.com (Profile 1)"
+        assert chrome_sources["Profile 2"]["display_name"] == "Creator"
+        assert chrome_sources["Profile 2"]["label"] == "Google Chrome — Creator (Profile 2)"
+        assert chrome_sources["Profile 3"]["display_name"] == "Profile 3"
+        assert chrome_sources["Profile 3"]["label"] == "Google Chrome — Profile 3"
+
+        ff_sources = [s for s in sources if s["kind"] == "firefox"]
+        assert len(ff_sources) == 1
+        assert ff_sources[0]["display_name"] == "WorkProfile"
+        assert ff_sources[0]["label"] == "Firefox — WorkProfile"
+
+
+# ===========================================================================
+# 9. gui/services/tiktok_auth.py
+# ===========================================================================
+
+class TestTikTokAuthService:
+    def test_parse_cookie_payload_and_check_session_api(self):
+        from gui.services.tiktok_auth import check_session_api, parse_cookie_payload
+
+        tsv = "sessionid\tsid_tsv\t.tiktok.com\t/\t2030\nuid_tt\t12345\t.tiktok.com\t/\t2030"
+        assert parse_cookie_payload(tsv) == {"sessionid": "sid_tsv", "uid_tt": "12345"}
+
+        hdr = "Cookie: sessionid=s1\r\n; Path=/; HttpOnly; sid_tt=s2"
+        assert parse_cookie_payload(hdr) == {"sessionid": "s1", "sid_tt": "s2"}
+
+        assert check_session_api("")["ok"] is False
+
+        with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse({"data": {"username": "alice", "user_id_str": "42"}})):
+            ok_res = check_session_api("sid")
+            assert ok_res["ok"] is True and ok_res["username"] == "alice" and ok_res["uid"] == "42"
+
+        with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse({"message": "session expired"})):
+            exp_res = check_session_api("sid")
+            assert exp_res["ok"] is False and exp_res["waf_blocked"] is False
+
+        with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse("<html>WAF captcha</html>")):
+            waf_res = check_session_api("sid")
+            assert waf_res["ok"] is False and waf_res["waf_blocked"] is True
+
+    def test_guided_browser_login_success_business_suite_and_cancel(self, tmp_path):
+        from gui.services.tiktok_auth import guided_browser_login
+
+        # 1) Success reaching /messages via native browser + CDP Storage.getCookies
+        proc_ok = MagicMock()
+        proc_ok.poll.return_value = None
+        fake_clock = iter([0.0, 0.1, 0.2, 2.0, 2.1])
+        tabs_ok = [{"type": "page", "url": "https://www.tiktok.com/messages?lang=en", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/1"}]
+        cdp_cookies_ok = [
+            {"name": "sessionid", "value": "live_sid", "domain": ".tiktok.com", "expires": 9999999999},
+            {"name": "ttwid", "value": "tw_1", "domain": ".tiktok.com", "expires": 9999999999},
+        ]
+
+        with patch("gui.services.tiktok_auth._launch_native_browser", return_value=(proc_ok, 9222, "chrome")), \
+             patch("gui.services.tiktok_auth._http_json_get", return_value=tabs_ok), \
+             patch("gui.services.tiktok_auth._cdp_get_cookies", return_value=cdp_cookies_ok) as mock_cdp, \
+             patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "alice"}), \
+             patch("gui.services.tiktok_auth.time.time", side_effect=lambda: next(fake_clock, 3.0)), \
+             patch("gui.services.tiktok_auth.time.sleep", return_value=None):
+            res_ok = guided_browser_login(tmp_path / "prof_ok", timeout=60)
+        assert res_ok["ok"] is True
+        assert res_ok["inbox_verified"] is True
+        assert res_ok["username"] == "alice"
+        assert res_ok["sessionid"] == "live_sid"
+        assert res_ok["browser"] == "chrome"
+        mock_cdp.assert_called_once_with(9222, page_ws_url="ws://127.0.0.1:9222/devtools/page/1")
+        proc_ok.terminate.assert_called_once()
+
+        # 2) manual_grab_event on /login: retries when empty, succeeds once cookie exists
+        proc_grab = MagicMock()
+        proc_grab.poll.return_value = None
+        grab_ev = threading.Event()
+        grab_ev.set()
+        statuses: list[str] = []
+        tabs_login = [{"type": "page", "url": "https://www.tiktok.com/login", "webSocketDebuggerUrl": "ws://127.0.0.1:9223/devtools/page/1"}]
+        cdp_seq = [
+            [],
+            [{"name": "sessionid", "value": "grab_sid", "domain": ".tiktok.com", "expires": 9999999999}],
+        ]
+
+        def fake_sleep(_sec):
+            if not grab_ev.is_set():
+                grab_ev.set()
+
+        with patch("gui.services.tiktok_auth._launch_native_browser", return_value=(proc_grab, 9223, "edge")), \
+             patch("gui.services.tiktok_auth._http_json_get", return_value=tabs_login), \
+             patch("gui.services.tiktok_auth._cdp_get_cookies", side_effect=cdp_seq), \
+             patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "bob"}), \
+             patch("gui.services.tiktok_auth.time.sleep", side_effect=fake_sleep):
+            res_grab = guided_browser_login(
+                tmp_path / "prof_grab",
+                timeout=60,
+                status_cb=statuses.append,
+                manual_grab_event=grab_ev,
+            )
+        assert res_grab["ok"] is True
+        assert res_grab["sessionid"] == "grab_sid"
+        assert res_grab["username"] == "bob"
+        assert res_grab["inbox_verified"] is False
+        assert res_grab["browser"] == "edge"
+        assert any("No TikTok session cookie found yet" in s for s in statuses)
+        proc_grab.terminate.assert_called_once()
+
+        # 3) Redirected to business-suite
+        proc_biz = MagicMock()
+        proc_biz.poll.return_value = None
+        tabs_biz = [{"type": "page", "url": "https://www.tiktok.com/business-suite/messages"}]
+
+        with patch("gui.services.tiktok_auth._launch_native_browser", return_value=(proc_biz, 9224, "edge")), \
+             patch("gui.services.tiktok_auth._http_json_get", return_value=tabs_biz), \
+             patch("gui.services.tiktok_auth.time.sleep", return_value=None):
+            res_biz = guided_browser_login(tmp_path / "prof_biz", timeout=60)
+        assert res_biz["ok"] is False
+        assert res_biz["business_suite"] is True
+        assert res_biz["inbox_verified"] is False
+        proc_biz.terminate.assert_called_once()
+
+        # 4) Cancelled via cancel_event
+        proc_cancel = MagicMock()
+        proc_cancel.poll.return_value = None
+        cancel = threading.Event()
+        cancel.set()
+        with patch("gui.services.tiktok_auth._launch_native_browser", return_value=(proc_cancel, 9225, "chrome")):
+            res_cancel = guided_browser_login(tmp_path / "prof_cancel", cancel_event=cancel, timeout=60)
+        assert res_cancel["ok"] is False and res_cancel["cancelled"] is True
+        proc_cancel.terminate.assert_called_once()
+
+    def test_cdp_get_cookies_storage_and_network_fallback(self):
+        from gui.services.tiktok_auth import _cdp_get_cookies
+
+        # 1) Storage.getCookies via /json/version filters to TikTok domains
+        def fake_http_storage(url, timeout=2.0):
+            assert url == "http://127.0.0.1:9333/json/version"
+            return {"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/abc"}
+
+        with patch("gui.services.tiktok_auth._http_json_get", side_effect=fake_http_storage), \
+             patch("gui.services.tiktok_auth._ws_cdp_call", return_value={
+                 "cookies": [
+                     {"name": "sessionid", "value": "s1", "domain": ".tiktok.com"},
+                     {"name": "other", "value": "x", "domain": "example.com"},
+                 ]
+             }) as mock_ws:
+            out = _cdp_get_cookies(9333)
+        assert out == [{"name": "sessionid", "value": "s1", "domain": ".tiktok.com"}]
+        mock_ws.assert_called_once_with("ws://127.0.0.1:9333/devtools/browser/abc", "Storage.getCookies", timeout=10.0)
+
+        # 2) Falls back to /json/list + Network.getAllCookies when Storage.getCookies fails
+        def fake_http_fallback(url, timeout=2.0):
+            if url.endswith("/json/version"):
+                raise RuntimeError("no version endpoint")
+            return [{"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/page/1"}]
+
+        with patch("gui.services.tiktok_auth._http_json_get", side_effect=fake_http_fallback), \
+             patch("gui.services.tiktok_auth._ws_cdp_call", return_value={
+                 "cookies": [{"name": "sid_tt", "value": "s2", "domain": "www.tiktok.com"}]
+             }) as mock_ws2:
+            out2 = _cdp_get_cookies(9333)
+        assert out2 == [{"name": "sid_tt", "value": "s2", "domain": "www.tiktok.com"}]
+        mock_ws2.assert_called_once_with("ws://127.0.0.1:9333/devtools/page/1", "Network.getAllCookies", timeout=10.0)
+
+    def test_verify_inbox_headless(self):
+        from gui.services.tiktok_auth import verify_inbox_headless
+        from src.exceptions import InboxUnavailableError, SessionExpiredError
+
+        assert verify_inbox_headless("")["session_expired"] is True
+
+        mock_browser = MagicMock()
+        with patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "alice"}), \
+             patch("src.browser.init_browser", return_value=(mock_browser, MagicMock())), \
+             patch("src.browser.authenticate_session"):
+            res = verify_inbox_headless("sessionid=abc")
+        assert res["ok"] is True and res["inbox_verified"] is True and res["username"] == "alice"
+        mock_browser.quit.assert_called_once()
+
+        with patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "biz"}), \
+             patch("src.browser.init_browser", return_value=(mock_browser, MagicMock())), \
+             patch("src.browser.authenticate_session", side_effect=InboxUnavailableError("biz")):
+            res_biz = verify_inbox_headless("sessionid=abc")
+        assert res_biz["ok"] is False and res_biz["business_suite"] is True
+
+        with patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": False, "username": ""}), \
+             patch("src.browser.init_browser", return_value=(mock_browser, MagicMock())), \
+             patch("src.browser.authenticate_session", side_effect=SessionExpiredError("expired")):
+            res_exp = verify_inbox_headless("sessionid=abc")
+        assert res_exp["ok"] is False and res_exp["session_expired"] is True
+
+
+# ===========================================================================
+# 10. gui/services/github_api.py
+# ===========================================================================
+
+class TestGitHubApiService:
+    def test_whoami_scope_check(self):
+        from gui.services.github_api import GitHub, has_required_scopes
+
+        assert has_required_scopes(["repo", "workflow"]) is True
+        assert has_required_scopes(["repo"]) is False
+
+        gh = GitHub("tok")
+        with patch.object(gh, "_req_with_headers", return_value=({"login": "alice"}, {"x-oauth-scopes": "repo, workflow"})):
+            me_ok = gh.whoami()
+            assert me_ok["has_required_scopes"] is True and me_ok["scopes"] == ["repo", "workflow"]
+
+        with patch.object(gh, "_req_with_headers", return_value=({"login": "alice"}, {"x-oauth-scopes": "repo"})):
+            me_bad = gh.whoami()
+            assert me_bad["has_required_scopes"] is False
+
+        with patch.object(gh, "_req_with_headers", return_value=({"login": "alice"}, {})):
+            me_fg = gh.whoami()
+            assert me_fg["scopes_header_present"] is False and me_fg["has_required_scopes"] is True
+
+    def test_sync_secrets_caches_key_and_deletes_stale(self):
+        nacl_public = pytest.importorskip("nacl.public")
+        nacl_encoding = pytest.importorskip("nacl.encoding")
+        from gui.services.github_api import GitHub
+
+        priv = nacl_public.PrivateKey.generate()
+        pub_b64 = priv.public_key.encode(nacl_encoding.Base64Encoder()).decode("ascii")
+
+        gh = GitHub("tok")
+        calls = []
+
+        def fake_req(method, path, body=None, api=None):
+            calls.append((method, path, body))
+            if method == "GET" and path.endswith("/actions/secrets/public-key"):
+                return {"key": pub_b64, "key_id": "key_1"}
+            if method == "GET" and "/actions/secrets?" in path:
+                return {"secrets": [{"name": "TIKTOK_SESSION_ID"}, {"name": "TIKTOK_ACCOUNTS_JSON"}, {"name": "UNMANAGED"}]}
+            if method == "DELETE" and path.endswith("/STALE_404"):
+                from gui.services.github_api import GitHubError
+                raise GitHubError("not found", status_code=404)
+            return {}
+
+        with patch.object(gh, "_req", side_effect=fake_req):
+            res = gh.sync_secrets(
+                "alice/tiktok-streak",
+                desired={"TIKTOK_SESSION_ID": "sid_1", "MESSAGE": "Hey", "EMPTY_IGNORED": ""},
+                managed_names=["TIKTOK_SESSION_ID", "TIKTOK_ACCOUNTS_JSON", "MESSAGE"],
+            )
+            assert res == {"written": ["TIKTOK_SESSION_ID", "MESSAGE"], "deleted": ["TIKTOK_ACCOUNTS_JSON"]}
+            assert gh.delete_secret("alice/tiktok-streak", "STALE_404") is False
+
+        # Public key fetched ONLY ONCE across multiple secrets
+        key_fetches = [c for c in calls if c[0] == "GET" and c[1].endswith("/public-key")]
+        assert len(key_fetches) == 1
+        puts = [c for c in calls if c[0] == "PUT"]
+        assert len(puts) == 2
+        deletes = [c for c in calls if c[0] == "DELETE"]
+        assert len(deletes) == 2  # TIKTOK_ACCOUNTS_JSON + STALE_404
+        # UNMANAGED secret was NOT deleted
+        assert not any("UNMANAGED" in c[1] for c in deletes)
+
+    def test_create_private_repo_with_bot_and_cron_rewrite(self):
+        from gui.services.github_api import GitHub, GitHubError
+
+        gh = GitHub("tok")
+        reqs = []
+        blobs_by_sha = {}
+
+        def fake_req_raw(method, path, body=None, api=None, follow_cross_host_auth_strip=False):
+            reqs.append((method, path, body))
+            if method == "GET" and path == "/repos/alice/my-private-streak":
+                raise GitHubError("not found", status_code=404)
+            if method == "GET" and path == "/user":
+                return json.dumps({"login": "alice"}).encode("utf-8"), {"x-oauth-scopes": "repo, workflow"}, 200
+            if method == "POST" and path == "/user/repos":
+                assert body["private"] is True
+                payload = {
+                    "full_name": "alice/my-private-streak",
+                    "default_branch": "main",
+                    "private": True,
+                    "html_url": "https://github.com/alice/my-private-streak",
+                }
+                return json.dumps(payload).encode("utf-8"), {}, 201
+            if method == "GET" and path.endswith("/git/ref/heads/main"):
+                return json.dumps({"object": {"sha": "head_sha_1"}}).encode("utf-8"), {}, 200
+            if method == "GET" and path.endswith("/git/commits/head_sha_1"):
+                return json.dumps({"tree": {"sha": "base_tree_1"}}).encode("utf-8"), {}, 200
+            if method == "POST" and path.endswith("/git/blobs"):
+                sha = f"blob_{len(blobs_by_sha)}"
+                blobs_by_sha[sha] = base64.b64decode(body["content"])
+                return json.dumps({"sha": sha}).encode("utf-8"), {}, 201
+            if method == "POST" and path.endswith("/git/trees"):
+                return json.dumps({"sha": "new_tree_1"}).encode("utf-8"), {}, 201
+            if method == "POST" and path.endswith("/git/commits"):
+                return json.dumps({"sha": "new_commit_1"}).encode("utf-8"), {}, 201
+            return b"{}", {}, 200
+
+        with patch.object(gh, "_req_raw", side_effect=fake_req_raw):
+            out = gh.create_private_repo_with_bot("alice", "my-private-streak", cron_expr="30 2,14 * * *")
+
+        assert out["full_name"] == "alice/my-private-streak"
+        assert out["private"] is True
+        assert out["commit_sha"] == "new_commit_1"
+        tree_call = next(c for c in reqs if c[0] == "POST" and c[1].endswith("/git/trees"))
+        paths = {e["path"]: e["sha"] for e in tree_call[2]["tree"]}
+        assert {"main.py", "requirements.txt", "test_runner.py", "assets/default_photo.png", ".github/workflows/streak.yml"}.issubset(paths.keys())
+        assert any(p.startswith("src/") and p.endswith(".py") for p in paths)
+        wf_text = blobs_by_sha[paths[".github/workflows/streak.yml"]].decode("utf-8")
+        assert "- cron: '30 2,14 * * *'" in wf_text
+
+    def test_fork_custom_name_and_timeout_error(self):
+        from gui.services.github_api import GitHub, GitHubError
+
+        gh = GitHub("tok")
+        with patch.object(gh, "_req", return_value={"full_name": "alice/custom-fork"}) as mock_req, \
+             patch.object(gh, "get_repo", return_value={"full_name": "alice/custom-fork", "default_branch": "main"}):
+            repo = gh.fork("alexanderfrit/tiktok-streak", name="custom-fork", timeout=5)
+        assert repo["full_name"] == "alice/custom-fork"
+        assert mock_req.call_args.args[2] == {"name": "custom-fork"}
+
+        # Timeout when get_repo keeps returning 404
+        clock = iter([0.0, 1.0, 10.0])
+        with patch.object(gh, "_req", return_value={"full_name": "alice/slow-fork"}), \
+             patch.object(gh, "get_repo", side_effect=GitHubError("not yet", status_code=404)), \
+             patch("gui.services.github_api.time.time", side_effect=lambda: next(clock, 10.0)), \
+             patch("gui.services.github_api.time.sleep", return_value=None):
+            with pytest.raises(GitHubError) as exc:
+                gh.fork("alexanderfrit/tiktok-streak", name="slow-fork", timeout=5)
+            assert exc.value.status_code == 408
+
+    def test_update_workflow_cron_dispatch_track_and_artifact_zip(self, tmp_path):
+        from gui.services.github_api import GitHub, GitHubError, _NoCrossHostAuthRedirect
+
+        gh = GitHub("tok")
+        orig_yaml = "on:\n  schedule:\n    - cron: '0 1 * * *' # daily\n"
+        b64_yaml = base64.b64encode(orig_yaml.encode("utf-8")).decode("ascii")
+
+        def fake_req(method, path, body=None, api=None):
+            if method == "GET" and "/contents/" in path:
+                return {"content": b64_yaml, "sha": "wf_sha"}
+            if method == "GET" and path == "/repos/alice/my-repo":
+                return {"default_branch": "main"}
+            if method == "PUT" and "/contents/" in path:
+                return {"commit": {"sha": "c1"}, "sent_body": body}
+            return {}
+
+        with patch.object(gh, "_req", side_effect=fake_req):
+            put_res = gh.update_workflow_cron("alice/my-repo", "0 1,13 * * *")
+        decoded = base64.b64decode(put_res["sent_body"]["content"]).decode("utf-8")
+        assert "- cron: '0 1,13 * * *' # daily" in decoded
+
+        # dispatch_and_track picks the newly created run
+        runs_seq = [
+            [{"id": 100}],
+            [{"id": 100}],
+            [{"id": 101, "event": "workflow_dispatch"}, {"id": 100}],
+        ]
+        with patch.object(gh, "default_branch", return_value="main"), \
+             patch.object(gh, "runs", side_effect=runs_seq), \
+             patch.object(gh, "dispatch"), \
+             patch("gui.services.github_api.time.sleep", return_value=None):
+            run = gh.dispatch_and_track("alice/my-repo", timeout=10)
+        assert run["id"] == 101
+
+        # download_diagnostics_artifact extracts only debug_*.png and debug_*.html
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w") as zf:
+            zf.writestr("debug_err.png", b"PNG")
+            zf.writestr("nested/debug_err.html", b"<html>err</html>")
+            zf.writestr("notes.txt", b"ignore")
+            zf.writestr("../../evil.png", b"ignore")
+
+        def fake_req_raw(method, path, body=None, api=None, follow_cross_host_auth_strip=False):
+            assert follow_cross_host_auth_strip is True
+            return zbuf.getvalue(), {}, 200
+
+        with patch.object(gh, "_req", return_value={"artifacts": [{"id": 55, "name": "debug-diagnostics", "expired": False}]}), \
+             patch.object(gh, "_req_raw", side_effect=fake_req_raw):
+            extracted = gh.download_diagnostics_artifact("alice/my-repo", 101, tmp_path / "diag")
+        assert sorted(p.name for p in extracted) == ["debug_err.html", "debug_err.png"]
+
+        # Cross-host redirect strips Authorization header
+        handler = _NoCrossHostAuthRedirect()
+        orig_req = urllib.request.Request("https://api.github.com/logs", headers={"Authorization": "Bearer secret", "Accept": "application/json"})
+        redir = handler.redirect_request(orig_req, None, 302, "Found", {}, "https://pipelines.actions.githubusercontent.com/blob")
+        assert redir.get_header("Authorization") is None
+
+        # Invalid cron raises GitHubError
+        with pytest.raises(GitHubError):
+            gh.update_workflow_cron("alice/my-repo", "bad cron")
+
+    def test_device_flow_poll_cancel_timeout_and_telegram_find_chat_id(self):
+        from gui.services.github_api import GitHubError, device_flow_poll, telegram_find_chat_id
+
+        # 1) Pending -> success
+        responses = [
+            _FakeHTTPResponse({"error": "authorization_pending"}),
+            _FakeHTTPResponse({"access_token": "gho_success"}),
+        ]
+        with patch("urllib.request.urlopen", side_effect=responses):
+            tok = device_flow_poll("dev_1", interval=1, expires_in=30, cancel_event=threading.Event())
+        assert tok == "gho_success"
+
+        # 2) Cancel event
+        ev = threading.Event()
+        ev.set()
+        with pytest.raises(GitHubError, match="cancelled"):
+            device_flow_poll("dev_1", interval=1, cancel_event=ev)
+
+        # 3) Timeout
+        clock = iter([0.0, 0.5, 10.0])
+        with patch("urllib.request.urlopen", return_value=_FakeHTTPResponse({"error": "authorization_pending"})), \
+             patch("gui.services.github_api.time.time", side_effect=lambda: next(clock, 10.0)), \
+             patch("gui.services.github_api.time.sleep", return_value=None):
+            with pytest.raises(GitHubError, match="timed out"):
+                device_flow_poll("dev_1", interval=1, timeout=5)
+
+        # 4) telegram_find_chat_id uses offset=-1 and detects 409 webhook conflict
+        valid_tok = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+        captured_urls = []
+
+        def fake_tg_open(url, timeout=15):
+            captured_urls.append(url)
+            return _FakeHTTPResponse({"ok": True, "result": [{"message": {"chat": {"id": 987654}}}]})
+
+        with patch("urllib.request.urlopen", side_effect=fake_tg_open):
+            res = telegram_find_chat_id(valid_tok)
+        assert res["ok"] is True and res["chat_id"] == "987654"
+        assert "offset=-1" in captured_urls[0]
+
+        err_409 = _make_http_error(
+            "https://api.telegram.org/bot.../getUpdates",
+            409,
+            {"ok": False, "description": "Conflict: can't use getUpdates method while webhook is active"},
+        )
+        with patch("urllib.request.urlopen", side_effect=err_409):
+            res_409 = telegram_find_chat_id(valid_tok)
+        assert res_409["ok"] is False
+        assert res_409["webhook_conflict"] is True
+        assert res_409["status_code"] == 409
+
+    def test_resolve_repo_parts_list_user_repos_repo_has_workflow_and_sync_only_private(self):
+        from gui.services.github_api import GitHub, GitHubError, resolve_repo_parts
+
+        # 1) resolve_repo_parts
+        assert resolve_repo_parts("octocat/my-repo", "alice") == ("octocat", "my-repo")
+        assert resolve_repo_parts("my-repo", "alice") == ("alice", "my-repo")
+        assert resolve_repo_parts("https://github.com/octocat/my-repo.git") == ("octocat", "my-repo")
+        assert resolve_repo_parts("https://github.com/octocat/my-repo/") == ("octocat", "my-repo")
+        assert resolve_repo_parts("", "alice") == ("alice", "")
+        with pytest.raises(GitHubError):
+            resolve_repo_parts("a/b/c")
+
+        # 2) list_user_repos (pagination + normalization + limit=0)
+        gh = GitHub("tok")
+        assert gh.list_user_repos(limit=0) == []
+
+        page1 = [
+            {
+                "full_name": f"alice/repo-{i}",
+                "name": f"repo-{i}",
+                "owner": {"login": "alice"},
+                "private": i % 2 == 0,
+                "default_branch": "main",
+                "html_url": f"https://github.com/alice/repo-{i}",
+            }
+            for i in range(100)
+        ]
+        page2 = [
+            {
+                "full_name": "org/shared-bot",
+                "name": "shared-bot",
+                "owner": {"login": "org"},
+                "private": True,
+                "default_branch": "master",
+                "html_url": "https://github.com/org/shared-bot",
+            }
+        ]
+        seen_paths: list[str] = []
+
+        def fake_list_req(method, path, body=None, api=None):
+            seen_paths.append(path)
+            if "&page=2" in path:
+                return page2
+            return page1
+
+        with patch.object(gh, "_req", side_effect=fake_list_req):
+            listed = gh.list_user_repos(limit=105)
+        assert len(listed) == 101
+        assert len(seen_paths) == 2
+        assert listed[-1] == {
+            "full_name": "org/shared-bot",
+            "name": "shared-bot",
+            "owner": "org",
+            "private": True,
+            "default_branch": "master",
+            "html_url": "https://github.com/org/shared-bot",
+        }
+
+        # 3) repo_has_workflow (True / 404->False / 500->raise)
+        with patch.object(gh, "_req", return_value={"name": "streak.yml"}):
+            assert gh.repo_has_workflow("alice/my-repo") is True
+        with patch.object(gh, "_req", side_effect=GitHubError("missing", status_code=404)):
+            assert gh.repo_has_workflow("alice/my-repo") is False
+        with patch.object(gh, "_req", side_effect=GitHubError("boom", status_code=500)):
+            with pytest.raises(GitHubError):
+                gh.repo_has_workflow("alice/my-repo")
+
+        # 4) create_private_repo_with_bot(..., push_files=False) on existing repo
+        sync_reqs: list[tuple[str, str]] = []
+        orig_yaml = "on:\n  schedule:\n    - cron: '0 1 * * *'\n"
+        b64_yaml = base64.b64encode(orig_yaml.encode("utf-8")).decode("ascii")
+
+        def fake_sync_only_req(method, path, body=None, api=None):
+            sync_reqs.append((method, path))
+            if method == "GET" and path == "/repos/org/existing-bot":
+                return {
+                    "full_name": "org/existing-bot",
+                    "default_branch": "main",
+                    "private": True,
+                    "html_url": "https://github.com/org/existing-bot",
+                }
+            if method == "GET" and path == "/repos/org/existing-bot/contents/.github/workflows/streak.yml":
+                return {"name": "streak.yml"}
+            if method == "GET" and path.startswith("/repos/org/existing-bot/contents/.github/workflows/streak.yml?ref="):
+                return {"content": b64_yaml, "sha": "wf_sha_1"}
+            return {}
+
+        with patch.object(gh, "_req", side_effect=fake_sync_only_req):
+            res_sync = gh.create_private_repo_with_bot(
+                owner="alice",
+                repo_name="org/existing-bot",
+                cron_expr="0 1,13 * * *",
+                push_files=False,
+            )
+        assert res_sync["full_name"] == "org/existing-bot"
+        assert res_sync["files_pushed"] == 0
+        assert not any("/git/" in p for _m, p in sync_reqs)
+        assert ("PUT", "/repos/org/existing-bot/actions/permissions") in sync_reqs
+        assert ("PUT", "/repos/org/existing-bot/actions/workflows/streak.yml/enable") in sync_reqs
+        assert ("PUT", "/repos/org/existing-bot/contents/.github/workflows/streak.yml") in sync_reqs
+
+        # Sync-only raises 404 GitHubError when workflow is missing
+        def fake_missing_wf(method, path, body=None, api=None):
+            if method == "GET" and path == "/repos/alice/no-wf":
+                return {"full_name": "alice/no-wf", "default_branch": "main", "private": True}
+            if method == "GET" and "/contents/.github/workflows/" in path:
+                raise GitHubError("not found", status_code=404)
+            return {}
+
+        with patch.object(gh, "_req", side_effect=fake_missing_wf):
+            with pytest.raises(GitHubError) as exc_info:
+                gh.create_private_repo_with_bot("alice", "no-wf", push_files=False)
+            assert exc_info.value.status_code == 404
+
+
+# ===========================================================================
+# 11. gui/services/local_runner.py & gui/services/scheduler.py
+# ===========================================================================
+
+class TestLocalRunnerAndScheduler:
+    def test_local_runner_log_redaction_env_restore_and_smoke_test(self, tmp_path, monkeypatch):
+        from gui.services.local_runner import LocalRunner
+        from gui.services.storage import AccountProfile, AppState, SecretStore
+
+        mem_keyring: dict[tuple[str, str], str] = {}
+        fake_keyring = types.SimpleNamespace(
+            get_password=lambda svc, k: mem_keyring.get((svc, k)),
+            set_password=lambda svc, k, v: mem_keyring.__setitem__((svc, k), v),
+            delete_password=lambda svc, k: mem_keyring.pop((svc, k), None),
+        )
+        monkeypatch.setitem(sys.modules, "keyring", fake_keyring)
+        ss = SecretStore(tmp_path / "sec")
+        ss.set_github_token("ghp_mysecretgh12345")
+        ss.set_telegram_token("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+        ss.set_account_cookie("a1", "sessionid=tok_secret_value_1")
+
+        state = AppState(
+            multi_account=False,
+            accounts=[AccountProfile(id="a1", name="Main", friends=["alice", "bob"])],
+            daily_cap=4,
+            headless_local=True,
+            telegram_enabled=True,
+            telegram_chat_id="555",
+            video_enabled=False,
+            photo_enabled=False,
+        )
+
+        monkeypatch.setenv("DAILY_CAP", "99")
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+        captured_logs = []
+        captured_kwargs = {}
+
+        def fake_main_run(
+            accounts_override=None,
+            headless=None,
+            only_account=None,
+            only_friend=None,
+            stop_event=None,
+            progress_cb=None,
+        ):
+            captured_kwargs.update({
+                "accounts_override": accounts_override,
+                "headless": headless,
+                "only_account": only_account,
+                "only_friend": only_friend,
+                "stop_event": stop_event,
+                "progress_cb": progress_cb,
+            })
+            assert os.environ["DAILY_CAP"] == "4"
+            assert os.environ["HEADLESS"] == "false"
+            assert os.environ["TELEGRAM_BOT_TOKEN"] == "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+            logging.getLogger("tiktok-streak").info(
+                "Sending with tok_secret_value_1 and ghp_mysecretgh12345"
+            )
+            return {"ok": True, "results": [{"name": "Main", "sent": 1}], "elapsed": 1, "critical_failure": False}
+
+        runner = LocalRunner()
+        with patch("main.run", new=fake_main_run):
+            res = runner.run_smoke_test(
+                state,
+                ss,
+                friend="@bob",
+                account_id="a1",
+                headless=False,
+                log_cb=captured_logs.append,
+            )
+
+        assert res["ok"] is True
+        assert captured_kwargs["headless"] is False
+        assert captured_kwargs["only_friend"] == "@bob"
+        assert len(captured_kwargs["accounts_override"]) == 1
+        assert captured_kwargs["accounts_override"][0].friends == ["bob"]
+        assert captured_kwargs["accounts_override"][0].video_url == ""
+        assert captured_kwargs["accounts_override"][0].photo_path == ""
+
+        # Env restored & handler detached
+        assert os.environ["DAILY_CAP"] == "99"
+        assert "TELEGRAM_BOT_TOKEN" not in os.environ
+        assert not any(type(h).__name__ == "_RedactingCallbackHandler" for h in logging.getLogger("tiktok-streak").handlers)
+
+        # Logs were redacted
+        joined = "\n".join(captured_logs)
+        assert "Sending with" in joined
+        assert "tok_secret_value_1" not in joined
+        assert "ghp_mysecretgh12345" not in joined
+
+        # Env & handler are also restored on exception / SystemExit
+        def boom_run(accounts_override=None, headless=None, only_account=None, only_friend=None, stop_event=None, progress_cb=None):
+            raise RuntimeError("boom with ghp_mysecretgh12345")
+
+        with patch("main.run", new=boom_run):
+            err_res = runner.run(state, ss, log_cb=captured_logs.append)
+        assert err_res["ok"] is False and err_res["critical_failure"] is True
+        assert "ghp_mysecretgh12345" not in (err_res["error"] or "")
+        assert os.environ["DAILY_CAP"] == "99"
+        assert "TELEGRAM_BOT_TOKEN" not in os.environ
+        assert not any(type(h).__name__ == "_RedactingCallbackHandler" for h in logging.getLogger("tiktok-streak").handlers)
+
+        def exit_run(accounts_override=None, headless=None, only_account=None, only_friend=None, stop_event=None, progress_cb=None):
+            raise SystemExit(1)
+
+        with patch("main.run", new=exit_run):
+            exit_res = runner.run(state, ss)
+        assert exit_res["ok"] is False and exit_res["critical_failure"] is True
+        assert os.environ["DAILY_CAP"] == "99"
+
+    def test_windows_scheduler_commands_list_sync_remove(self, tmp_path, monkeypatch):
+        from gui.services.scheduler import SchedulerError, TASK_PREFIX, WindowsScheduler
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        sched = WindowsScheduler()
+
+        # Non-frozen build_command
+        run_gui_fake = tmp_path / "run_gui.py"
+        run_gui_fake.write_text("", encoding="utf-8")
+        cmd = sched.build_command(run_gui_path=run_gui_fake)
+        assert cmd.endswith(f'"{run_gui_fake.resolve()}" --run-bot')
+
+        # Frozen build_command
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "TikTokStreakSetup.exe"))
+        frozen_cmd = sched.build_command()
+        assert frozen_cmd == f'"{(tmp_path / "TikTokStreakSetup.exe").resolve()}" --run-bot'
+        monkeypatch.delattr(sys, "frozen", raising=False)
+
+        # list_tasks, sync_daily_tasks, remove_all_tasks
+        calls = []
+
+        def fake_subproc(argv, **_kwargs):
+            calls.append(argv)
+            if "/Query" in argv:
+                csv_out = f'"\\{TASK_PREFIX}0800","8:00:00 AM","Ready"\n"\\OtherTask","N/A","Ready"\n'
+                return subprocess.CompletedProcess(argv, 0, stdout=csv_out, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with patch("gui.services.scheduler.subprocess.run", side_effect=fake_subproc):
+            listed = sched.list_tasks()
+            assert listed == [{"name": f"{TASK_PREFIX}0800", "next_run": "8:00:00 AM", "status": "Ready"}]
+
+            synced = sched.sync_daily_tasks(["20:00", "08:00"], command='"C:\\Bot\\app.exe" --run-bot')
+            assert synced["ok"] is True
+            assert synced["removed"] == [f"{TASK_PREFIX}0800"]
+            assert [c["name"] for c in synced["created"]] == [f"{TASK_PREFIX}0800", f"{TASK_PREFIX}2000"]
+
+            removed = sched.remove_all_tasks()
+            assert removed == [f"{TASK_PREFIX}0800"]
+
+        # Validation: > 261 chars or invalid HH:MM raises SchedulerError
+        with pytest.raises(SchedulerError, match="261"):
+            sched.sync_daily_tasks(["08:00"], command="x" * 262)
+        with pytest.raises(SchedulerError, match="Invalid daily time"):
+            sched.sync_daily_tasks(["25:99"], command='"app.exe" --run-bot')
+
+
+# ===========================================================================
+# 12. gui/services/theme.py & AppState.accent_mode
+# ===========================================================================
+
+class TestThemeService:
+    def test_appstate_accent_mode_roundtrip_and_sanitization(self, tmp_path):
+        from gui.services.storage import AppState, ConfigStore
+
+        assert AppState().accent_mode == "system"
+        assert AppState.from_dict({"accent_mode": "TIKTOK"}).accent_mode == "tiktok"
+        assert AppState.from_dict({"accent_mode": "custom"}).accent_mode == "custom"
+        assert AppState.from_dict({"accent_mode": "neon-green"}).accent_mode == "system"
+
+        store = ConfigStore(tmp_path / "accent_cfg")
+        for mode in ("system", "tiktok", "custom"):
+            store.save(AppState(accent_mode=mode))
+            assert store.load().accent_mode == mode
+
+    def test_windows_personalization_winreg_abgr_and_fallbacks(self, monkeypatch):
+        pytest.importorskip("PySide6")
+        from gui.services.theme import (
+            DEFAULT_TIKTOK_ACCENT,
+            DEFAULT_WINDOWS_ACCENT,
+            get_windows_personalization,
+            resolve_accent_color,
+        )
+
+        # 1) Non-Windows returns safe defaults
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert get_windows_personalization() == {
+            "accent_color": DEFAULT_WINDOWS_ACCENT,
+            "dark_mode": False,
+            "transparency": True,
+        }
+
+        # 2) Mocked winreg on win32: AccentColor ABGR 0xffd47800 -> #0078d4
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        class _FakeKey:
+            def __init__(self, values: dict[str, int]):
+                self._values = values
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def _make_winreg(dwm_values: dict[str, int] | None, pers_values: dict[str, int] | None):
+            def open_key(_root, subkey):
+                if subkey.endswith(r"\DWM"):
+                    if dwm_values is None:
+                        raise OSError("missing DWM key")
+                    return _FakeKey(dwm_values)
+                if subkey.endswith(r"\Personalize"):
+                    if pers_values is None:
+                        raise OSError("missing Personalize key")
+                    return _FakeKey(pers_values)
+                raise OSError("unknown key")
+
+            def query_value(key, name):
+                if name not in key._values:
+                    raise OSError(f"missing {name}")
+                return key._values[name], 4
+
+            return types.SimpleNamespace(
+                HKEY_CURRENT_USER=1,
+                OpenKey=open_key,
+                QueryValueEx=query_value,
+            )
+
+        fake_reg = _make_winreg(
+            {"AccentColor": 0xFFD47800},
+            {"AppsUseLightTheme": 0, "EnableTransparency": 0},
+        )
+        monkeypatch.setitem(sys.modules, "winreg", fake_reg)
+        pers = get_windows_personalization()
+        assert pers == {
+            "accent_color": "#0078d4",
+            "dark_mode": True,
+            "transparency": False,
+        }
+        assert resolve_accent_color("system") == "#0078d4"
+        assert resolve_accent_color("tiktok") == DEFAULT_TIKTOK_ACCENT
+        assert resolve_accent_color("custom", "#AbC") == "#aabbcc"
+        assert resolve_accent_color("custom", "bad-hex") == "#0078d4"
+
+        # 3) Missing AccentColor falls back to ColorizationColor (0xAARRGGBB)
+        fake_reg_colorization = _make_winreg(
+            {"ColorizationColor": 0xFFFE2C55},
+            {"AppsUseLightTheme": 1, "EnableTransparency": 1},
+        )
+        monkeypatch.setitem(sys.modules, "winreg", fake_reg_colorization)
+        pers2 = get_windows_personalization()
+        assert pers2 == {
+            "accent_color": "#fe2c55",
+            "dark_mode": False,
+            "transparency": True,
+        }
+
+        # 4) Missing registry keys + unavailable qframelesswindow fallback -> default #0078d4
+        fake_reg_missing = _make_winreg(None, None)
+        monkeypatch.setitem(sys.modules, "winreg", fake_reg_missing)
+        broken_qfw = types.SimpleNamespace(
+            getSystemAccentColor=MagicMock(side_effect=RuntimeError("no DWM"))
+        )
+        monkeypatch.setitem(sys.modules, "qframelesswindow.utils", broken_qfw)
+        pers_fallback = get_windows_personalization()
+        assert pers_fallback == {
+            "accent_color": DEFAULT_WINDOWS_ACCENT,
+            "dark_mode": False,
+            "transparency": True,
+        }
+
+    def test_escape_mnemonic_tabular_font_and_create_app_icon(self):
+        QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        assert app is not None
+
+        from gui.services.theme import create_app_icon, escape_qt_mnemonic, tabular_mono_font
+
+        assert escape_qt_mnemonic("Save & Deploy") == "Save && Deploy"
+        assert escape_qt_mnemonic("A & B & C") == "A && B && C"
+        assert escape_qt_mnemonic("") == ""
+
+        font = tabular_mono_font(11)
+        assert font.fixedPitch() is True
+        assert font.pointSize() == 11
+        assert font.families()[0] == "Cascadia Mono"
+
+        for dark in (True, False):
+            icon = create_app_icon("#0078d4", dark=dark)
+            assert not icon.isNull()
+            for sz in (16, 32, 48, 64, 128):
+                pm = icon.pixmap(sz, sz)
+                assert not pm.isNull()
+                assert pm.width() == sz and pm.height() == sz
+
+        # Invalid hex falls back cleanly without raising
+        fallback_icon = create_app_icon("not-a-hex", dark=True)
+        assert not fallback_icon.isNull()
+

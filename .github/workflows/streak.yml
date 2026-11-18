@@ -1,0 +1,97 @@
+name: TikTok Daily Streak
+
+on:
+  schedule:
+    # Schedule uses UTC time (UTC = WIB - 7 hours)
+    # Examples:
+    #   Once a day at 08:00 WIB (01:00 UTC):
+    #     - cron: '0 1 * * *'
+    #   Twice a day at 08:00 and 20:00 WIB (01:00 and 13:00 UTC):
+    #     - cron: '0 1,13 * * *'
+    #   Three times a day at 08:00, 14:00, and 20:00 WIB (01:00, 07:00, 13:00 UTC):
+    #     - cron: '0 1,7,13 * * *'
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run self-check test suite
+        run: python test_runner.py
+
+  run-streak:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Verify Google Chrome
+        run: google-chrome --version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare custom photo
+        # The GUI uploads a small image as a data URL secret; src.photo_prep
+        # writes it to a file and exports PHOTO_PATH (via GITHUB_ENV).
+        env:
+          PHOTO_DATA_URL: ${{ secrets.PHOTO_DATA_URL }}
+          PHOTO_PATH: ${{ secrets.PHOTO_PATH }}
+          DISABLE_PHOTO: ${{ secrets.DISABLE_PHOTO }}
+        run: python -m src.photo_prep
+
+      - name: Run TikTok Streak Auto Send
+        env:
+          TIKTOK_ACCOUNTS_JSON: ${{ secrets.TIKTOK_ACCOUNTS_JSON }}
+          TIKTOK_SESSION_ID: ${{ secrets.TIKTOK_SESSION_ID }}
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
+          MESSAGE: ${{ secrets.MESSAGE }}
+          FRIENDS_LIST: ${{ secrets.FRIENDS_LIST }}
+          # Fall back to shipped defaults when the secret is unset (empty is falsy).
+          STREAK_VIDEO_URL: ${{ secrets.STREAK_VIDEO_URL || 'https://www.tiktok.com/@yutta/video/7684838545659317524' }}
+          SHARE_TIMES: ${{ secrets.SHARE_TIMES || '2' }}
+          DISABLE_VIDEO: ${{ secrets.DISABLE_VIDEO }}
+          DAILY_CAP: ${{ secrets.DAILY_CAP }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEADLESS: "true"
+        run: |
+          python main.py
+
+      - name: Upload Debug Artifacts on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-diagnostics
+          path: |
+            debug_*.png
+            debug_*.html
+          retention-days: 7

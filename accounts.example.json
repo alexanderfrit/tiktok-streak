@@ -1,0 +1,36 @@
+[
+  {
+    "_comment": "Optional keys (video_url, share_times, photo_path) fall back to .env/defaults when omitted. Set video_url/photo_path to \"\", \"none\", \"off\", or \"disabled\" (or share_times to 0) to disable per account. Use DAILY_CAP in .env to cap sends per account.",
+    "name": "Main_Account",
+    "session_id": "your_first_account_sessionid_cookie",
+    "friends": [
+      "friend_username_1",
+      "friend_username_2"
+    ],
+    "message": "🔥 Daily Streak",
+    "video_url": "https://www.tiktok.com/@yutta/video/7684838545659317524",
+    "share_times": 2,
+    "photo_path": "assets/default_photo.png"
+  },
+  {
+    "_comment": "Omitted video_url, share_times, and photo_path inherit from .env (including DISABLE_VIDEO / DISABLE_PHOTO) or defaults.",
+    "name": "Second_Account",
+    "session_id": "your_second_account_sessionid_cookie",
+    "friends": [
+      "another_friend"
+    ],
+    "message": "🔥 Streak!"
+  },
+  {
+    "_comment": "Explicit disable sentinels (\"\", \"none\", \"off\", \"disabled\") and share_times=0 disable media for this account only.",
+    "name": "Text_Only_Account",
+    "session_id": "your_third_account_sessionid_cookie",
+    "friends": [
+      "text_only_friend"
+    ],
+    "message": "🔥 Streak!",
+    "video_url": "none",
+    "share_times": 0,
+    "photo_path": "none"
+  }
+]
