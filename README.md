@@ -8,9 +8,17 @@
   <p>
     <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest">Download Windows App (.exe)</a> &middot;
     <a href="#user-guide">User Guide</a> &middot;
-    <a href="#developer-guide">Developer Guide</a>
+    <a href="#developer-guide">Developer Guide</a> &middot;
+    <a href="#how-it-works">How It Works</a>
   </p>
 </div>
+
+**Under the hood:**
+- **Native Windows 11 Fluent GUI (`PySide6` + `PySide6-Fluent-Widgets`):** Uses `FluentWindow` with Windows Mica translucency, reads `HKCU\Software\Microsoft\Windows\DWM` for live system accent colors and Dark/Light theme switching (`WM_DWMCOLORIZATIONCOLORCHANGED`), and keeps `--run-bot` scheduled execution free of Qt imports.
+- **Raw CDP login (`v20` bypass):** Launches your native `chrome.exe` / `msedge.exe` without ChromeDriver or `--enable-automation` and captures cookies via a one-shot stdlib RFC 6455 WebSocket (`Storage.getCookies`), avoiding Windows App-Bound Encryption (`v20`) blocks.
+- **`/messages`-only stealth:** Never visits public profiles or video watch pages (`secsdk-captcha` trigger); patches `navigator.webdriver` pre-navigation and resets `sessionStorage` replay buffers between accounts.
+- **In-page protobuf + `frontierSign`:** Hooks `im-ws` / `/v1/message/send` with an inline protobuf codec, borrows emitted `SEND_MESSAGE` frames to forge video-share cards (`aweType: 800`), and re-signs `X-Bogus` through `window.byted_acrawler.frontierSign`.
+- **Zero-`git` private cloud sync:** Bootstraps private automation repos over GitHub's Git Data API, seals secrets with `PyNaCl` (`SealedBox`), and stores local credentials in OS keyring / Windows DPAPI.
 
 ---
 
