@@ -1,9 +1,9 @@
 <div align="center">
   <img src="assets/app_icon.png" alt="TikTok Streak Auto mascot" width="112" />
   <h1>TikTok Streak Auto</h1>
-  <p>Keep your TikTok DM streaks alive every day without solving captchas or leaving Chrome open.</p>
+  <p>Keep your TikTok DM streaks alive and level up your Streak Pet (forms, levels, and outfits) every day without captchas.</p>
   <p>
-    Run it locally on Windows with the desktop app, or let GitHub Actions send them privately from the cloud on your schedule.
+    Runs automatically via <strong>GitHub Actions</strong> with no paid server or VPS needed, or locally on Windows through the desktop app.
   </p>
   <p>
     <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest">Download Windows App (.exe)</a> &middot;
@@ -18,7 +18,21 @@
 - **Raw CDP login (`v20` bypass):** Launches your native `chrome.exe` / `msedge.exe` without ChromeDriver or `--enable-automation` and captures cookies via a one-shot stdlib RFC 6455 WebSocket (`Storage.getCookies`), avoiding Windows App-Bound Encryption (`v20`) blocks.
 - **`/messages`-only stealth:** Never visits public profiles or video watch pages (`secsdk-captcha` trigger); patches `navigator.webdriver` pre-navigation and resets `sessionStorage` replay buffers between accounts.
 - **In-page protobuf + `frontierSign`:** Hooks `im-ws` / `/v1/message/send` with an inline protobuf codec, borrows emitted `SEND_MESSAGE` frames to forge video-share cards (`aweType: 800`), and re-signs `X-Bogus` through `window.byted_acrawler.frontierSign`.
-- **Zero-`git` private cloud sync:** Bootstraps private automation repos over GitHub's Git Data API, seals secrets with `PyNaCl` (`SealedBox`), and stores local credentials in OS keyring / Windows DPAPI.
+- **Serverless scheduling & zero-`git` cloud sync:** Uses GitHub Actions cron workflows to run on schedule without renting a server, bootstraps private repos via the Git Data API, seals secrets with `PyNaCl` (`SealedBox`), and stores local credentials in OS keyring / Windows DPAPI.
+
+---
+
+## What It Sends & Streak Pet Growth
+
+Beyond keeping daily streak days alive, sending all three message types completes TikTok's daily **Grow your Pet** checklist (`+1` message, `+4` photo/video, `+2` for 2 shared posts) to level up your Pet and unlock outfits and new forms.
+
+| Automated Chat Sequence | Daily Pet Tasks & Badges | Growth Journey |
+|---|---|---|
+| <img src="docs/examples/chat-send-example.jpg" width="240" alt="Example DM chat sending 1 text message, 2 video shares, and 1 photo" /> | <img src="docs/examples/streak-pet-tasks.jpg" width="240" alt="TikTok Grow your Pet checklist and streak badges" /> | <img src="docs/examples/pet-growth-journey.jpg" width="240" alt="Streak Pet growth journey levels and forms" /> |
+
+- **Left:** Example output in a TikTok DM chat — sends **1 text message**, **2 shared video cards**, and **1 photo** in order per friend (each part is customizable or can be turned off).
+- **Middle:** Those sends complete the daily **Grow your Pet** tasks (`+1` + `+4` + `+2` growth points) alongside streak milestones.
+- **Right:** Earned growth points advance your Pet along the **Growth journey** (`Lv.` rewards, **Outfits**, and evolved forms).
 
 ---
 
