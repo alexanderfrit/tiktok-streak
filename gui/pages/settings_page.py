@@ -36,6 +36,15 @@ from gui.services.storage import (
     import_local_workspace,
 )
 from gui.services.theme import escape_qt_mnemonic, get_windows_personalization
+try:
+    from gui.services.validators import TIMEZONE_CHOICES, get_timezone_info
+except ImportError:  # pragma: no cover
+    TIMEZONE_CHOICES = (
+        {"id": "Asia/Jakarta", "short": "WIB", "label": "WIB — Jakarta / Western Indonesia (UTC+7)", "offset_minutes": 420},
+    )
+
+    def get_timezone_info(tz_id: str | None) -> dict[str, Any]:  # type: ignore[misc]
+        return TIMEZONE_CHOICES[0]
 from gui.workers import WorkerController
 
 
@@ -126,9 +135,22 @@ class SettingsPage(SmoothScrollArea):
         self.langCard.hBoxLayout.addWidget(self.langCombo, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.langCard.hBoxLayout.addSpacing(16)
 
+        self.timezoneCard = SettingCard(
+            FIF.GLOBE, tr("settings.timezone"), None, self.appearanceGroup
+        )
+        self.timezoneCombo = ComboBox(self.timezoneCard)
+        self.timezoneCombo.setMinimumWidth(200)
+        self.timezoneCombo.setMaximumWidth(280)
+        for tz in TIMEZONE_CHOICES:
+            self.timezoneCombo.addItem(tz["label"], userData=tz["id"])
+        self.timezoneCombo.currentIndexChanged.connect(self._on_timezone_changed)
+        self.timezoneCard.hBoxLayout.addWidget(self.timezoneCombo, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.timezoneCard.hBoxLayout.addSpacing(16)
+
         self.appearanceGroup.addSettingCard(self.themeCard)
         self.appearanceGroup.addSettingCard(self.accentCard)
         self.appearanceGroup.addSettingCard(self.langCard)
+        self.appearanceGroup.addSettingCard(self.timezoneCard)
         self.vBoxLayout.addWidget(self.appearanceGroup)
 
         # 2. Telegram Alerts
@@ -301,6 +323,10 @@ class SettingsPage(SmoothScrollArea):
             idx_l = self.langCombo.findData(st.language)
             self.langCombo.setCurrentIndex(idx_l if idx_l >= 0 else 0)
 
+            tz_val = get_timezone_info(getattr(st, "timezone", None))["id"]
+            idx_tz = self.timezoneCombo.findData(tz_val)
+            self.timezoneCombo.setCurrentIndex(idx_tz if idx_tz >= 0 else 0)
+
             self.tgEnableSwitch.setChecked(bool(st.telegram_enabled))
             self._sync_line_edit(self.tgTokenEdit, self._secrets.get_telegram_token(), force=force_inputs)
             self._sync_line_edit(self.tgChatEdit, st.telegram_chat_id, force=force_inputs)
@@ -353,6 +379,13 @@ class SettingsPage(SmoothScrollArea):
         lang = str(self.langCombo.currentData() or "en")
         self._state.language = lang
         set_language(lang)
+        self.state_changed.emit()
+
+    def _on_timezone_changed(self, _idx: int) -> None:
+        if self._loading:
+            return
+        tz_id = str(self.timezoneCombo.currentData() or "Asia/Jakarta")
+        self._state.timezone = tz_id
         self.state_changed.emit()
 
     def _on_tg_enabled_changed(self, checked: bool) -> None:
@@ -549,6 +582,10 @@ class SettingsPage(SmoothScrollArea):
         imported_state.github_private = self._state.github_private
         imported_state.cloud_cron = self._state.cloud_cron
         imported_state.local_times = list(self._state.local_times)
+        if hasattr(imported_state, "timezone") and hasattr(self._state, "timezone"):
+            imported_state.timezone = self._state.timezone
+        if hasattr(imported_state, "cloud_times") and hasattr(self._state, "cloud_times"):
+            imported_state.cloud_times = list(self._state.cloud_times)
         if not imported_state.accounts:
             imported_state.accounts = [AccountProfile(name="Main")]
 
@@ -611,6 +648,7 @@ class SettingsPage(SmoothScrollArea):
         self.accentCombo.setItemText(0, tr("settings.accent_system"))
         self.accentCombo.setItemText(1, tr("settings.accent_tiktok"))
         self.langCard.setTitle(tr("settings.language"))
+        self.timezoneCard.setTitle(tr("settings.timezone"))
 
         self.telegramGroup.titleLabel.setText(tr("settings.telegram_group"))
         self.tgEnableCard.setTitle(tr("cloud.telegram_enable"))

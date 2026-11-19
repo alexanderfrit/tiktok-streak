@@ -16,7 +16,23 @@ from qfluentwidgets import (
 )
 
 from gui.services.i18n import tr
-from gui.services.tiktok_auth import extract_session_summary
+try:
+    from gui.services.tiktok_auth import check_cloud_cookie_readiness, extract_session_summary
+except ImportError:  # pragma: no cover
+    from gui.services.tiktok_auth import extract_session_summary
+
+    def check_cloud_cookie_readiness(raw_or_dict):  # type: ignore[misc]
+        summary = extract_session_summary(raw_or_dict)
+        cookies = summary.get("cookies") or {}
+        has_regional = any(bool(cookies.get(k)) for k in ("tt-target-idc", "store-idc"))
+        sessionid = summary.get("sessionid") or ""
+        count = int(summary.get("count") or len(cookies))
+        return {
+            "cloud_ready": bool(sessionid and has_regional),
+            "is_bare_session": bool(sessionid and not has_regional and count <= 4),
+            "missing_regional": [k for k in ("tt-target-idc", "store-idc") if not cookies.get(k)],
+            "count": count,
+        }
 
 
 def _mask_token(token: str) -> str:
@@ -55,6 +71,11 @@ class CookieDialog(MessageBoxBase):
         preview_row.addWidget(self.previewBadge, 0, Qt.AlignLeft)
         preview_row.addWidget(self.previewDetail, 1, Qt.AlignVCenter)
 
+        self.bareWarningLabel = CaptionLabel(tr("cookie_dlg.bare_warning"), self)
+        self.bareWarningLabel.setStyleSheet("color: #c77c00;")
+        self.bareWarningLabel.setWordWrap(True)
+        self.bareWarningLabel.hide()
+
         self.errorLabel = CaptionLabel("", self)
         self.errorLabel.setStyleSheet("color: #d13438;")
         self.errorLabel.hide()
@@ -63,6 +84,7 @@ class CookieDialog(MessageBoxBase):
         self.viewLayout.addWidget(self.instructionsLabel)
         self.viewLayout.addWidget(self.textEdit)
         self.viewLayout.addLayout(preview_row)
+        self.viewLayout.addWidget(self.bareWarningLabel)
         self.viewLayout.addWidget(self.errorLabel)
 
         self.yesButton.setText(tr("common.save"))
@@ -79,6 +101,7 @@ class CookieDialog(MessageBoxBase):
             self.previewBadge.setText(tr("cookie_dlg.preview_empty"))
             self.previewBadge.adjustSize()
             self.previewDetail.setText("")
+            self.bareWarningLabel.hide()
             self.errorLabel.hide()
             return
 
@@ -92,12 +115,15 @@ class CookieDialog(MessageBoxBase):
             self.previewBadge.adjustSize()
             keys = ", ".join(list(summary["cookies"].keys())[:5])
             self.previewDetail.setText(keys)
+            readiness = check_cloud_cookie_readiness(summary["cookies"])
+            self.bareWarningLabel.setVisible(bool(readiness.get("is_bare_session")))
             self.errorLabel.hide()
         else:
             self.previewBadge.setLevel(InfoLevel.WARNING)
             self.previewBadge.setText(tr("cookie_dlg.preview_empty"))
             self.previewBadge.adjustSize()
             self.previewDetail.setText("")
+            self.bareWarningLabel.hide()
 
     def validate(self) -> bool:
         raw = self.textEdit.toPlainText().strip()
