@@ -10,6 +10,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QSize, Qt, QTime, QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QListWidgetItem,
@@ -31,6 +32,7 @@ from qfluentwidgets import (
     InfoBarPosition,
     LineEdit,
     ListWidget,
+    MessageBox,
     PasswordLineEdit,
     PlainTextEdit,
     PrimaryPushButton,
@@ -65,23 +67,71 @@ from gui.services.storage import (
     SecretStore,
 )
 from gui.services.theme import escape_qt_mnemonic
+try:
+    from gui.services.tiktok_auth import check_cloud_cookie_readiness
+except ImportError:  # pragma: no cover
+    from gui.services.tiktok_auth import extract_session_summary
+
+    def check_cloud_cookie_readiness(raw_or_dict):  # type: ignore[misc]
+        summary = extract_session_summary(raw_or_dict)
+        cookies = summary.get("cookies") or {}
+        has_regional = any(bool(cookies.get(k)) for k in ("tt-target-idc", "store-idc"))
+        sessionid = summary.get("sessionid") or ""
+        count = int(summary.get("count") or len(cookies))
+        return {
+            "cloud_ready": bool(sessionid and has_regional),
+            "is_bare_session": bool(sessionid and not has_regional and count <= 4),
+            "missing_regional": [k for k in ("tt-target-idc", "store-idc") if not cookies.get(k)],
+            "count": count,
+        }
+
 from gui.services.validators import (
     cron_to_wib_summary,
     prepare_photo_secret,
+    times_to_utc_cron,
     validate_repo_name,
     validate_video_url,
 )
+try:
+    from gui.services.validators import (
+        TIMEZONE_CHOICES,
+        crons_to_local_times,
+        format_schedule_summary,
+        get_timezone_info,
+        times_to_utc_crons,
+    )
+except ImportError:  # pragma: no cover
+    TIMEZONE_CHOICES = (
+        {"id": "Asia/Jakarta", "short": "WIB", "label": "WIB — Jakarta / Western Indonesia (UTC+7)", "offset_minutes": 420},
+    )
+
+    def get_timezone_info(tz_id: str | None) -> dict[str, Any]:  # type: ignore[misc]
+        return TIMEZONE_CHOICES[0]
+
+    def times_to_utc_crons(times_hhmm, tz_id: str = "Asia/Jakarta") -> list[str]:  # type: ignore[misc]
+        return [times_to_utc_cron(times_hhmm)]
+
+    def crons_to_local_times(crons, tz_id: str = "Asia/Jakarta") -> list[str]:  # type: ignore[misc]
+        raw = str(crons or "").strip()
+        parts = raw.split()
+        if len(parts) == 5 and parts[2:] == ["*", "*", "*"] and parts[0].isdigit():
+            mm = int(parts[0])
+            out = []
+            for h in parts[1].split(","):
+                if h.strip().isdigit():
+                    tot = (int(h.strip()) * 60 + mm + 420) % 1440
+                    out.append(f"{tot // 60:02d}:{tot % 60:02d}")
+            return sorted(set(out))
+        return []
+
+    def format_schedule_summary(crons, tz_id: str = "Asia/Jakarta", lang: str = "en") -> str:  # type: ignore[misc]
+        raw = "\n".join(crons) if isinstance(crons, (list, tuple)) else str(crons or "")
+        return cron_to_wib_summary(raw, lang=lang)
+
 from gui.widgets.device_login_dialog import DeviceLoginDialog
 from gui.widgets.fluent_spin_box import FluentSpinBox
 from gui.widgets.status_pill import StatusPill
 from gui.workers import WorkerController
-
-_CRON_PRESETS: tuple[tuple[str, str], ...] = (
-    ("0 1 * * *", "schedule.preset_1"),
-    ("0 1,13 * * *", "schedule.preset_2"),
-    ("0 1,7,13 * * *", "schedule.preset_3"),
-    ("custom", "schedule.preset_custom"),
-)
 
 
 def _parse_repo_input(raw: str, default_owner: str = "") -> dict[str, Any]:
@@ -405,6 +455,8 @@ class ContentPage(SmoothScrollArea):
         self._windows_tasks_count: int | None = None
         self._fetched_repos: dict[str, dict[str, Any]] = {}
         self._pat_expanded = False
+        self._raw_cron_expanded = False
+        self._custom_cron_dirty = False
 
         self._save_debounce = QTimer(self)
         self._save_debounce.setSingleShot(True)
@@ -547,6 +599,19 @@ class ContentPage(SmoothScrollArea):
         mode_body = QVBoxLayout()
         mode_body.setContentsMargins(0, 0, 0, 0)
         mode_body.setSpacing(12)
+
+        tz_row = QHBoxLayout()
+        tz_row.setSpacing(10)
+        self.timezoneLabel = BodyLabel(tr("schedule.timezone"), self.modeCard)
+        self.timezoneCombo = ComboBox(self.modeCard)
+        self.timezoneCombo.setMinimumWidth(0)
+        self.timezoneCombo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        for tz in TIMEZONE_CHOICES:
+            self.timezoneCombo.addItem(tz["label"], userData=tz["id"])
+        self.timezoneCombo.currentIndexChanged.connect(self._on_timezone_changed)
+        tz_row.addWidget(self.timezoneLabel)
+        tz_row.addWidget(self.timezoneCombo, 1)
+        mode_body.addLayout(tz_row)
 
         mode_seg_row = QHBoxLayout()
         mode_seg_row.setSpacing(8)
@@ -784,33 +849,105 @@ class ContentPage(SmoothScrollArea):
         sync_only_box.addWidget(self.syncOnlyHint)
         c_lay.addLayout(sync_only_box)
 
-        # Cloud cron grid (3-row so label, combo+custom, and WIB summary never overflow)
-        cron_grid = QGridLayout()
-        cron_grid.setContentsMargins(0, 0, 0, 0)
-        cron_grid.setHorizontalSpacing(8)
-        cron_grid.setVerticalSpacing(6)
-        self.cronLabel = BodyLabel(tr("schedule.cloud_cron"), self.cloudSection)
-        self.cronLabel.setWordWrap(True)
-        self.cronCombo = ComboBox(self.cloudSection)
-        self.cronCombo.setMinimumWidth(0)
-        for cron_val, label_key in _CRON_PRESETS:
-            self.cronCombo.addItem(tr(label_key), userData=cron_val)
-        self.cronCombo.currentIndexChanged.connect(self._on_cron_preset_changed)
+        # Cloud schedule picker (visual times + quick-fill + delay note + collapsed raw cron)
+        cloud_time_grid = QGridLayout()
+        cloud_time_grid.setContentsMargins(0, 0, 0, 0)
+        cloud_time_grid.setHorizontalSpacing(8)
+        cloud_time_grid.setVerticalSpacing(6)
+        tz_short = self._active_tz_info()["short"]
+        self.cloudTimeLabel = BodyLabel(tr("schedule.cloud_times", tz=tz_short), self.cloudSection)
+        self.cloudTimeLabel.setWordWrap(True)
+        self.cloudTimePicker = TimePicker(self.cloudSection)
+        self.cloudTimePicker.setTime(QTime(8, 15))
+        self.addCloudTimeBtn = PushButton(
+            FIF.ADD, escape_qt_mnemonic(tr("schedule.add_time")), self.cloudSection
+        )
+        self.removeCloudTimeBtn = PushButton(
+            FIF.REMOVE, escape_qt_mnemonic(tr("common.remove")), self.cloudSection
+        )
+        self.addCloudTimeBtn.clicked.connect(self._add_cloud_time)
+        self.removeCloudTimeBtn.clicked.connect(self._remove_selected_cloud_time)
+        cloud_time_grid.addWidget(self.cloudTimeLabel, 0, 0, 1, 4)
+        cloud_time_grid.addWidget(self.cloudTimePicker, 1, 0)
+        cloud_time_grid.addWidget(self.addCloudTimeBtn, 1, 1)
+        cloud_time_grid.addWidget(self.removeCloudTimeBtn, 1, 2)
+        cloud_time_grid.setColumnStretch(3, 1)
+        c_lay.addLayout(cloud_time_grid)
 
-        self.customCronEdit = LineEdit(self.cloudSection)
-        self.customCronEdit.setMinimumWidth(0)
-        self.customCronEdit.setPlaceholderText("0 1 * * *")
-        self.customCronEdit.setMaximumWidth(170)
-        self.customCronEdit.textChanged.connect(self._on_custom_cron_changed)
+        self.cloudTimesList = ListWidget(self.cloudSection)
+        self.cloudTimesList.setFixedHeight(84)
+        c_lay.addWidget(self.cloudTimesList)
+
+        presets_flow = FlowLayout(isTight=True)
+        presets_flow.setContentsMargins(0, 0, 0, 0)
+        presets_flow.setHorizontalSpacing(8)
+        presets_flow.setVerticalSpacing(6)
+        self.quickPresetsLabel = CaptionLabel(tr("schedule.quick_presets"), self.cloudSection)
+        self.preset1Btn = PushButton(
+            escape_qt_mnemonic(tr("schedule.preset_offpeak_1")), self.cloudSection
+        )
+        self.preset2Btn = PushButton(
+            escape_qt_mnemonic(tr("schedule.preset_offpeak_2")), self.cloudSection
+        )
+        self.preset3Btn = PushButton(
+            escape_qt_mnemonic(tr("schedule.preset_offpeak_3")), self.cloudSection
+        )
+        self.preset1Btn.clicked.connect(lambda: self._apply_cloud_preset(["08:15"]))
+        self.preset2Btn.clicked.connect(lambda: self._apply_cloud_preset(["08:15", "20:15"]))
+        self.preset3Btn.clicked.connect(lambda: self._apply_cloud_preset(["08:15", "14:15", "20:15"]))
+        presets_flow.addWidget(self.quickPresetsLabel)
+        presets_flow.addWidget(self.preset1Btn)
+        presets_flow.addWidget(self.preset2Btn)
+        presets_flow.addWidget(self.preset3Btn)
+        c_lay.addLayout(presets_flow)
 
         self.cronSummaryLabel = CaptionLabel("", self.cloudSection)
         self.cronSummaryLabel.setWordWrap(True)
-        cron_grid.addWidget(self.cronLabel, 0, 0, 1, 2)
-        cron_grid.addWidget(self.cronCombo, 1, 0)
-        cron_grid.addWidget(self.customCronEdit, 1, 1)
-        cron_grid.addWidget(self.cronSummaryLabel, 2, 0, 1, 2)
-        cron_grid.setColumnStretch(0, 1)
-        c_lay.addLayout(cron_grid)
+        c_lay.addWidget(self.cronSummaryLabel)
+
+        self.cloudDelayBox = QFrame(self.cloudSection)
+        self.cloudDelayBox.setObjectName("cloudDelayBox")
+        self.cloudDelayBox.setStyleSheet(
+            "QFrame#cloudDelayBox {"
+            "  border: 1px solid rgba(217, 119, 6, 0.45);"
+            "  background-color: rgba(217, 119, 6, 0.08);"
+            "  border-radius: 6px;"
+            "}"
+        )
+        delay_lay = QHBoxLayout(self.cloudDelayBox)
+        delay_lay.setContentsMargins(10, 8, 10, 8)
+        delay_lay.setSpacing(8)
+        self.cloudDelayNote = CaptionLabel(tr("schedule.cloud_delay_note"), self.cloudDelayBox)
+        self.cloudDelayNote.setWordWrap(True)
+        delay_lay.addWidget(self.cloudDelayNote, 1)
+        c_lay.addWidget(self.cloudDelayBox)
+
+        raw_cron_toggle_row = QHBoxLayout()
+        raw_cron_toggle_row.setContentsMargins(0, 0, 0, 0)
+        raw_cron_toggle_row.setSpacing(6)
+        self.rawCronToggleBtn = TransparentPushButton(
+            FIF.CHEVRON_RIGHT, escape_qt_mnemonic(tr("schedule.raw_cron_toggle")), self.cloudSection
+        )
+        self.rawCronToggleBtn.setMinimumWidth(0)
+        self.rawCronToggleBtn.clicked.connect(self._toggle_raw_cron_drawer)
+        raw_cron_toggle_row.addWidget(self.rawCronToggleBtn)
+        raw_cron_toggle_row.addStretch(1)
+        c_lay.addLayout(raw_cron_toggle_row)
+
+        self.rawCronContainer = QWidget(self.cloudSection)
+        rc_lay = QVBoxLayout(self.rawCronContainer)
+        rc_lay.setContentsMargins(0, 0, 0, 0)
+        rc_lay.setSpacing(6)
+        self.cronLabel = CaptionLabel(tr("schedule.custom_cron"), self.rawCronContainer)
+        self.cronLabel.setWordWrap(True)
+        self.customCronEdit = LineEdit(self.rawCronContainer)
+        self.customCronEdit.setMinimumWidth(0)
+        self.customCronEdit.setPlaceholderText("0 1 * * *")
+        self.customCronEdit.textChanged.connect(self._on_custom_cron_changed)
+        rc_lay.addWidget(self.cronLabel)
+        rc_lay.addWidget(self.customCronEdit)
+        self.rawCronContainer.hide()
+        c_lay.addWidget(self.rawCronContainer)
 
         # Deploy button row
         deploy_row = QHBoxLayout()
@@ -859,20 +996,58 @@ class ContentPage(SmoothScrollArea):
             self.repoNameEdit.setText(st.github_repo_name)
             self._update_repo_badge()
 
-            # Select matching cron preset or custom
-            matched_idx = len(_CRON_PRESETS) - 1
-            for idx, (preset_val, _k) in enumerate(_CRON_PRESETS):
-                if preset_val == st.cloud_cron:
-                    matched_idx = idx
-                    break
-            self.cronCombo.setCurrentIndex(matched_idx)
-            self.customCronEdit.setText(st.cloud_cron)
-            self.customCronEdit.setVisible(matched_idx == len(_CRON_PRESETS) - 1)
+            tz_id = self._active_tz_id()
+            idx_tz = self.timezoneCombo.findData(tz_id)
+            self.timezoneCombo.setCurrentIndex(idx_tz if idx_tz >= 0 else 0)
+            tz_short = self._active_tz_info()["short"]
+            self.localTimesLabel.setText(tr("schedule.local_times_tz", tz=tz_short))
+            self.cloudTimeLabel.setText(tr("schedule.cloud_times", tz=tz_short))
+
+            cloud_times = list(getattr(st, "cloud_times", None) or ["08:00"])
+            raw_cron = str(st.cloud_cron or "").strip()
+            try:
+                derived_default = "\n".join(times_to_utc_crons(cloud_times, tz_id))
+            except Exception:
+                derived_default = ""
+
+            is_complex_custom = False
+            if raw_cron and raw_cron != derived_default:
+                parsed_local = crons_to_local_times(raw_cron, tz_id)
+                if parsed_local and cloud_times == ["08:00"]:
+                    try:
+                        roundtrip = "\n".join(times_to_utc_crons(parsed_local, tz_id))
+                    except Exception:
+                        roundtrip = ""
+                    if roundtrip == raw_cron:
+                        cloud_times = parsed_local
+                        self._state.cloud_times = list(cloud_times)
+                    else:
+                        is_complex_custom = True
+                elif not parsed_local:
+                    is_complex_custom = True
+
+            self._custom_cron_dirty = is_complex_custom
+            if is_complex_custom:
+                self.customCronEdit.setText(raw_cron)
+                self._set_raw_cron_expanded(True)
+            else:
+                try:
+                    self.customCronEdit.setText("\n".join(times_to_utc_crons(cloud_times, tz_id)))
+                except Exception:
+                    self.customCronEdit.setText(raw_cron)
+                self._set_raw_cron_expanded(False)
+
+            self._reload_cloud_times_list()
             self._update_cron_summary()
 
             self._refresh_github_badge()
         finally:
             self._loading = False
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._loading:
+            self._sync_timezone_views()
 
     def _emit_state_changed(self) -> None:
         self.state_changed.emit()
@@ -1057,10 +1232,59 @@ class ContentPage(SmoothScrollArea):
             self._applyWinPrimaryBtn if is_local_only else self._applyWinSecondaryBtn
         )
 
+    def _active_tz_info(self) -> dict[str, Any]:
+        return get_timezone_info(getattr(self._state, "timezone", None))
+
+    def _active_tz_id(self) -> str:
+        return str(self._active_tz_info()["id"])
+
+    def _active_cloud_times(self) -> list[str]:
+        raw = getattr(self._state, "cloud_times", None)
+        if isinstance(raw, list) and raw:
+            return list(raw)
+        return ["08:00"]
+
+    def _sync_timezone_views(self) -> None:
+        tz_info = self._active_tz_info()
+        tz_id = str(tz_info["id"])
+        tz_short = str(tz_info["short"])
+        prev_loading = self._loading
+        self._loading = True
+        try:
+            idx_tz = self.timezoneCombo.findData(tz_id)
+            if idx_tz >= 0 and self.timezoneCombo.currentIndex() != idx_tz:
+                self.timezoneCombo.setCurrentIndex(idx_tz)
+            self.localTimesLabel.setText(tr("schedule.local_times_tz", tz=tz_short))
+            self.cloudTimeLabel.setText(tr("schedule.cloud_times", tz=tz_short))
+            self._reload_times_list()
+            self._reload_cloud_times_list()
+            if not self._custom_cron_dirty:
+                try:
+                    self.customCronEdit.setText("\n".join(times_to_utc_crons(self._active_cloud_times(), tz_id)))
+                except Exception:
+                    pass
+            self._update_cron_summary()
+        finally:
+            self._loading = prev_loading
+
+    def _on_timezone_changed(self, _idx: int) -> None:
+        if self._loading:
+            return
+        tz_id = str(self.timezoneCombo.currentData() or "Asia/Jakarta")
+        self._state.timezone = tz_id
+        if not self._custom_cron_dirty:
+            try:
+                self._state.cloud_cron = "\n".join(times_to_utc_crons(self._active_cloud_times(), tz_id))
+            except Exception:
+                pass
+        self._sync_timezone_views()
+        self.state_changed.emit()
+
     def _reload_times_list(self) -> None:
         self.timesList.clear()
+        tz_short = self._active_tz_info()["short"]
         for t in self._state.local_times:
-            item = QListWidgetItem(FIF.DATE_TIME.icon(), f"{t} WIB")
+            item = QListWidgetItem(FIF.DATE_TIME.icon(), f"{t} {tz_short}")
             item.setSizeHint(QSize(0, 32))
             self.timesList.addItem(item)
 
@@ -1422,28 +1646,95 @@ class ContentPage(SmoothScrollArea):
         self.privateRepoSwitch.setChecked(is_priv)
         self.syncOnlyCheck.setEnabled(True)
 
-    def _on_cron_preset_changed(self, _idx: int) -> None:
-        val = self.cronCombo.currentData()
-        is_custom = val == "custom"
-        self.customCronEdit.setVisible(is_custom)
-        if not self._loading:
-            if not is_custom and val:
-                self._state.cloud_cron = str(val)
-                self.customCronEdit.setText(self._state.cloud_cron)
-                self.state_changed.emit()
+    def _reload_cloud_times_list(self) -> None:
+        self.cloudTimesList.clear()
+        tz_short = self._active_tz_info()["short"]
+        for t in self._active_cloud_times():
+            item = QListWidgetItem(FIF.DATE_TIME.icon(), f"{t} {tz_short}")
+            item.setSizeHint(QSize(0, 32))
+            self.cloudTimesList.addItem(item)
+
+    def _set_cloud_times(self, times: list[str]) -> None:
+        cleaned = sorted(dict.fromkeys(str(t).strip() for t in times if str(t).strip()))
+        if not cleaned:
+            cleaned = ["08:00"]
+        self._state.cloud_times = cleaned
+        tz_id = self._active_tz_id()
+        crons = times_to_utc_crons(cleaned, tz_id)
+        cron_str = "\n".join(crons)
+        self._state.cloud_cron = cron_str
+        self._custom_cron_dirty = False
+        prev_loading = self._loading
+        self._loading = True
+        try:
+            self.customCronEdit.setText(cron_str)
+        finally:
+            self._loading = prev_loading
+        self._reload_cloud_times_list()
         self._update_cron_summary()
+        self.state_changed.emit()
+
+    def _add_cloud_time(self) -> None:
+        qt = self.cloudTimePicker.getTime()
+        hhmm = f"{qt.hour():02d}:{qt.minute():02d}"
+        current = self._active_cloud_times()
+        if hhmm not in current:
+            self._set_cloud_times([*current, hhmm])
+
+    def _remove_selected_cloud_time(self) -> None:
+        current = self._active_cloud_times()
+        row = self.cloudTimesList.currentRow()
+        if row < 0 and self.cloudTimesList.count() > 0:
+            row = self.cloudTimesList.count() - 1
+        if 0 <= row < len(current):
+            if len(current) == 1:
+                InfoBar.warning(
+                    tr("common.warning"),
+                    tr("schedule.cloud_times", tz=self._active_tz_info()["short"]),
+                    duration=2500,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self.window(),
+                )
+                return
+            del current[row]
+            self._set_cloud_times(current)
+
+    def _apply_cloud_preset(self, times: list[str]) -> None:
+        self._set_cloud_times(times)
+
+    def _set_raw_cron_expanded(self, expanded: bool) -> None:
+        self._raw_cron_expanded = bool(expanded)
+        self.rawCronContainer.setVisible(self._raw_cron_expanded)
+        self.rawCronToggleBtn.setIcon(
+            FIF.CHEVRON_DOWN_MED if self._raw_cron_expanded else FIF.CHEVRON_RIGHT
+        )
+
+    def _toggle_raw_cron_drawer(self) -> None:
+        self._set_raw_cron_expanded(not self._raw_cron_expanded)
 
     def _on_custom_cron_changed(self, text: str) -> None:
-        if not self._loading and self.cronCombo.currentData() == "custom":
-            cleaned = " ".join(text.strip().split())
+        if not self._loading and self._raw_cron_expanded:
+            self._custom_cron_dirty = True
+            cleaned = "\n".join(
+                " ".join(line.strip().split())
+                for line in text.replace(";", "\n").splitlines()
+                if line.strip()
+            )
             if cleaned:
                 self._state.cloud_cron = cleaned
                 self._schedule_save()
         self._update_cron_summary()
 
     def _update_cron_summary(self) -> None:
-        cron = self.customCronEdit.text().strip() if self.cronCombo.currentData() == "custom" else str(self.cronCombo.currentData() or self._state.cloud_cron)
-        summary = cron_to_wib_summary(cron, lang=get_language())
+        tz_id = self._active_tz_id()
+        if self._raw_cron_expanded and self._custom_cron_dirty:
+            crons_arg: Any = self.customCronEdit.text().strip() or self._state.cloud_cron
+        else:
+            try:
+                crons_arg = times_to_utc_crons(self._active_cloud_times(), tz_id)
+            except Exception:
+                crons_arg = self._state.cloud_cron
+        summary = format_schedule_summary(crons_arg, tz_id=tz_id, lang=get_language())
         self.cronSummaryLabel.setText(tr("schedule.cloud_summary", summary=summary))
 
     def _deploy_to_github(self) -> None:
@@ -1497,20 +1788,56 @@ class ContentPage(SmoothScrollArea):
             )
             return
 
-        cron_expr = (
-            " ".join(self.customCronEdit.text().strip().split())
-            if self.cronCombo.currentData() == "custom"
-            else str(self.cronCombo.currentData() or self._state.cloud_cron)
+        active_accounts = (
+            list(self._state.accounts)
+            if self._state.multi_account
+            else ([self._state.accounts[0]] if self._state.accounts else [])
         )
-        if len(cron_expr.split(" ")) != 5:
-            InfoBar.warning(
-                tr("common.warning"),
-                "Invalid 5-field UTC cron expression.",
-                duration=4000,
-                position=InfoBarPosition.TOP_RIGHT,
-                parent=self.window(),
+        unready_names: list[str] = []
+        for acc in active_accounts:
+            cookie = self._secrets.get_account_cookie(acc.id).strip()
+            if cookie and not check_cloud_cookie_readiness(cookie).get("cloud_ready", False):
+                unready_names.append(acc.name or acc.username or "Main")
+        if unready_names:
+            box = MessageBox(
+                tr("cloud.bare_deploy_title"),
+                tr("cloud.bare_deploy_confirm", accounts=", ".join(unready_names)),
+                self.window(),
             )
-            return
+            box.yesButton.setText(tr("common.continue"))
+            box.cancelButton.setText(tr("common.cancel"))
+            if not box.exec():
+                return
+
+        if self._raw_cron_expanded and self._custom_cron_dirty:
+            lines = [
+                " ".join(line.strip().split())
+                for line in self.customCronEdit.text().replace(";", "\n").splitlines()
+                if line.strip()
+            ]
+            if not lines or any(len(line.split(" ")) != 5 for line in lines):
+                InfoBar.warning(
+                    tr("common.warning"),
+                    "Invalid 5-field UTC cron expression.",
+                    duration=4000,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self.window(),
+                )
+                return
+            cron_expr = "\n".join(lines)
+        else:
+            try:
+                cron_list = times_to_utc_crons(self._active_cloud_times(), self._active_tz_id())
+                cron_expr = "\n".join(cron_list)
+            except Exception as exc:
+                InfoBar.warning(
+                    tr("common.warning"),
+                    str(exc),
+                    duration=4000,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self.window(),
+                )
+                return
 
         raw_repo_arg = (
             repo_chk["full_name"]
@@ -1581,11 +1908,13 @@ class ContentPage(SmoothScrollArea):
         self.defaultPhotoBtn.setText(escape_qt_mnemonic(tr("content.photo_use_default")))
         self.resetPhotoBtn.setText(escape_qt_mnemonic(tr("content.photo_reset")))
         self.modeCard.setTitle(tr("schedule.title"))
+        self.timezoneLabel.setText(tr("schedule.timezone"))
         self.modeSegment.items["local"].setText(tr("schedule.mode_local"))
         self.modeSegment.items["cloud"].setText(tr("schedule.mode_cloud"))
         self.modeSegment.items["both"].setText(tr("schedule.mode_both"))
         self.localHeading.setText(tr("dashboard.mode_local"))
-        self.localTimesLabel.setText(tr("schedule.local_times"))
+        tz_short = self._active_tz_info()["short"]
+        self.localTimesLabel.setText(tr("schedule.local_times_tz", tz=tz_short))
         self.addTimeBtn.setText(escape_qt_mnemonic(tr("schedule.add_time")))
         self.removeTimeBtn.setText(escape_qt_mnemonic(tr("common.remove")))
         win_sync_txt = escape_qt_mnemonic(tr("schedule.sync_windows"))
@@ -1610,14 +1939,23 @@ class ContentPage(SmoothScrollArea):
         self.repoNameEdit.setPlaceholderText(tr("cloud.repo_name_hint"))
         self.syncOnlyCheck.setText(escape_qt_mnemonic(tr("cloud.sync_only")))
         self.syncOnlyHint.setText(tr("cloud.sync_only_hint"))
-        self.cronLabel.setText(tr("schedule.cloud_cron"))
-        for idx, (_val, key) in enumerate(_CRON_PRESETS):
-            self.cronCombo.setItemText(idx, tr(key))
+        self.cloudTimeLabel.setText(tr("schedule.cloud_times", tz=tz_short))
+        self.addCloudTimeBtn.setText(escape_qt_mnemonic(tr("schedule.add_time")))
+        self.removeCloudTimeBtn.setText(escape_qt_mnemonic(tr("common.remove")))
+        self.quickPresetsLabel.setText(tr("schedule.quick_presets"))
+        self.preset1Btn.setText(escape_qt_mnemonic(tr("schedule.preset_offpeak_1")))
+        self.preset2Btn.setText(escape_qt_mnemonic(tr("schedule.preset_offpeak_2")))
+        self.preset3Btn.setText(escape_qt_mnemonic(tr("schedule.preset_offpeak_3")))
+        self.cloudDelayNote.setText(tr("schedule.cloud_delay_note"))
+        self.rawCronToggleBtn.setText(escape_qt_mnemonic(tr("schedule.raw_cron_toggle")))
+        self.cronLabel.setText(tr("schedule.custom_cron"))
         self.deployBtn.setText(escape_qt_mnemonic(tr("schedule.deploy_btn")))
         self._update_windows_tasks_badge()
         self._sync_video_controls()
         self._sync_photo_preview()
         self._update_repo_badge()
+        self._reload_times_list()
+        self._reload_cloud_times_list()
         self._update_cron_summary()
         self._refresh_github_badge()
 

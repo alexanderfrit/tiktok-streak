@@ -41,6 +41,23 @@ from gui.services.i18n import tr
 from gui.services.local_runner import LocalRunner
 from gui.services.storage import AppState, ConfigStore, SecretStore
 from gui.services.theme import escape_qt_mnemonic, tabular_mono_font
+try:
+    from gui.services.validators import format_utc_timestamp
+except ImportError:  # pragma: no cover
+    from datetime import datetime, timezone, timedelta
+
+    def format_utc_timestamp(iso_str: str, tz_id: str = "Asia/Jakarta") -> str:  # type: ignore[misc]
+        raw = str(iso_str or "").strip()
+        if not raw:
+            return ""
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt_wib = dt.astimezone(timezone(timedelta(hours=7)))
+            return f"{dt_wib.strftime('%Y-%m-%d %H:%M')} WIB"
+        except Exception:
+            return raw.replace("T", " ").replace("Z", " UTC")
 from gui.widgets.log_viewer import LogViewer
 from gui.workers import WorkerController
 
@@ -298,6 +315,10 @@ class RunPage(SmoothScrollArea):
         cloud_top.addWidget(self.refreshRunsBtn)
         cloud_body.addLayout(cloud_top)
 
+        self.cloudDelayHintLabel = CaptionLabel(tr("run.cloud_delay_hint"), self.cloudCard)
+        self.cloudDelayHintLabel.setWordWrap(True)
+        cloud_body.addWidget(self.cloudDelayHintLabel)
+
         self.runEmptyLabel = CaptionLabel(tr("run.empty_runs"), self.cloudCard)
         self.runEmptyLabel.setWordWrap(True)
         self.runEmptyLabel.setAlignment(Qt.AlignCenter)
@@ -437,6 +458,14 @@ class RunPage(SmoothScrollArea):
             self.runCloudBtn.setEnabled(False)
             self.refreshRunsBtn.setEnabled(False)
 
+        if self._runs:
+            tz_id = getattr(self._state, "timezone", "Asia/Jakarta")
+            for row_idx, r in enumerate(self._runs):
+                if row_idx < self.runsTable.rowCount():
+                    item = self.runsTable.item(row_idx, 3)
+                    if item is not None:
+                        item.setText(format_utc_timestamp(str(r.get("created_at") or ""), tz_id=tz_id))
+
         self._sync_selected_run_buttons()
 
     def _full_repo_name(self) -> str:
@@ -486,9 +515,11 @@ class RunPage(SmoothScrollArea):
             return
 
         snapshot = AppState.from_dict(self._state.to_dict())
+        headless = not self.showBrowserSwitch.isChecked()
+        mode_note = "headless" if headless else "visible browser"
         self._local_cancel = threading.Event()
         self._set_local_running(True, f"{tr('run.quick_test')}: @{sel['friend']}...")
-        self.logViewer.append_log(f"--- Quick Test (@{sel['friend']}, visible browser) ---")
+        self.logViewer.append_log(f"--- Quick Test (@{sel['friend']}, {mode_note}) ---")
 
         self._workers.start_task(
             _run_local_task,
@@ -496,7 +527,7 @@ class RunPage(SmoothScrollArea):
             self._secrets,
             only_account=sel["account_id"],
             only_friend=sel["friend"],
-            headless=False,
+            headless=headless,
             task_key="local_run",
             cancel_event=self._local_cancel,
             pass_cancel_event=True,
@@ -593,12 +624,13 @@ class RunPage(SmoothScrollArea):
         self._runs = list(runs or [])
         self.runsTable.setRowCount(len(self._runs))
         mono_font = tabular_mono_font(10)
+        tz_id = getattr(self._state, "timezone", "Asia/Jakarta")
         for row_idx, r in enumerate(self._runs):
             vals = [
                 str(r.get("status") or ""),
                 str(r.get("conclusion") or "-"),
                 str(r.get("event") or ""),
-                str(r.get("created_at") or "").replace("T", " ").replace("Z", " UTC"),
+                format_utc_timestamp(str(r.get("created_at") or ""), tz_id=tz_id),
             ]
             for col_idx, val in enumerate(vals):
                 item = QTableWidgetItem(val)
@@ -796,6 +828,7 @@ class RunPage(SmoothScrollArea):
         self.fullRunBtn.setText(escape_qt_mnemonic(tr("run.full_run")))
         self.stopBtn.setText(escape_qt_mnemonic(tr("schedule.stop_run")))
         self.cloudCard.setTitle(tr("run.cloud_title"))
+        self.cloudDelayHintLabel.setText(tr("run.cloud_delay_hint"))
         self.runCloudBtn.setText(escape_qt_mnemonic(tr("run.run_cloud_btn")))
         self.refreshRunsBtn.setText(escape_qt_mnemonic(tr("common.refresh")))
         self.runEmptyLabel.setText(tr("run.empty_runs"))

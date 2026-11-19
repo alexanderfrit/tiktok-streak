@@ -19,6 +19,7 @@ from qfluentwidgets import (
     FlowLayout,
     FluentIcon as FIF,
     HeaderCardWidget,
+    IndeterminateProgressRing,
     InfoBar,
     InfoBarPosition,
     InfoLevel,
@@ -33,6 +34,23 @@ from qfluentwidgets import (
 from gui.services.i18n import tr
 from gui.services.storage import AccountProfile
 from gui.services.theme import escape_qt_mnemonic
+try:
+    from gui.services.tiktok_auth import check_cloud_cookie_readiness
+except ImportError:  # pragma: no cover
+    from gui.services.tiktok_auth import extract_session_summary
+
+    def check_cloud_cookie_readiness(raw_or_dict):  # type: ignore[misc]
+        summary = extract_session_summary(raw_or_dict)
+        cookies = summary.get("cookies") or {}
+        has_regional = any(bool(cookies.get(k)) for k in ("tt-target-idc", "store-idc"))
+        sessionid = summary.get("sessionid") or ""
+        count = int(summary.get("count") or len(cookies))
+        return {
+            "cloud_ready": bool(sessionid and has_regional),
+            "is_bare_session": bool(sessionid and not has_regional and count <= 4),
+            "missing_regional": [k for k in ("tt-target-idc", "store-idc") if not cookies.get(k)],
+            "count": count,
+        }
 from gui.services.validators import (
     export_friends_csv,
     import_friends_csv,
@@ -69,6 +87,7 @@ class AccountCard(HeaderCardWidget):
         has_cookie: bool = False,
         multi_account: bool = False,
         can_remove: bool = False,
+        cookie_payload: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -78,6 +97,9 @@ class AccountCard(HeaderCardWidget):
         self._can_remove = bool(can_remove)
         self._loading = True
         self._overrides_expanded = False
+        self._verifying = False
+        self._cookie_count: int | None = None
+        self._cookie_cloud_ready: bool | None = None
 
         self._friends_debounce = QTimer(self)
         self._friends_debounce.setSingleShot(True)
@@ -85,7 +107,13 @@ class AccountCard(HeaderCardWidget):
         self._friends_debounce.timeout.connect(self._commit_friends)
 
         self._build_ui()
-        self.load_profile(profile, has_cookie=has_cookie, multi_account=multi_account, can_remove=can_remove)
+        self.load_profile(
+            profile,
+            has_cookie=has_cookie,
+            multi_account=multi_account,
+            can_remove=can_remove,
+            cookie_payload=cookie_payload,
+        )
 
     def _build_ui(self) -> None:
         # Header badges & remove action inside HeaderCardWidget headerLayout
@@ -116,10 +144,25 @@ class AccountCard(HeaderCardWidget):
         self.nameEdit.textChanged.connect(self._on_name_changed)
         self.authDetailLabel = CaptionLabel("", self)
         self.authDetailLabel.setWordWrap(True)
+        self.verifySpinner = IndeterminateProgressRing(self)
+        self.verifySpinner.setFixedSize(18, 18)
+        self.verifySpinner.stop()
+        self.verifySpinner.hide()
+        self.verifyStatusLabel = CaptionLabel("", self)
+        self.verifyStatusLabel.setWordWrap(True)
+        self.verifyStatusLabel.hide()
+
+        detail_row = QHBoxLayout()
+        detail_row.setContentsMargins(0, 0, 0, 0)
+        detail_row.setSpacing(6)
+        detail_row.addWidget(self.verifySpinner, 0, Qt.AlignVCenter)
+        detail_row.addWidget(self.verifyStatusLabel, 0, Qt.AlignVCenter)
+        detail_row.addWidget(self.authDetailLabel, 1, Qt.AlignVCenter)
+
         name_row.addWidget(self.nameCaption)
         name_row.addWidget(self.nameEdit)
         name_row.addSpacing(8)
-        name_row.addWidget(self.authDetailLabel, 1)
+        name_row.addLayout(detail_row, 1)
         body.addLayout(name_row)
 
         # Auth actions flow layout (wraps cleanly without overflowing 840px)
@@ -285,12 +328,18 @@ class AccountCard(HeaderCardWidget):
         has_cookie: bool | None = None,
         multi_account: bool | None = None,
         can_remove: bool | None = None,
+        cookie_payload: str | None = None,
     ) -> None:
         self._loading = True
         try:
             self.profile = profile
             if has_cookie is not None:
                 self._has_cookie = bool(has_cookie)
+                if not self._has_cookie:
+                    self._cookie_count = None
+                    self._cookie_cloud_ready = None
+            if cookie_payload is not None:
+                self._apply_cookie_summary(cookie_payload)
             if multi_account is not None:
                 self._multi_account = bool(multi_account)
             if can_remove is not None:
@@ -351,9 +400,55 @@ class AccountCard(HeaderCardWidget):
     def _toggle_overrides_drawer(self) -> None:
         self._set_overrides_expanded(not self._overrides_expanded)
 
+    def _apply_cookie_summary(self, cookie_payload: str | None) -> None:
+        cleaned = str(cookie_payload or "").strip()
+        if not cleaned:
+            self._cookie_count = 0
+            self._cookie_cloud_ready = None
+            return
+        readiness = check_cloud_cookie_readiness(cleaned)
+        count = int(readiness.get("count") or 0)
+        self._cookie_count = count
+        self._cookie_cloud_ready = bool(readiness.get("cloud_ready", False)) if count > 0 else None
+
+    def set_cookie_summary(self, cookie_payload: str | None) -> None:
+        self._apply_cookie_summary(cookie_payload)
+        self._refresh_badges()
+
     def set_cookie_present(self, has_cookie: bool) -> None:
         self._has_cookie = bool(has_cookie)
+        if not self._has_cookie:
+            self._cookie_count = None
+            self._cookie_cloud_ready = None
         self._refresh_badges()
+
+    def set_verifying(self, active: bool, status_text: str = "") -> None:
+        self._verifying = bool(active)
+        if self._verifying:
+            self.verifySpinner.show()
+            self.verifySpinner.start()
+            msg = str(status_text or tr("accounts.verifying")).strip()
+            self.verifyStatusLabel.setText(msg)
+            self.verifyStatusLabel.show()
+            self.authDetailLabel.hide()
+            self.verifyInboxBtn.setEnabled(False)
+            self.verifyInboxBtn.setText(escape_qt_mnemonic(tr("accounts.verifying")))
+            self.inboxBadge.setState("info", tr("accounts.verifying"))
+            self.inboxBadge.adjustSize()
+        else:
+            self.verifySpinner.stop()
+            self.verifySpinner.hide()
+            cleaned = str(status_text or "").strip()
+            self.verifyStatusLabel.setText(cleaned)
+            self.verifyStatusLabel.setVisible(bool(cleaned))
+            self.authDetailLabel.show()
+            self.verifyInboxBtn.setText(escape_qt_mnemonic(tr("accounts.verify_inbox")))
+            self._refresh_badges()
+
+    def set_verify_status(self, text: str) -> None:
+        cleaned = str(text or "").strip()
+        self.verifyStatusLabel.setText(cleaned)
+        self.verifyStatusLabel.setVisible(bool(cleaned))
 
     def _refresh_badges(self) -> None:
         if self._has_cookie and self.profile.username:
@@ -364,13 +459,19 @@ class AccountCard(HeaderCardWidget):
             self.usernameBadge.setState(InfoLevel.WARNING, tr("accounts.no_session"))
         self.usernameBadge.adjustSize()
 
-        state_key, level = _inbox_badge_state(self.profile, self._has_cookie)
-        inbox_key = {
-            "verified": "accounts.inbox_verified",
-            "blocked": "accounts.inbox_blocked",
-            "expired": "accounts.inbox_expired",
-        }.get(state_key, "accounts.inbox_unchecked")
-        self.inboxBadge.setState(level, tr(inbox_key))
+        if self._verifying:
+            self.inboxBadge.setState("info", tr("accounts.verifying"))
+        else:
+            state_key, level = _inbox_badge_state(self.profile, self._has_cookie)
+            if state_key == "verified" and self._cookie_cloud_ready is False:
+                self.inboxBadge.setState(InfoLevel.WARNING, tr("accounts.local_only_badge"))
+            else:
+                inbox_key = {
+                    "verified": "accounts.inbox_verified",
+                    "blocked": "accounts.inbox_blocked",
+                    "expired": "accounts.inbox_expired",
+                }.get(state_key, "accounts.inbox_unchecked")
+                self.inboxBadge.setState(level, tr(inbox_key))
         self.inboxBadge.adjustSize()
 
         detail_parts = []
@@ -378,8 +479,11 @@ class AccountCard(HeaderCardWidget):
             detail_parts.append(self.profile.auth_method)
         if self.profile.last_checked:
             detail_parts.append(self.profile.last_checked)
+        if self._has_cookie and self._cookie_count and self._cookie_count > 0 and self._cookie_cloud_ready is not None:
+            key = "accounts.cookies_cloud_ready" if self._cookie_cloud_ready else "accounts.cookies_local_only"
+            detail_parts.append(tr(key, count=self._cookie_count))
         self.authDetailLabel.setText(" • ".join(detail_parts))
-        self.verifyInboxBtn.setEnabled(self._has_cookie)
+        self.verifyInboxBtn.setEnabled(self._has_cookie and not self._verifying)
 
     def _sync_override_enabled_states(self) -> None:
         self.ovMsgEdit.setEnabled(self.ovMsgCheck.isChecked())
@@ -544,7 +648,8 @@ class AccountCard(HeaderCardWidget):
         self.guidedLoginBtn.setText(escape_qt_mnemonic(tr("accounts.sign_in_browser")))
         self.importBrowserBtn.setText(escape_qt_mnemonic(tr("accounts.import_browser")))
         self.pasteCookieBtn.setText(escape_qt_mnemonic(tr("accounts.paste_cookie")))
-        self.verifyInboxBtn.setText(escape_qt_mnemonic(tr("accounts.verify_inbox")))
+        verify_key = "accounts.verifying" if self._verifying else "accounts.verify_inbox"
+        self.verifyInboxBtn.setText(escape_qt_mnemonic(tr(verify_key)))
         self.friendsLabel.setText(tr("content.friends_label"))
         self.importCsvBtn.setText(escape_qt_mnemonic(tr("content.import_csv")))
         self.exportCsvBtn.setText(escape_qt_mnemonic(tr("content.export_csv")))
