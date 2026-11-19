@@ -1878,5 +1878,194 @@ def test_v110_settings_timezone_runpage_timestamps_i18n_and_layout_bounds(
     assert set(TRANSLATIONS["en"].keys()) == set(TRANSLATIONS["id"].keys())
 
 
+# ---------------------------------------------------------------------------
+# 12. WinUI 3 Badges, Friend Chips, Time Chips, Decluttered Cloud UI & Privacy
+# ---------------------------------------------------------------------------
+
+def test_winui3_badges_friend_chips_time_chips_and_security_dialog(
+    qapp: QApplication,
+    make_window,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from qfluentwidgets import SimpleCardWidget
+    from gui.services.theme import PILL_RADIUS
+    from gui.widgets.security_dialog import SecurityPrivacyDialog
+
+    assert PILL_RADIUS == 4
+
+    acc = AccountProfile(
+        id="a1",
+        name="Main",
+        friends=["alice"],
+        username="demo_creator",
+        inbox_verified=True,
+        auth_method="guided (chrome)",
+    )
+    state = AppState(
+        accounts=[acc],
+        mode="both",
+        timezone="Asia/Jakarta",
+        local_times=["08:00", "20:00"],
+        cloud_times=["08:15", "20:15"],
+        cloud_cron="15 1,13 * * *",
+        github_login="octocat",
+        github_repo_name="tiktok-streak",
+        video_enabled=False,
+        photo_enabled=False,
+    )
+    win, _store, secrets, _mem, _tmp = make_window(state=state, smoke_test=True)
+    secrets.set_account_cookie("a1", "sessionid=sid_chip; tt-target-idc=useast2a")
+    secrets.set_github_token("ghp_chip_test_token_12345")
+
+    ap = win.accounts_interface
+    ap.refresh_from_state()
+    cp = win.content_interface
+    cp.refresh_from_state()
+    hp = win.home_interface
+    hp.refresh_state()
+    sp = win.settings_interface
+    sp.refresh_from_state()
+    qapp.processEvents()
+
+    # 1) WinUI 3 StatusPill de-duplication on AccountCard
+    card = ap._cards[0]
+    assert card.usernameBadge.level() == "neutral"
+    assert card.usernameBadge.showDot() is False
+    assert card.usernameBadge.text() == "@demo_creator"
+    assert card.friendsCountBadge.level() == "neutral"
+    assert card.friendsCountBadge.showDot() is False
+    assert card.inboxBadge.level() == "success"
+    assert card.inboxBadge.showDot() is True
+    assert f"border-radius: {PILL_RADIUS}px;" in card.inboxBadge.styleSheet()
+
+    # 2) Friend chips input: single handle, TikTok URL, multi-paste, and chip X removal
+    assert card.friendsEdit.isHidden() is True
+    assert card.friendsChipBox.keys() == ["alice"]
+    assert card.friendsChipBox.labels() == ["@alice"]
+
+    card.friendInputEdit.setText("https://www.tiktok.com/@bob_user, @carol")
+    card.addFriendBtn.click()
+    qapp.processEvents()
+    assert card.friendInputEdit.text() == ""
+    assert card.profile.friends == ["alice", "bob_user", "carol"]
+    assert card.friendsChipBox.keys() == ["alice", "bob_user", "carol"]
+    assert card.friendsChipBox.count() == 3
+
+    # Remove @bob_user by clicking its chip's X button
+    card.friendsChipBox.chip_at(1).removeBtn.click()
+    qapp.processEvents()
+    assert card.profile.friends == ["alice", "carol"]
+    assert card.friendsChipBox.keys() == ["alice", "carol"]
+
+    # 3) ContentPage removable time chips & progressive disclosure drawer
+    assert cp.timesList.isHidden() is True
+    assert cp.cloudTimesList.isHidden() is True
+    assert cp.localTimesChips.keys() == ["08:00", "20:00"]
+    assert cp.cloudTimesChips.keys() == ["08:15", "20:15"]
+    assert cp.cloudTimesChips.labels() == ["08:15 WIB", "20:15 WIB"]
+
+    # Remove second cloud time chip via its X button
+    cp.cloudTimesChips.chip_at(1).removeBtn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["08:15"]
+    assert cp.cloudTimesChips.keys() == ["08:15"]
+
+    # Attempting to remove the last remaining cloud time chip keeps it intact
+    cp.cloudTimesChips.chip_at(0).removeBtn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["08:15"]
+    assert cp.cloudTimesChips.count() == 1
+
+    # Remove second local time chip via its X button
+    cp.localTimesChips.chip_at(1).removeBtn.click()
+    qapp.processEvents()
+    assert win.state.local_times == ["08:00"]
+    assert cp.localTimesChips.keys() == ["08:00"]
+
+    # Advanced Repo/Sync-Only/PAT drawer collapsed by default and toggles open
+    assert cp.cloudAdvancedContainer.isHidden() is True
+    cp.cloudAdvancedToggleBtn.click()
+    qapp.processEvents()
+    assert cp.cloudAdvancedContainer.isHidden() is False
+
+    # Static container cards use non-hoverable SimpleCardWidget
+    assert isinstance(cp.cloudSection, SimpleCardWidget)
+    assert isinstance(cp.localSection, SimpleCardWidget)
+    assert isinstance(ap.browserCard, SimpleCardWidget)
+    assert isinstance(hp.privacyCard, SimpleCardWidget)
+
+    # 4) SecurityPrivacyDialog instantiates & opens cleanly from Home, Accounts, and Settings
+    opened: list[str] = []
+    monkeypatch.setattr(
+        SecurityPrivacyDialog,
+        "exec",
+        lambda self: (opened.append(self.titleLabel.text()), 1)[-1],
+    )
+    hp.privacyBtn.click()
+    ap.privacyBtn.click()
+    sp.openSecurityBtn.click()
+    qapp.processEvents()
+    assert len(opened) == 3
+    assert all(title == tr("security.dialog_title") for title in opened)
+
+
+def test_run_bot_redacts_secrets_in_scheduled_run_log(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg_dir = tmp_path / "redact_cfg"
+    ws_dir = tmp_path / "redact_ws"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+
+    script = f"""
+import logging, pathlib, sys, types
+from unittest.mock import patch
+
+mem = {{}}
+sys.modules['keyring'] = types.SimpleNamespace(
+    get_password=lambda s, k: mem.get((s, k)),
+    set_password=lambda s, k, v: mem.__setitem__((s, k), v),
+    delete_password=lambda s, k: mem.pop((s, k), None),
+)
+
+import run_gui
+from gui.services.storage import AccountProfile, AppState, ConfigStore, SecretStore
+
+cfg_dir = pathlib.Path({str(cfg_dir)!r})
+ws_dir = pathlib.Path({str(ws_dir)!r})
+store = ConfigStore(cfg_dir)
+secrets = SecretStore(cfg_dir)
+acc = AccountProfile(id='acc_1', name='Main', friends=['alice'])
+store.save(AppState(accounts=[acc], video_enabled=False, photo_enabled=False, workspace_dir=str(ws_dir)))
+secrets.set_account_cookie('acc_1', 'sessionid=ultra_secret_disk_cookie_999')
+secrets.set_github_token('ghp_ultraSecretDiskToken999')
+
+def fake_run(**_kwargs):
+    logging.getLogger('tiktok-streak').info(
+        'Leaked cookie sessionid=ultra_secret_disk_cookie_999 and ghp_ultraSecretDiskToken999'
+    )
+    return {{'ok': True, 'results': [], 'elapsed': 1, 'critical_failure': False}}
+
+with patch('main.run', new=fake_run):
+    rc = run_gui.main(['--run-bot', '--config-dir', str(cfg_dir)])
+
+assert rc == 0
+log_txt = (cfg_dir / 'scheduled_run.log').read_text(encoding='utf-8')
+assert 'ultra_secret_disk_cookie_999' not in log_txt
+assert 'ghp_ultraSecretDiskToken999' not in log_txt
+assert '<REDACTED' in log_txt
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root)
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+
+
+
 
 

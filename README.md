@@ -7,6 +7,7 @@
   </p>
   <p>
     <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest">Download Windows App (.exe)</a> &middot;
+    <a href="#security-privacy--self-audit">Security &amp; Privacy</a> &middot;
     <a href="#user-guide">User Guide</a> &middot;
     <a href="#developer-guide">Developer Guide</a> &middot;
     <a href="#how-it-works">How It Works</a>
@@ -49,6 +50,31 @@ Beyond keeping daily streak days alive, sending all three message types complete
 | Run History & Logs | Settings & Windows Theme Sync |
 |---|---|
 | ![Run history and logs](docs/screenshots/05-run-logs.png) | ![Settings and personalization](docs/screenshots/06-settings.png) |
+
+---
+
+## Security, Privacy & Self-Audit
+
+This tool handles sensitive credentials (TikTok session cookies, an optional GitHub OAuth token, and an optional Telegram bot token). It runs **100% locally on your PC or inside your own GitHub repository** — there is no developer backend, relay server, analytics, or telemetry.
+
+### Where Your Data Lives
+- **Local PC storage (`gui/services/storage.py`):** Non-secret settings (friend handles, message text, schedule times) are written to `%APPDATA%\TikTokStreak\config.json`. All cookies and tokens are stored encrypted in **Windows Credential Manager (`keyring`)** or **Windows DPAPI** (`%APPDATA%\TikTokStreak\secrets.dpapi`, encrypted with `win32crypt.CryptProtectData` bound to your Windows user login). Never stored in plaintext in `config.json`.
+- **GitHub Cloud storage (`gui/services/github_api.py`):** When you deploy to GitHub Cloud, secrets are encrypted client-side on your PC with **`PyNaCl` (`nacl.public.SealedBox`)** using your own repository's Actions public key before upload. Only GitHub Actions running in your own repository can decrypt them.
+- **Browser cookie import (`gui/services/browsers.py`):** Opens local browser cookie databases in read-only mode (`?mode=ro`), filters strictly to `host_key = 'tiktok.com'` / `%.tiktok.com` (never reads cookies for other sites), and deletes temporary WAL copy folders immediately in `finally`.
+- **Automatic log redaction (`gui/services/storage.py`, `run_gui.py`):** UI logs, diagnostic reports, and `scheduled_run.log` automatically strip `sessionid`, `Cookie:` headers, GitHub tokens (`ghp_` / `github_pat_`), and Telegram bot tokens before display or disk write.
+- **1-Click wipe:** Open **Settings -> Reset All Settings & Secrets** to delete all local config files, DPAPI blobs, and Credential Manager entries.
+
+### Exact Network Hosts Contacted
+
+| Host | Used By | Purpose |
+|---|---|---|
+| `*.tiktok.com` (`www`, `vt`, `vm`) | `src/browser.py`, `src/share.py`, `gui/services/tiktok_auth.py`, `gui/services/validators.py` | Session check, short-link resolution, and DM inbox sending |
+| `github.com`, `api.github.com` | `gui/services/github_api.py` | OAuth Device Flow sign-in, deploying workflow & encrypted secrets to your own repo, and viewing run logs (`Authorization` header is stripped on cross-host log redirects) |
+| `api.telegram.org` | `src/notifier.py`, `gui/services/github_api.py` | Optional run summary alerts (only when enabled in Settings) |
+
+### Verify or Build It Yourself
+- Every release `.exe` is built transparently from this repository by [`.github/workflows/build-exe.yml`](.github/workflows/build-exe.yml) with `--noupx` (no UPX packer) and no obfuscated code.
+- If you prefer not to run the prebuilt binary, clone the repo and run `python run_gui.py` directly from source or build `TikTokStreakSetup.exe` locally (see [Testing & Building the Standalone `.exe`](#testing--building-the-standalone-exe)).
 
 ---
 

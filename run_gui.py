@@ -75,20 +75,35 @@ def _has_manual_config(directory: Path) -> bool:
 def _run_bot_mode(args: argparse.Namespace, root_dir: Path) -> int:
     # Imported lazily here so --run-bot never imports PySide6 / qfluentwidgets.
     from gui.services.local_runner import LocalRunner
-    from gui.services.storage import ConfigStore, SecretStore
+    from gui.services.storage import ConfigStore, SecretStore, redact_secrets
 
     store = ConfigStore(args.config_dir)
     secrets = SecretStore(store.config_dir)
     store.config_dir.mkdir(parents=True, exist_ok=True)
+    state = store.load()
 
+    extra_secrets: list[str] = []
+    try:
+        extra_secrets = LocalRunner._collect_secrets(state, secrets)
+    except Exception:
+        extra_secrets = []
+
+    class _RedactingFormatter(logging.Formatter):
+        def format(self, record: logging.LogRecord) -> str:
+            return redact_secrets(super().format(record), extra_secrets=extra_secrets)
+
+    redacting_fmt = _RedactingFormatter(
+        "[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+    )
     file_handler = logging.FileHandler(store.config_dir / "scheduled_run.log", encoding="utf-8")
+    file_handler.setFormatter(redacting_fmt)
     log_handlers: list[logging.Handler] = [file_handler]
     if sys.stderr is not None:
-        log_handlers.append(logging.StreamHandler(sys.stderr))
+        stream_handler = logging.StreamHandler(sys.stderr)
+        stream_handler.setFormatter(redacting_fmt)
+        log_handlers.append(stream_handler)
     logging.basicConfig(
         level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
         handlers=log_handlers,
         force=True,
     )
@@ -96,7 +111,6 @@ def _run_bot_mode(args: argparse.Namespace, root_dir: Path) -> int:
     prev_cwd = Path.cwd()
 
     try:
-        state = store.load()
         has_gui_accounts = bool(state.accounts) and any(
             bool(secrets.get_account_cookie(acc.id).strip()) for acc in state.accounts
         )

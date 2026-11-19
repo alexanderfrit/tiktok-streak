@@ -1,4 +1,4 @@
-"""High-contrast Fluent status pill widget with 6px indicator dot."""
+"""WinUI 3 Fluent status badge widget with optional 6px semantic indicator dot."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
@@ -10,21 +10,22 @@ from gui.services.theme import PILL_RADIUS
 
 _VALID_LEVELS = ("success", "warning", "error", "info", "neutral")
 
+# Authentic WinUI 3 semantic tokens: subtle surface tint + quiet hairline border (no neon border)
 _DARK_PALETTE: dict[str, tuple[str, str, str, str]] = {
     # level: (bg_rgba, border_rgba, dot_hex, text_hex)
-    "success": ("rgba(16, 185, 129, 0.14)", "rgba(52, 211, 153, 0.35)", "#34d399", "#a7f3d0"),
-    "warning": ("rgba(245, 158, 11, 0.14)", "rgba(251, 191, 36, 0.36)", "#fbbf24", "#fde68a"),
-    "error": ("rgba(239, 68, 68, 0.15)", "rgba(248, 113, 113, 0.38)", "#f87171", "#fecaca"),
-    "info": ("rgba(59, 130, 246, 0.15)", "rgba(96, 165, 250, 0.38)", "#60a5fa", "#bfdbfe"),
-    "neutral": ("rgba(255, 255, 255, 0.07)", "rgba(255, 255, 255, 0.14)", "#a1a1aa", "#e4e4e7"),
+    "success": ("rgba(108, 203, 95, 0.14)", "rgba(255, 255, 255, 0.07)", "#6ccb5f", "#dff0dd"),
+    "warning": ("rgba(252, 225, 0, 0.12)", "rgba(255, 255, 255, 0.07)", "#fce100", "#f5ebc6"),
+    "error": ("rgba(255, 153, 164, 0.14)", "rgba(255, 255, 255, 0.07)", "#ff99a4", "#f7d9dc"),
+    "info": ("rgba(96, 205, 255, 0.14)", "rgba(255, 255, 255, 0.07)", "#60cdff", "#d8eefb"),
+    "neutral": ("rgba(255, 255, 255, 0.06)", "rgba(255, 255, 255, 0.08)", "#9e9e9e", "#d4d4d4"),
 }
 
 _LIGHT_PALETTE: dict[str, tuple[str, str, str, str]] = {
-    "success": ("rgba(16, 185, 129, 0.10)", "rgba(5, 150, 105, 0.28)", "#059669", "#065f46"),
-    "warning": ("rgba(245, 158, 11, 0.12)", "rgba(217, 119, 6, 0.30)", "#d97706", "#92400e"),
-    "error": ("rgba(239, 68, 68, 0.10)", "rgba(220, 38, 38, 0.28)", "#dc2626", "#991b1b"),
-    "info": ("rgba(37, 99, 235, 0.10)", "rgba(37, 99, 235, 0.28)", "#2563eb", "#1e40af"),
-    "neutral": ("rgba(0, 0, 0, 0.05)", "rgba(0, 0, 0, 0.12)", "#52525b", "#27272a"),
+    "success": ("#dff6dd", "rgba(0, 0, 0, 0.06)", "#0f7b0f", "#0d5c0d"),
+    "warning": ("#fff4ce", "rgba(0, 0, 0, 0.06)", "#9d5d00", "#7a4700"),
+    "error": ("#fde7e9", "rgba(0, 0, 0, 0.06)", "#c42b1c", "#8f1d12"),
+    "info": ("#e6f2fb", "rgba(0, 0, 0, 0.06)", "#005fb8", "#004587"),
+    "neutral": ("rgba(0, 0, 0, 0.05)", "rgba(0, 0, 0, 0.07)", "#767676", "#3b3b3b"),
 }
 
 _INFO_LEVEL_MAP: dict[InfoLevel, str] = {
@@ -54,7 +55,7 @@ class _StatusDot(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._color = QColor("#a1a1aa")
+        self._color = QColor("#9e9e9e")
         self.setFixedSize(6, 6)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -72,36 +73,39 @@ class _StatusDot(QWidget):
 
 
 class StatusPill(QFrame):
-    """Compact pill badge showing a 6px status dot and high-contrast label."""
+    """Compact WinUI 3 Fluent badge showing an optional 6px status dot and label."""
 
     def __init__(
         self,
         text: str = "",
         level: str | InfoLevel = "neutral",
         parent: QWidget | None = None,
+        *,
+        show_dot: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("StatusPill")
         self._level = _normalize_level(level)
         self._text = str(text or "")
+        self._show_dot = bool(show_dot)
 
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(9, 3, 10, 3)
-        layout.setSpacing(6)
+        self._layout = QHBoxLayout(self)
+        self._layout.setSpacing(6)
 
         self._dot = _StatusDot(self)
         self._label = QLabel(self._text, self)
         self._label.setObjectName("StatusPillLabel")
         font = QFont(self._label.font())
         font.setPointSize(9)
-        font.setWeight(QFont.Weight.Medium)
+        font.setWeight(QFont.Weight.DemiBold)
         self._label.setFont(font)
 
-        layout.addWidget(self._dot, 0, Qt.AlignVCenter)
-        layout.addWidget(self._label, 0, Qt.AlignVCenter)
+        self._layout.addWidget(self._dot, 0, Qt.AlignVCenter)
+        self._layout.addWidget(self._label, 0, Qt.AlignVCenter)
 
+        self._sync_dot_visibility()
         self._apply_palette()
         self.setVisible(bool(self._text.strip()))
 
@@ -109,6 +113,13 @@ class StatusPill(QFrame):
             qconfig.themeChanged.connect(self._on_theme_changed)
         except Exception:
             pass
+
+    def _sync_dot_visibility(self) -> None:
+        self._dot.setVisible(self._show_dot)
+        if self._show_dot:
+            self._layout.setContentsMargins(8, 3, 9, 3)
+        else:
+            self._layout.setContentsMargins(8, 3, 8, 3)
 
     def _on_theme_changed(self, _theme=None) -> None:
         self._apply_palette()
@@ -132,12 +143,28 @@ class StatusPill(QFrame):
             f"}}"
         )
 
-    def setState(self, level: str | InfoLevel, text: str) -> None:
+    def setState(
+        self,
+        level: str | InfoLevel,
+        text: str,
+        *,
+        show_dot: bool | None = None,
+    ) -> None:
         self._level = _normalize_level(level)
         self._text = str(text or "")
+        if show_dot is not None:
+            self._show_dot = bool(show_dot)
+            self._sync_dot_visibility()
         self._label.setText(self._text)
         self._apply_palette()
         self.setVisible(bool(self._text.strip()))
+
+    def setShowDot(self, show_dot: bool) -> None:
+        self._show_dot = bool(show_dot)
+        self._sync_dot_visibility()
+
+    def showDot(self) -> bool:
+        return self._show_dot
 
     def setLevel(self, level: str | InfoLevel) -> None:
         self._level = _normalize_level(level)
