@@ -38,6 +38,17 @@ LOGIN_URL = (
 MESSAGES_URL = "https://www.tiktok.com/messages?allow_label=true&lang=en&scene=business"
 
 _COOKIE_ATTRS = {"path", "domain", "expires", "max-age", "secure", "httponly", "samesite", "priority"}
+_REGIONAL_COOKIE_KEYS = ("tt-target-idc", "store-idc")
+_COMPANION_COOKIE_KEYS = (
+    "sid_guard",
+    "uid_tt",
+    "uid_tt_ss",
+    "ttwid",
+    "odin_tt",
+    "tt_session_tlb_tag",
+    "store-country-code",
+)
+_AUTH_SESSION_KEYS = ("sessionid", "sessionid_ss", "sid_tt")
 
 
 def _clean_cookie_part(text: str) -> str:
@@ -155,9 +166,71 @@ def extract_session_summary(raw: str | dict[str, str]) -> dict[str, Any]:
     }
 
 
+def check_cloud_cookie_readiness(raw_or_dict: str | dict[str, str]) -> dict[str, Any]:
+    """Assess whether a cookie payload has TikTok regional routing cookies needed for cloud runs."""
+    summary = extract_session_summary(raw_or_dict)
+    cookies = summary["cookies"]
+    sessionid = summary["sessionid"]
+    count = summary["count"]
+    has_regional = any(bool(cookies.get(k)) for k in _REGIONAL_COOKIE_KEYS)
+    has_companion = any(bool(cookies.get(k)) for k in _COMPANION_COOKIE_KEYS)
+    missing_regional = [k for k in _REGIONAL_COOKIE_KEYS if not cookies.get(k)]
+    return {
+        "cloud_ready": bool(sessionid and has_regional),
+        "is_bare_session": bool(sessionid and not has_regional and count <= 4),
+        "has_regional": has_regional,
+        "has_companion": has_companion,
+        "count": count,
+        "missing_regional": missing_regional,
+    }
+
+
+def _extract_set_cookies(headers: Any) -> list[str]:
+    """Extract all Set-Cookie header values from an HTTPResponse headers object or dict."""
+    if headers is None:
+        return []
+    if hasattr(headers, "get_all"):
+        vals = headers.get_all("Set-Cookie")
+        if vals:
+            return [str(v) for v in vals if v]
+    out: list[str] = []
+    if hasattr(headers, "items"):
+        for k, v in headers.items():
+            if str(k).strip().lower() == "set-cookie":
+                if isinstance(v, (list, tuple)):
+                    out.extend(str(item) for item in v if item)
+                elif v:
+                    out.append(str(v))
+    return out
+
+
+def _parse_set_cookie_header(header_val: str) -> tuple[str, str] | None:
+    """Parse a single Set-Cookie header into (name, value), skipping deleted/Max-Age=0 cookies."""
+    parts = [p.strip() for p in str(header_val or "").split(";")]
+    if not parts or "=" not in parts[0]:
+        return None
+    name, val = parts[0].split("=", 1)
+    c_name = _clean_cookie_part(name)
+    c_val = _clean_cookie_part(val).strip('"')
+    if not c_name or not c_val or c_val.lower() == "deleted":
+        return None
+    for attr in parts[1:]:
+        if "=" not in attr:
+            continue
+        ak, av = attr.split("=", 1)
+        if ak.strip().lower() == "max-age":
+            try:
+                if int(av.strip()) <= 0:
+                    return None
+            except ValueError:
+                pass
+    return c_name, c_val
+
+
 def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0) -> dict[str, Any]:
-    """Verify a TikTok cookie/sessionid via TikTok's account info endpoint."""
+    """Verify a TikTok cookie/sessionid via TikTok's account info endpoint and hydrate Set-Cookie headers."""
     summary = extract_session_summary(cookie_or_sid)
+    readiness = check_cloud_cookie_readiness(summary["cookies"])
     if not summary["cookie_text"]:
         return {
             "ok": False,
@@ -166,6 +239,9 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
             "sessionid": "",
             "cookie_text": "",
             "waf_blocked": False,
+            "cloud_ready": readiness["cloud_ready"],
+            "cookie_count": readiness["count"],
+            "missing_regional": readiness["missing_regional"],
             "error": "sessionid is empty",
         }
 
@@ -178,9 +254,16 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
             "Referer": "https://www.tiktok.com/",
         },
     )
+    merged_cookies = dict(summary["cookies"])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw_body = resp.read().decode("utf-8", "ignore")
+            for sc_raw in _extract_set_cookies(getattr(resp, "headers", None)):
+                parsed_sc = _parse_set_cookie_header(sc_raw)
+                if not parsed_sc:
+                    continue
+                sc_name, sc_val = parsed_sc
+                merged_cookies[sc_name] = sc_val
     except urllib.error.HTTPError as exc:
         return {
             "ok": False,
@@ -189,6 +272,9 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
             "sessionid": summary["sessionid"],
             "cookie_text": summary["cookie_text"],
             "waf_blocked": exc.code in (403, 429),
+            "cloud_ready": readiness["cloud_ready"],
+            "cookie_count": readiness["count"],
+            "missing_regional": readiness["missing_regional"],
             "error": f"HTTP {exc.code}: {exc.reason}",
         }
     except Exception as exc:
@@ -199,8 +285,14 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
             "sessionid": summary["sessionid"],
             "cookie_text": summary["cookie_text"],
             "waf_blocked": False,
+            "cloud_ready": readiness["cloud_ready"],
+            "cookie_count": readiness["count"],
+            "missing_regional": readiness["missing_regional"],
             "error": str(exc),
         }
+
+    merged_cookie_text = "; ".join(f"{k}={v}" for k, v in merged_cookies.items())
+    readiness = check_cloud_cookie_readiness(merged_cookies)
 
     try:
         data = json.loads(raw_body)
@@ -210,8 +302,11 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
             "username": "",
             "uid": "",
             "sessionid": summary["sessionid"],
-            "cookie_text": summary["cookie_text"],
+            "cookie_text": merged_cookie_text,
             "waf_blocked": True,
+            "cloud_ready": readiness["cloud_ready"],
+            "cookie_count": readiness["count"],
+            "missing_regional": readiness["missing_regional"],
             "error": "TikTok returned a non-JSON / WAF response.",
         }
 
@@ -224,8 +319,11 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
             "username": str(username),
             "uid": uid,
             "sessionid": summary["sessionid"],
-            "cookie_text": summary["cookie_text"],
+            "cookie_text": merged_cookie_text,
             "waf_blocked": False,
+            "cloud_ready": readiness["cloud_ready"],
+            "cookie_count": readiness["count"],
+            "missing_regional": readiness["missing_regional"],
             "error": None,
         }
 
@@ -235,8 +333,11 @@ def check_session_api(cookie_or_sid: str | dict[str, str], timeout: float = 15.0
         "username": "",
         "uid": uid,
         "sessionid": summary["sessionid"],
-        "cookie_text": summary["cookie_text"],
+        "cookie_text": merged_cookie_text,
         "waf_blocked": False,
+        "cloud_ready": readiness["cloud_ready"],
+        "cookie_count": readiness["count"],
+        "missing_regional": readiness["missing_regional"],
         "error": str(msg),
     }
 
@@ -693,8 +794,19 @@ def guided_browser_login(
                 pass
 
 
-def verify_inbox_headless(cookie_payload: str, timeout: float = 25.0) -> dict[str, Any]:
-    """Verify session cookies in headless Chrome, catching Business Suite redirects upfront."""
+def verify_inbox_headless(
+    cookie_payload: str,
+    timeout: float = 25.0,
+    status_cb: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Verify session cookies in headless Chrome, catching Business Suite / captcha and harvesting full cookies."""
+    def _emit(msg: str) -> None:
+        if status_cb:
+            try:
+                status_cb(msg)
+            except Exception:
+                pass
+
     summary = extract_session_summary(cookie_payload)
     if not summary["cookie_text"]:
         return {
@@ -702,25 +814,114 @@ def verify_inbox_headless(cookie_payload: str, timeout: float = 25.0) -> dict[st
             "inbox_verified": False,
             "business_suite": False,
             "session_expired": True,
+            "captcha_detected": False,
+            "cloud_ready": False,
+            "is_bare_session": False,
+            "missing_regional": list(_REGIONAL_COOKIE_KEYS),
+            "cookie_count": 0,
+            "upgraded_cookie_text": "",
             "username": "",
             "error": "sessionid is empty",
         }
 
+    _emit("Checking session & regional cookies...")
     api_res = check_session_api(summary["cookie_text"], timeout=min(timeout, 15.0))
     username = api_res.get("username", "")
+    working_cookie = api_res.get("cookie_text") or summary["cookie_text"]
 
     from src.browser import authenticate_session, init_browser
     from src.exceptions import InboxUnavailableError, SessionExpiredError
 
     browser = None
     try:
+        _emit("Opening headless browser...")
         browser, _wait = init_browser(headless=True)
-        authenticate_session(browser, summary["cookie_text"], account_name="Verify")
+        _emit("Verifying /messages inbox...")
+        authenticate_session(browser, working_cookie, account_name="Verify")
+
+        # Inspect DOM safely (browser may be a MagicMock in unit tests)
+        cur_url = getattr(browser, "current_url", None)
+        if isinstance(cur_url, str):
+            probe_js = (
+                "return {"
+                "  inbox: !!document.querySelector('[data-e2e=\"dm-new-conversation-item\"], p[class*=\"PInfoNickname\"], input[data-e2e=\"search-user-input\"]'),"
+                "  captcha: !!document.querySelector('#captcha_container, [id*=\"captcha\"], .secsdk-captcha-drag-wrapper, iframe[src*=\"captcha\"]')"
+                "};"
+            )
+            on_messages = "/messages" in cur_url.lower()
+            poll_deadline = time.time() + (min(5.0, max(1.0, float(timeout) * 0.25)) if on_messages else 0.0)
+            while True:
+                try:
+                    dom_res = browser.execute_script(probe_js)
+                except Exception:
+                    dom_res = None
+                if not isinstance(dom_res, dict):
+                    break
+                if dom_res.get("captcha"):
+                    return {
+                        "ok": False,
+                        "inbox_verified": False,
+                        "business_suite": False,
+                        "session_expired": False,
+                        "captcha_detected": True,
+                        "username": username,
+                        "error": "CaptchaVerificationRequired: TikTok showed a security verification challenge in headless mode.",
+                    }
+                if not on_messages or dom_res.get("inbox") or time.time() >= poll_deadline:
+                    break
+                time.sleep(0.5)
+
+        _emit("Collecting full session cookies...")
+        raw_browser_cookies: list[dict[str, Any]] = []
+        try:
+            cdp_res = browser.execute_cdp_cmd("Network.getAllCookies", {})
+            if isinstance(cdp_res, dict) and isinstance(cdp_res.get("cookies"), list):
+                raw_browser_cookies = [
+                    c for c in cdp_res["cookies"]
+                    if isinstance(c, dict) and _is_tiktok_cookie_domain(str(c.get("domain") or ""))
+                ]
+        except Exception:
+            raw_browser_cookies = []
+
+        if not raw_browser_cookies:
+            try:
+                get_res = browser.get_cookies()
+                if isinstance(get_res, list):
+                    raw_browser_cookies = [
+                        c for c in get_res
+                        if isinstance(c, dict) and _is_tiktok_cookie_domain(str(c.get("domain") or ""))
+                    ]
+            except Exception:
+                raw_browser_cookies = []
+
+        browser_cookies = _cookies_to_dict(raw_browser_cookies) if raw_browser_cookies else {}
+        working_summary = extract_session_summary(working_cookie)
+        merged_cookies = dict(working_summary["cookies"])
+        for k, v in browser_cookies.items():
+            if k in _AUTH_SESSION_KEYS and summary["cookies"].get(k) and v == summary["cookies"][k]:
+                merged_cookies[k] = summary["cookies"][k]
+            elif k in _AUTH_SESSION_KEYS and not v:
+                continue
+            else:
+                merged_cookies[k] = v
+        for auth_key in _AUTH_SESSION_KEYS:
+            orig_val = summary["cookies"].get(auth_key)
+            if orig_val and not merged_cookies.get(auth_key):
+                merged_cookies[auth_key] = orig_val
+
+        merged_cookie_text = "; ".join(f"{k}={v}" for k, v in merged_cookies.items())
+        readiness = check_cloud_cookie_readiness(merged_cookies)
         return {
             "ok": True,
             "inbox_verified": True,
             "business_suite": False,
             "session_expired": False,
+            "captcha_detected": False,
+            "cloud_ready": readiness["cloud_ready"],
+            "is_bare_session": readiness["is_bare_session"],
+            "missing_regional": readiness["missing_regional"],
+            "cookie_count": readiness["count"],
+            "upgraded_cookie_text": merged_cookie_text,
             "username": username,
             "error": None,
         }
@@ -730,6 +931,7 @@ def verify_inbox_headless(cookie_payload: str, timeout: float = 25.0) -> dict[st
             "inbox_verified": False,
             "business_suite": True,
             "session_expired": False,
+            "captcha_detected": False,
             "username": username,
             "error": str(exc),
         }
@@ -739,6 +941,7 @@ def verify_inbox_headless(cookie_payload: str, timeout: float = 25.0) -> dict[st
             "inbox_verified": False,
             "business_suite": False,
             "session_expired": True,
+            "captcha_detected": False,
             "username": username,
             "error": str(exc),
         }
@@ -748,6 +951,7 @@ def verify_inbox_headless(cookie_payload: str, timeout: float = 25.0) -> dict[st
             "inbox_verified": False,
             "business_suite": False,
             "session_expired": False,
+            "captcha_detected": False,
             "username": username,
             "error": str(exc),
         }
@@ -763,6 +967,7 @@ __all__ = [
     "CHROME_UA",
     "LOGIN_URL",
     "MESSAGES_URL",
+    "check_cloud_cookie_readiness",
     "check_session_api",
     "extract_session_summary",
     "guided_browser_login",
