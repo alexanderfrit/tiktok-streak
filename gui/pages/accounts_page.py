@@ -21,6 +21,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     SegmentedWidget,
+    SimpleCardWidget,
     SmoothScrollArea,
     StrongBodyLabel,
     TitleLabel,
@@ -37,6 +38,7 @@ from gui.services.tiktok_auth import (
 )
 from gui.widgets.account_card import AccountCard
 from gui.widgets.cookie_dialog import CookieDialog
+from gui.widgets.security_dialog import SecurityPrivacyDialog
 from gui.widgets.status_pill import StatusPill
 from gui.workers import WorkerController
 
@@ -139,17 +141,23 @@ class AccountsPage(SmoothScrollArea):
         title_col.addWidget(self.titleLabel)
         title_col.addWidget(self.hintLabel)
 
+        self.privacyBtn = PushButton(
+            FIF.INFO, escape_qt_mnemonic(tr("security.how_protected_btn")), self.view
+        )
+        self.privacyBtn.clicked.connect(self._open_security_dialog)
+
         self.modeSegment = SegmentedWidget(self.view)
         self.modeSegment.addItem("single", tr("accounts.single_mode"))
         self.modeSegment.addItem("multi", tr("accounts.multi_mode"))
         self.modeSegment.currentItemChanged.connect(self._on_mode_changed)
 
         header_row.addLayout(title_col, 1)
+        header_row.addWidget(self.privacyBtn, 0, Qt.AlignTop)
         header_row.addWidget(self.modeSegment, 0, Qt.AlignTop)
         self.vBoxLayout.addLayout(header_row)
 
         # Browser selector card
-        self.browserCard = CardWidget(self.view)
+        self.browserCard = SimpleCardWidget(self.view)
         b_lay = QVBoxLayout(self.browserCard)
         b_lay.setContentsMargins(16, 14, 16, 14)
         b_lay.setSpacing(8)
@@ -180,7 +188,7 @@ class AccountsPage(SmoothScrollArea):
         self.vBoxLayout.addWidget(self.browserCard)
 
         # Active guided login progress banner (hidden when idle)
-        self.activeTaskCard = CardWidget(self.view)
+        self.activeTaskCard = SimpleCardWidget(self.view)
         t_lay = QHBoxLayout(self.activeTaskCard)
         t_lay.setContentsMargins(16, 12, 16, 12)
         t_lay.setSpacing(10)
@@ -844,9 +852,14 @@ class AccountsPage(SmoothScrollArea):
         else:
             self.multiHiddenHint.hide()
 
+    def _open_security_dialog(self) -> None:
+        dlg = SecurityPrivacyDialog(self.window(), config_dir=self._config_store.config_dir)
+        dlg.exec()
+
     def retranslate(self) -> None:
         self.titleLabel.setText(tr("accounts.title"))
         self.hintLabel.setText(tr("accounts.guided_login_hint"))
+        self.privacyBtn.setText(escape_qt_mnemonic(tr("security.how_protected_btn")))
         self.modeSegment.items["single"].setText(tr("accounts.single_mode"))
         self.modeSegment.items["multi"].setText(tr("accounts.multi_mode"))
         self.browserTitle.setText(tr("accounts.browser_profile"))

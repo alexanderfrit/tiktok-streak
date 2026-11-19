@@ -56,6 +56,7 @@ from gui.services.validators import (
     import_friends_csv,
     normalize_friends,
 )
+from gui.widgets.chip_list import ChipFlowWidget
 from gui.widgets.fluent_spin_box import FluentSpinBox
 from gui.widgets.status_pill import StatusPill
 
@@ -100,6 +101,7 @@ class AccountCard(HeaderCardWidget):
         self._verifying = False
         self._cookie_count: int | None = None
         self._cookie_cloud_ready: bool | None = None
+        self._last_add_warnings: list[str] = []
 
         self._friends_debounce = QTimer(self)
         self._friends_debounce.setSingleShot(True)
@@ -117,7 +119,9 @@ class AccountCard(HeaderCardWidget):
 
     def _build_ui(self) -> None:
         # Header badges & remove action inside HeaderCardWidget headerLayout
-        self.usernameBadge = StatusPill("", "neutral", self)
+        # usernameBadge is a quiet neutral identity chip (no dot when handle is shown),
+        # while inboxBadge is the single semantic status indicator.
+        self.usernameBadge = StatusPill("", "neutral", self, show_dot=False)
         self.inboxBadge = StatusPill("", "neutral", self)
         self.removeBtn = TransparentToolButton(FIF.DELETE, self)
         self.removeBtn.setToolTip(tr("common.delete"))
@@ -194,11 +198,11 @@ class AccountCard(HeaderCardWidget):
         auth_flow.addWidget(self.verifyInboxBtn)
         body.addLayout(auth_flow)
 
-        # Friends section
+        # Friends section (tag/chip input bar + removable friend chips + CSV import/export)
         friends_header = QHBoxLayout()
         friends_header.setSpacing(8)
         self.friendsLabel = StrongBodyLabel(tr("content.friends_label"), self)
-        self.friendsCountBadge = StatusPill("0", "neutral", self)
+        self.friendsCountBadge = StatusPill("0", "neutral", self, show_dot=False)
         self.importCsvBtn = PushButton(
             FIF.FOLDER_ADD, escape_qt_mnemonic(tr("content.import_csv")), self
         )
@@ -216,12 +220,35 @@ class AccountCard(HeaderCardWidget):
         friends_header.addWidget(self.exportCsvBtn)
         body.addLayout(friends_header)
 
+        friend_input_row = QHBoxLayout()
+        friend_input_row.setContentsMargins(0, 0, 0, 0)
+        friend_input_row.setSpacing(8)
+        self.friendInputEdit = LineEdit(self)
+        self.friendInputEdit.setMinimumWidth(0)
+        self.friendInputEdit.setClearButtonEnabled(True)
+        self.friendInputEdit.setPlaceholderText(tr("content.friend_input_placeholder"))
+        self.friendInputEdit.returnPressed.connect(self._add_friend_from_input)
+        self.addFriendBtn = PushButton(
+            FIF.ADD, escape_qt_mnemonic(tr("content.add_friend_btn")), self
+        )
+        self.addFriendBtn.clicked.connect(self._add_friend_from_input)
+        friend_input_row.addWidget(self.friendInputEdit, 1)
+        friend_input_row.addWidget(self.addFriendBtn)
+        body.addLayout(friend_input_row)
+
+        self.friendsChipBox = ChipFlowWidget(
+            empty_text=tr("content.friends_empty"),
+            parent=self,
+        )
+        self.friendsChipBox.set_remove_tooltip(tr("common.remove"))
+        self.friendsChipBox.item_removed.connect(self._remove_friend_chip)
+        body.addWidget(self.friendsChipBox)
+
+        # Hidden backing PlainTextEdit kept in two-way sync for backward compatibility
         self.friendsEdit = PlainTextEdit(self)
         self.friendsEdit.setPlaceholderText(tr("content.friends_placeholder"))
-        self.friendsEdit.setMinimumHeight(88)
-        self.friendsEdit.setMaximumHeight(130)
+        self.friendsEdit.hide()
         self.friendsEdit.textChanged.connect(self._on_friends_text_changed)
-        body.addWidget(self.friendsEdit)
 
         self.friendsWarningLabel = CaptionLabel("", self)
         self.friendsWarningLabel.setStyleSheet("color: #c77c00;")
@@ -433,7 +460,7 @@ class AccountCard(HeaderCardWidget):
             self.authDetailLabel.hide()
             self.verifyInboxBtn.setEnabled(False)
             self.verifyInboxBtn.setText(escape_qt_mnemonic(tr("accounts.verifying")))
-            self.inboxBadge.setState("info", tr("accounts.verifying"))
+            self.inboxBadge.setState("info", tr("accounts.verifying"), show_dot=True)
             self.inboxBadge.adjustSize()
         else:
             self.verifySpinner.stop()
@@ -451,27 +478,28 @@ class AccountCard(HeaderCardWidget):
         self.verifyStatusLabel.setVisible(bool(cleaned))
 
     def _refresh_badges(self) -> None:
+        # usernameBadge is an identity tag (neutral without dot when handle exists)
         if self._has_cookie and self.profile.username:
-            self.usernameBadge.setState(InfoLevel.SUCCESS, f"@{self.profile.username.lstrip('@')}")
+            self.usernameBadge.setState("neutral", f"@{self.profile.username.lstrip('@')}", show_dot=False)
         elif self._has_cookie:
-            self.usernameBadge.setState("info", tr("accounts.has_tiktok_badge"))
+            self.usernameBadge.setState("neutral", tr("accounts.has_tiktok_badge"), show_dot=False)
         else:
-            self.usernameBadge.setState(InfoLevel.WARNING, tr("accounts.no_session"))
+            self.usernameBadge.setState(InfoLevel.WARNING, tr("accounts.no_session"), show_dot=True)
         self.usernameBadge.adjustSize()
 
         if self._verifying:
-            self.inboxBadge.setState("info", tr("accounts.verifying"))
+            self.inboxBadge.setState("info", tr("accounts.verifying"), show_dot=True)
         else:
             state_key, level = _inbox_badge_state(self.profile, self._has_cookie)
             if state_key == "verified" and self._cookie_cloud_ready is False:
-                self.inboxBadge.setState(InfoLevel.WARNING, tr("accounts.local_only_badge"))
+                self.inboxBadge.setState(InfoLevel.WARNING, tr("accounts.local_only_badge"), show_dot=True)
             else:
                 inbox_key = {
                     "verified": "accounts.inbox_verified",
                     "blocked": "accounts.inbox_blocked",
                     "expired": "accounts.inbox_expired",
                 }.get(state_key, "accounts.inbox_unchecked")
-                self.inboxBadge.setState(level, tr(inbox_key))
+                self.inboxBadge.setState(level, tr(inbox_key), show_dot=True)
         self.inboxBadge.adjustSize()
 
         detail_parts = []
@@ -508,6 +536,31 @@ class AccountCard(HeaderCardWidget):
         self.setTitle(cleaned)
         self.changed.emit(self.profile.id)
 
+    def _add_friend_from_input(self) -> None:
+        raw = self.friendInputEdit.text().strip()
+        if not raw:
+            return
+        new_handles, warnings = normalize_friends(raw)
+        self._last_add_warnings = list(warnings)
+        if new_handles:
+            current_handles, _ = normalize_friends(self.friendsEdit.toPlainText())
+            merged, _ = normalize_friends("\n".join([*current_handles, *new_handles]))
+            self.friendInputEdit.clear()
+            self.friendsEdit.setPlainText("\n".join(f"@{h}" for h in merged))
+            self._commit_friends()
+        else:
+            self._update_friends_preview()
+
+    def _remove_friend_chip(self, handle_key: str) -> None:
+        target = str(handle_key or "").strip().lstrip("@").lower()
+        if not target:
+            return
+        current_handles, _ = normalize_friends(self.friendsEdit.toPlainText())
+        remaining = [h for h in current_handles if h.lower() != target]
+        self._last_add_warnings = []
+        self.friendsEdit.setPlainText("\n".join(f"@{h}" for h in remaining))
+        self._commit_friends()
+
     def _on_friends_text_changed(self) -> None:
         self._update_friends_preview()
         if not self._loading:
@@ -515,14 +568,17 @@ class AccountCard(HeaderCardWidget):
 
     def _update_friends_preview(self) -> list[str]:
         handles, warnings = normalize_friends(self.friendsEdit.toPlainText())
+        all_warnings = [*warnings, *(w for w in self._last_add_warnings if w not in warnings)]
+        self.friendsChipBox.set_items([(h, f"@{h}") for h in handles])
         self.friendsCountBadge.setState(
-            InfoLevel.SUCCESS if handles else "neutral",
+            "neutral",
             tr("accounts.friends_count", count=len(handles)),
+            show_dot=False,
         )
         self.friendsCountBadge.adjustSize()
 
-        if warnings:
-            self.friendsWarningLabel.setText(" • ".join(warnings[:2]))
+        if all_warnings:
+            self.friendsWarningLabel.setText(" • ".join(all_warnings[:2]))
             self.friendsWarningLabel.show()
         else:
             self.friendsWarningLabel.hide()
@@ -535,12 +591,21 @@ class AccountCard(HeaderCardWidget):
             self.changed.emit(self.profile.id)
 
     def flush_edits(self) -> None:
-        """Synchronously apply any debounced edits to ``self.profile``."""
+        """Synchronously apply any debounced or pending friend input edits to ``self.profile``."""
+        pending = self.friendInputEdit.text().strip()
+        if pending:
+            new_handles, warnings = normalize_friends(pending)
+            if new_handles and not warnings:
+                self.friendInputEdit.clear()
+                current_handles, _ = normalize_friends(self.friendsEdit.toPlainText())
+                merged, _ = normalize_friends("\n".join([*current_handles, *new_handles]))
+                self.friendsEdit.setPlainText("\n".join(f"@{h}" for h in merged))
+
         if self._friends_debounce.isActive():
             self._friends_debounce.stop()
             self._commit_friends()
         else:
-            self.profile.friends, _ = normalize_friends(self.friendsEdit.toPlainText())
+            self.profile.friends = self._update_friends_preview()
 
     def _on_override_changed(self, *_args: Any) -> None:
         if self._loading:
@@ -604,7 +669,9 @@ class AccountCard(HeaderCardWidget):
         combined = list(self.profile.friends) + imported
         merged, _ = normalize_friends("\n".join(combined))
         self.profile.friends = merged
+        self._last_add_warnings = []
         self.friendsEdit.setPlainText("\n".join(f"@{f}" for f in merged))
+        self._update_friends_preview()
         self.changed.emit(self.profile.id)
         InfoBar.success(
             tr("common.success"),
@@ -653,6 +720,10 @@ class AccountCard(HeaderCardWidget):
         self.friendsLabel.setText(tr("content.friends_label"))
         self.importCsvBtn.setText(escape_qt_mnemonic(tr("content.import_csv")))
         self.exportCsvBtn.setText(escape_qt_mnemonic(tr("content.export_csv")))
+        self.friendInputEdit.setPlaceholderText(tr("content.friend_input_placeholder"))
+        self.addFriendBtn.setText(escape_qt_mnemonic(tr("content.add_friend_btn")))
+        self.friendsChipBox.set_empty_text(tr("content.friends_empty"))
+        self.friendsChipBox.set_remove_tooltip(tr("common.remove"))
         self.friendsEdit.setPlaceholderText(tr("content.friends_placeholder"))
         self.overridesToggleBtn.setText(escape_qt_mnemonic(tr("accounts.override_toggle")))
         self.overridesHint.setText(tr("accounts.override_hint"))

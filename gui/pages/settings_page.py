@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover
 
     def get_timezone_info(tz_id: str | None) -> dict[str, Any]:  # type: ignore[misc]
         return TIMEZONE_CHOICES[0]
+from gui.widgets.security_dialog import SecurityPrivacyDialog
 from gui.workers import WorkerController
 
 
@@ -263,6 +264,16 @@ class SettingsPage(SmoothScrollArea):
         self.configFolderCard.hBoxLayout.addWidget(self.openConfigDirBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.configFolderCard.hBoxLayout.addSpacing(16)
 
+        self.securityCard = SettingCard(
+            FIF.INFO, tr("settings.security_card_title"), tr("settings.security_card_desc"), self.workspaceGroup
+        )
+        self.openSecurityBtn = PushButton(
+            FIF.INFO, escape_qt_mnemonic(tr("security.how_protected_btn")), self.securityCard
+        )
+        self.openSecurityBtn.clicked.connect(self._open_security_dialog)
+        self.securityCard.hBoxLayout.addWidget(self.openSecurityBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.securityCard.hBoxLayout.addSpacing(16)
+
         self.resetCard = SettingCard(
             FIF.DELETE, tr("settings.reset_all"), tr("settings.clear_secrets"), self.workspaceGroup
         )
@@ -277,6 +288,7 @@ class SettingsPage(SmoothScrollArea):
         self.workspaceGroup.addSettingCard(self.workspaceDirCard)
         self.workspaceGroup.addSettingCard(self.workspaceSyncCard)
         self.workspaceGroup.addSettingCard(self.configFolderCard)
+        self.workspaceGroup.addSettingCard(self.securityCard)
         self.workspaceGroup.addSettingCard(self.resetCard)
         self.vBoxLayout.addWidget(self.workspaceGroup)
         self.vBoxLayout.addStretch(1)
@@ -608,6 +620,10 @@ class SettingsPage(SmoothScrollArea):
         self._config_store.config_dir.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._config_store.config_dir)))
 
+    def _open_security_dialog(self) -> None:
+        dlg = SecurityPrivacyDialog(self.window(), config_dir=self._config_store.config_dir)
+        dlg.exec()
+
     def _confirm_reset_all(self) -> None:
         box = MessageBox(
             tr("settings.reset_all"),
@@ -669,6 +685,9 @@ class SettingsPage(SmoothScrollArea):
         self.importWorkspaceBtn.setText(escape_qt_mnemonic(tr("settings.import_now")))
         self.configFolderCard.setTitle(tr("settings.open_config_dir"))
         self.openConfigDirBtn.setText(escape_qt_mnemonic(tr("settings.open_config_dir")))
+        self.securityCard.setTitle(tr("settings.security_card_title"))
+        self.securityCard.setContent(tr("settings.security_card_desc"))
+        self.openSecurityBtn.setText(escape_qt_mnemonic(tr("security.how_protected_btn")))
         self.resetCard.setTitle(tr("settings.reset_all"))
         self.resetCard.setContent(tr("settings.clear_secrets"))
         self.resetAllBtn.setText(escape_qt_mnemonic(tr("settings.reset_all")))

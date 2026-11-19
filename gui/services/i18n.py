@@ -318,6 +318,34 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.open_config_dir": "Open Config Folder",
         "settings.reset_all": "Reset All Settings & Secrets",
         "settings.reset_all_confirm": "This will erase your saved configuration and all stored GitHub tokens, Telegram tokens, and TikTok cookies. Continue?",
+        "settings.security_card_title": "Security & Data Privacy",
+        "settings.security_card_desc": "How your cookies, tokens, and GitHub secrets are encrypted and stored",
+
+        # Friend Chips & Schedule Section UX
+        "content.friend_input_placeholder": "Type @username or paste TikTok profile link, then press Enter...",
+        "content.add_friend_btn": "Add",
+        "content.friends_empty": "No friends added yet. Type a @username above or click Import friends.csv.",
+        "schedule.times_empty": "No run times configured.",
+        "cloud.section_account_repo": "1. GitHub Account & Repository",
+        "cloud.section_schedule": "2. Daily Cloud Schedule ({tz})",
+        "cloud.repo_advanced_toggle": "Advanced: Existing Repo & PAT",
+
+        # Security & Privacy Trust Transparency
+        "security.banner_title": "Local-First & Self-Hosted Privacy",
+        "security.banner_desc": "Your TikTok cookies and tokens are encrypted locally via Windows DPAPI and only deployed to your own private GitHub repository — never to any third-party server.",
+        "security.how_protected_btn": "Security & Privacy",
+        "security.dialog_title": "Security, Privacy & Data Handling",
+        "security.dialog_subtitle": "This application is 100% open-source and operates without any developer or middleman server. Here is how your sensitive credentials are handled:",
+        "security.point1_title": "1. Encrypted on Your PC (Windows DPAPI & Credential Manager)",
+        "security.point1_desc": "Saved TikTok session cookies, GitHub tokens, and Telegram bot tokens are encrypted using Windows Credential Manager or Windows DPAPI (CryptProtectData in %APPDATA%\\TikTokStreak\\secrets.dpapi), bound to your Windows user login. They are never saved in plaintext inside config.json.",
+        "security.point2_title": "2. Strictly Scoped Network Connections (Zero Telemetry)",
+        "security.point2_desc": "The app only communicates with: (a) *.tiktok.com to verify sessions and send DMs, (b) github.com / api.github.com when you sign in or deploy your workflow, and (c) api.telegram.org if you enable Telegram alerts. No telemetry, analytics, or external servers exist.",
+        "security.point3_title": "3. Client-Side GitHub Secret Sealing (NaCl SealedBox)",
+        "security.point3_desc": "When you click Save & Deploy to GitHub, your secrets are encrypted on your PC using PyNaCl (Libsodium SealedBox) with your own repository's public key before upload. Only GitHub Actions inside your repository can decrypt them during a scheduled run.",
+        "security.point4_title": "4. Read-Only Browser Import & Automatic Log Redaction",
+        "security.point4_desc": "Browser cookie import queries only tiktok.com rows in read-only mode (?mode=ro). All UI logs, diagnostic reports, and scheduled_run.log files automatically redact sessionid, Cookie headers, and API tokens.",
+        "security.open_config_btn": "Open Local Config Folder",
+        "security.open_repo_btn": "View Source Code on GitHub",
 
         # Errors
         "err.generic": "Operation failed: {detail}",
@@ -616,6 +644,34 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.open_config_dir": "Buka Folder Konfigurasi",
         "settings.reset_all": "Reset Semua Pengaturan & Rahasia",
         "settings.reset_all_confirm": "Ini akan menghapus seluruh konfigurasi tersimpan beserta token GitHub, token Telegram, dan cookie TikTok. Lanjutkan?",
+        "settings.security_card_title": "Keamanan & Privasi Data",
+        "settings.security_card_desc": "Cara cookie, token, dan secret GitHub Anda dienkripsi serta disimpan",
+
+        # Friend Chips & Schedule Section UX
+        "content.friend_input_placeholder": "Ketik @username atau tempel link profil TikTok, lalu tekan Enter...",
+        "content.add_friend_btn": "Tambah",
+        "content.friends_empty": "Belum ada teman. Ketik @username di atas atau klik Impor friends.csv.",
+        "schedule.times_empty": "Belum ada jam jalan terjadwal.",
+        "cloud.section_account_repo": "1. Akun & Repositori GitHub",
+        "cloud.section_schedule": "2. Jadwal Cloud Harian ({tz})",
+        "cloud.repo_advanced_toggle": "Lanjutan: Repo Lama & PAT",
+
+        # Security & Privacy Trust Transparency
+        "security.banner_title": "Privasi Lokal & Self-Hosted",
+        "security.banner_desc": "Cookie TikTok dan token Anda dienkripsi di PC menggunakan Windows DPAPI dan hanya dikirim ke repositori GitHub privat milik Anda sendiri — tanpa server perantara.",
+        "security.how_protected_btn": "Keamanan & Privasi",
+        "security.dialog_title": "Keamanan, Privasi & Penanganan Data",
+        "security.dialog_subtitle": "Aplikasi ini 100% open-source dan berjalan tanpa server pengembang atau perantara. Berikut cara data sensitif Anda dilindungi:",
+        "security.point1_title": "1. Dienkripsi di PC Anda (Windows DPAPI & Credential Manager)",
+        "security.point1_desc": "Cookie sesi TikTok, token GitHub, dan token Telegram disimpan terenkripsi di Windows Credential Manager atau Windows DPAPI (CryptProtectData di %APPDATA%\\TikTokStreak\\secrets.dpapi) yang terikat pada akun login Windows Anda. Kredensial tidak pernah disimpan dalam teks biasa di config.json.",
+        "security.point2_title": "2. Koneksi Jaringan Terbatas (Tanpa Telemetri)",
+        "security.point2_desc": "Aplikasi hanya terhubung ke: (a) *.tiktok.com untuk verifikasi sesi dan kirim DM, (b) github.com / api.github.com saat login atau deploy workflow Anda, serta (c) api.telegram.org bila notifikasi Telegram diaktifkan. Tidak ada telemetri, analitik, atau server pihak ketiga.",
+        "security.point3_title": "3. Enkripsi Secret GitHub di Sisi Klien (NaCl SealedBox)",
+        "security.point3_desc": "Saat Anda menekan Simpan & Deploy ke GitHub, secret dienkripsi langsung di PC Anda memakai PyNaCl (Libsodium SealedBox) dengan kunci publik repositori Anda sebelum diunggah. Hanya GitHub Actions di repositori Anda yang dapat membukanya.",
+        "security.point4_title": "4. Impor Browser Read-Only & Sensor Log Otomatis",
+        "security.point4_desc": "Impor cookie browser hanya membaca domain tiktok.com dalam mode baca-saja (?mode=ro). Seluruh log tampilan, laporan diagnostik, dan file scheduled_run.log otomatis menyensor nilai sessionid, header Cookie, serta token API.",
+        "security.open_config_btn": "Buka Folder Konfigurasi Lokal",
+        "security.open_repo_btn": "Lihat Kode Sumber di GitHub",
 
         # Errors
         "err.generic": "Operasi gagal: {detail}",

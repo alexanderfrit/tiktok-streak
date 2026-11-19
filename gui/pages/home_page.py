@@ -16,6 +16,7 @@ from qfluentwidgets import (
     InfoLevel,
     PrimaryPushButton,
     PushButton,
+    SimpleCardWidget,
     SmoothScrollArea,
     StrongBodyLabel,
     SubtitleLabel,
@@ -26,6 +27,7 @@ from gui.services.i18n import tr
 from gui.services.storage import AppState, SecretStore
 from gui.services.theme import PAGE_MARGINS, escape_qt_mnemonic
 from gui.services.validators import validate_repo_name, validate_video_url
+from gui.widgets.security_dialog import SecurityPrivacyDialog
 from gui.widgets.status_pill import StatusPill
 
 
@@ -132,7 +134,7 @@ class HomePage(SmoothScrollArea):
         stats_grid.setSpacing(12)
         self.statCards: list[tuple[CardWidget, CaptionLabel, StrongBodyLabel]] = []
         for idx in range(4):
-            card = CardWidget(self.view)
+            card = SimpleCardWidget(self.view)
             c_lay = QVBoxLayout(card)
             c_lay.setContentsMargins(16, 12, 16, 12)
             c_lay.setSpacing(4)
@@ -161,6 +163,26 @@ class HomePage(SmoothScrollArea):
 
         for row in (self.step1, self.step2, self.step3, self.step4):
             self.vBoxLayout.addWidget(row)
+
+        # Security & Privacy transparency banner card
+        self.privacyCard = SimpleCardWidget(self.view)
+        priv_lay = QHBoxLayout(self.privacyCard)
+        priv_lay.setContentsMargins(18, 12, 18, 12)
+        priv_lay.setSpacing(14)
+        priv_text_col = QVBoxLayout()
+        priv_text_col.setSpacing(2)
+        self.privacyTitle = StrongBodyLabel(tr("security.banner_title"), self.privacyCard)
+        self.privacyDesc = CaptionLabel(tr("security.banner_desc"), self.privacyCard)
+        self.privacyDesc.setWordWrap(True)
+        priv_text_col.addWidget(self.privacyTitle)
+        priv_text_col.addWidget(self.privacyDesc)
+        self.privacyBtn = PushButton(
+            FIF.INFO, escape_qt_mnemonic(tr("security.how_protected_btn")), self.privacyCard
+        )
+        self.privacyBtn.clicked.connect(self._open_security_dialog)
+        priv_lay.addLayout(priv_text_col, 1)
+        priv_lay.addWidget(self.privacyBtn, 0, Qt.AlignVCenter)
+        self.vBoxLayout.addWidget(self.privacyCard)
 
         # Quick shortcuts
         quick_row = QHBoxLayout()
@@ -197,6 +219,10 @@ class HomePage(SmoothScrollArea):
     def _go_step2(self) -> None:
         total_friends = sum(len(a.friends) for a in self._active_accounts())
         self.navigate_requested.emit("accounts" if total_friends == 0 else "content")
+
+    def _open_security_dialog(self) -> None:
+        dlg = SecurityPrivacyDialog(self.window(), config_dir=self._secrets.config_dir)
+        dlg.exec()
 
     def refresh_state(self, state: AppState | None = None) -> None:
         if state is not None:
@@ -366,6 +392,9 @@ class HomePage(SmoothScrollArea):
         self.welcomeTitle.setText(tr("dashboard.welcome"))
         self.welcomeSubtitle.setText(tr("app.subtitle"))
         self.checklistHeading.setText(tr("home.checklist_heading"))
+        self.privacyTitle.setText(tr("security.banner_title"))
+        self.privacyDesc.setText(tr("security.banner_desc"))
+        self.privacyBtn.setText(escape_qt_mnemonic(tr("security.how_protected_btn")))
         for row in (self.step1, self.step2, self.step3, self.step4):
             row.set_button_text(tr("home.go_step"))
         smoke_txt = escape_qt_mnemonic(tr("dashboard.smoke_test"))

@@ -38,12 +38,15 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     SegmentedWidget,
+    SimpleCardWidget,
     SmoothScrollArea,
     StrongBodyLabel,
     SwitchButton,
     TimePicker,
     TitleLabel,
     TransparentPushButton,
+    isDarkTheme,
+    qconfig,
 )
 
 import gui.services.github_api as github_api
@@ -128,6 +131,7 @@ except ImportError:  # pragma: no cover
         raw = "\n".join(crons) if isinstance(crons, (list, tuple)) else str(crons or "")
         return cron_to_wib_summary(raw, lang=lang)
 
+from gui.widgets.chip_list import ChipFlowWidget
 from gui.widgets.device_login_dialog import DeviceLoginDialog
 from gui.widgets.fluent_spin_box import FluentSpinBox
 from gui.widgets.status_pill import StatusPill
@@ -454,6 +458,7 @@ class ContentPage(SmoothScrollArea):
         self._smoke_test = smoke_test
         self._windows_tasks_count: int | None = None
         self._fetched_repos: dict[str, dict[str, Any]] = {}
+        self._cloud_advanced_expanded = False
         self._pat_expanded = False
         self._raw_cron_expanded = False
         self._custom_cron_dirty = False
@@ -627,7 +632,7 @@ class ContentPage(SmoothScrollArea):
         mode_body.addLayout(mode_seg_row)
 
         # 4a. Local PC section
-        self.localSection = CardWidget(self.modeCard)
+        self.localSection = SimpleCardWidget(self.modeCard)
         l_lay = QVBoxLayout(self.localSection)
         l_lay.setContentsMargins(14, 12, 14, 12)
         l_lay.setSpacing(10)
@@ -656,18 +661,27 @@ class ContentPage(SmoothScrollArea):
         self.removeTimeBtn = PushButton(
             FIF.REMOVE, escape_qt_mnemonic(tr("common.remove")), self.localSection
         )
+        self.removeTimeBtn.hide()
         self.addTimeBtn.clicked.connect(self._add_local_time)
         self.removeTimeBtn.clicked.connect(self._remove_selected_time)
-        time_picker_grid.addWidget(self.localTimesLabel, 0, 0, 1, 4)
+        time_picker_grid.addWidget(self.localTimesLabel, 0, 0, 1, 3)
         time_picker_grid.addWidget(self.timePicker, 1, 0)
         time_picker_grid.addWidget(self.addTimeBtn, 1, 1)
-        time_picker_grid.addWidget(self.removeTimeBtn, 1, 2)
-        time_picker_grid.setColumnStretch(3, 1)
+        time_picker_grid.setColumnStretch(2, 1)
         l_lay.addLayout(time_picker_grid)
 
+        self.localTimesChips = ChipFlowWidget(
+            empty_text=tr("schedule.times_empty"),
+            icon=FIF.DATE_TIME,
+            parent=self.localSection,
+        )
+        self.localTimesChips.set_remove_tooltip(tr("common.remove"))
+        self.localTimesChips.item_removed.connect(self._remove_local_time_by_key)
+        l_lay.addWidget(self.localTimesChips)
+
+        # Hidden backing ListWidget kept synced for backward test compatibility
         self.timesList = ListWidget(self.localSection)
-        self.timesList.setFixedHeight(84)
-        l_lay.addWidget(self.timesList)
+        self.timesList.hide()
 
         win_btn_row = FlowLayout(isTight=True)
         win_btn_row.setContentsMargins(0, 0, 0, 0)
@@ -712,60 +726,162 @@ class ContentPage(SmoothScrollArea):
         l_lay.addLayout(local_opts_grid)
         mode_body.addWidget(self.localSection)
 
-        # 4b. GitHub Cloud section
-        self.cloudSection = CardWidget(self.modeCard)
+        # 4b. GitHub Cloud section (structured into 3 clear WinUI 3 sub-groups)
+        self.cloudSection = SimpleCardWidget(self.modeCard)
         c_lay = QVBoxLayout(self.cloudSection)
-        c_lay.setContentsMargins(14, 12, 14, 12)
-        c_lay.setSpacing(10)
+        c_lay.setContentsMargins(14, 14, 14, 14)
+        c_lay.setSpacing(12)
 
-        c_head_grid = QGridLayout()
-        c_head_grid.setContentsMargins(0, 0, 0, 0)
-        c_head_grid.setHorizontalSpacing(8)
-        c_head_grid.setVerticalSpacing(6)
-        c_head_top = QHBoxLayout()
-        c_head_top.setSpacing(8)
-        self.cloudHeading = StrongBodyLabel(tr("cloud.title"), self.cloudSection)
-        self.ghStatusBadge = StatusPill("", "warning", self.cloudSection)
-        c_head_top.addWidget(self.cloudHeading)
-        c_head_top.addWidget(self.ghStatusBadge)
-        c_head_top.addStretch(1)
+        # Top header bar: vertically centered 32px title+badge group + buttons group (wraps cleanly if narrow)
+        c_head_row = FlowLayout(isTight=True)
+        c_head_row.setContentsMargins(0, 0, 0, 0)
+        c_head_row.setHorizontalSpacing(10)
+        c_head_row.setVerticalSpacing(6)
 
-        c_head_btns = QHBoxLayout()
-        c_head_btns.setSpacing(8)
+        c_title_grp = QWidget(self.cloudSection)
+        c_title_grp.setFixedHeight(32)
+        c_title_lay = QHBoxLayout(c_title_grp)
+        c_title_lay.setContentsMargins(0, 0, 0, 0)
+        c_title_lay.setSpacing(8)
+        self.cloudHeading = StrongBodyLabel(tr("cloud.title"), c_title_grp)
+        self.ghStatusBadge = StatusPill("", "warning", c_title_grp)
+        c_title_lay.addWidget(self.cloudHeading, 0, Qt.AlignVCenter)
+        c_title_lay.addWidget(self.ghStatusBadge, 0, Qt.AlignVCenter)
+
+        c_btns_grp = QWidget(self.cloudSection)
+        c_btns_grp.setFixedHeight(32)
+        c_btns_lay = QHBoxLayout(c_btns_grp)
+        c_btns_lay.setContentsMargins(0, 0, 0, 0)
+        c_btns_lay.setSpacing(8)
         self.ghSigninBtn = PrimaryPushButton(
-            FIF.GITHUB, escape_qt_mnemonic(tr("cloud.signin_device")), self.cloudSection
+            FIF.GITHUB, escape_qt_mnemonic(tr("cloud.signin_device")), c_btns_grp
         )
         self.ghSwitchBtn = PushButton(
-            FIF.PEOPLE, escape_qt_mnemonic(tr("cloud.reconnect_github")), self.cloudSection
+            FIF.PEOPLE, escape_qt_mnemonic(tr("cloud.reconnect_github")), c_btns_grp
         )
         self.ghSignoutBtn = PushButton(
-            FIF.CLOSE, escape_qt_mnemonic(tr("cloud.signout")), self.cloudSection
+            FIF.CLOSE, escape_qt_mnemonic(tr("cloud.signout")), c_btns_grp
         )
         self.ghSigninBtn.clicked.connect(self._start_github_device_flow)
         self.ghSwitchBtn.clicked.connect(self._start_github_device_flow)
         self.ghSignoutBtn.clicked.connect(self._sign_out_github)
-        c_head_btns.addWidget(self.ghSigninBtn)
-        c_head_btns.addWidget(self.ghSwitchBtn)
-        c_head_btns.addWidget(self.ghSignoutBtn)
-        c_head_btns.addStretch(1)
-        c_head_grid.addLayout(c_head_top, 0, 0)
-        c_head_grid.addLayout(c_head_btns, 1, 0)
-        c_lay.addLayout(c_head_grid)
+        c_btns_lay.addWidget(self.ghSigninBtn, 0, Qt.AlignVCenter)
+        c_btns_lay.addWidget(self.ghSwitchBtn, 0, Qt.AlignVCenter)
+        c_btns_lay.addWidget(self.ghSignoutBtn, 0, Qt.AlignVCenter)
 
-        # Collapsible PAT fallback (hidden behind quiet toggle when signed in)
+        c_head_row.addWidget(c_title_grp)
+        c_head_row.addWidget(c_btns_grp)
+        c_lay.addLayout(c_head_row)
+
+        # Group 1: GitHub Account & Target Repository
+        self.cloudRepoBox = QFrame(self.cloudSection)
+        self.cloudRepoBox.setObjectName("cloudRepoBox")
+        repo_box_lay = QVBoxLayout(self.cloudRepoBox)
+        repo_box_lay.setContentsMargins(12, 10, 12, 10)
+        repo_box_lay.setSpacing(8)
+
+        self.cloudRepoSectionLabel = StrongBodyLabel(
+            tr("cloud.section_account_repo"), self.cloudRepoBox
+        )
+        repo_box_lay.addWidget(self.cloudRepoSectionLabel)
+
+        # Repo name grid (primary input)
+        repo_grid = QGridLayout()
+        repo_grid.setContentsMargins(0, 0, 0, 0)
+        repo_grid.setHorizontalSpacing(8)
+        repo_grid.setVerticalSpacing(6)
+        repo_grid.setColumnStretch(0, 1)
+        repo_top = QHBoxLayout()
+        repo_top.setSpacing(8)
+        self.repoNameLabel = BodyLabel(tr("cloud.repo_name"), self.cloudRepoBox)
+        self.repoValidBadge = StatusPill("", "warning", self.cloudRepoBox)
+        self.repoValidCaption = CaptionLabel("", self.cloudRepoBox)
+        self.repoValidCaption.setStyleSheet("color: #6ccb5f;")
+        repo_top.addWidget(self.repoNameLabel)
+        repo_top.addWidget(self.repoValidBadge)
+        repo_top.addWidget(self.repoValidCaption)
+        repo_top.addStretch(1)
+        self.repoNameEdit = LineEdit(self.cloudRepoBox)
+        self.repoNameEdit.setMinimumWidth(0)
+        self.repoNameEdit.setPlaceholderText(tr("cloud.repo_name_hint"))
+        self.repoNameEdit.textChanged.connect(self._on_repo_name_changed)
+        repo_grid.addLayout(repo_top, 0, 0)
+        repo_grid.addWidget(self.repoNameEdit, 1, 0)
+        repo_box_lay.addLayout(repo_grid)
+
+        # Private repo switch
+        priv_row = QHBoxLayout()
+        priv_row.setSpacing(10)
+        self.privateRepoLabel = BodyLabel(tr("cloud.private_repo"), self.cloudRepoBox)
+        self.privateRepoLabel.setWordWrap(True)
+        self.privateRepoSwitch = SwitchButton(self.cloudRepoBox)
+        self.privateRepoSwitch.checkedChanged.connect(self._on_private_repo_changed)
+        priv_row.addWidget(self.privateRepoLabel, 1)
+        priv_row.addWidget(self.privateRepoSwitch)
+        repo_box_lay.addLayout(priv_row)
+
+        # Progressive Disclosure Drawer: Existing Repo, Sync-Only & PAT
+        adv_repo_toggle_row = QHBoxLayout()
+        adv_repo_toggle_row.setContentsMargins(0, 0, 0, 0)
+        adv_repo_toggle_row.setSpacing(6)
+        self.cloudAdvancedToggleBtn = TransparentPushButton(
+            FIF.CHEVRON_RIGHT,
+            escape_qt_mnemonic(tr("cloud.repo_advanced_toggle")),
+            self.cloudRepoBox,
+        )
+        self.cloudAdvancedToggleBtn.setMinimumWidth(0)
+        self.cloudAdvancedToggleBtn.clicked.connect(self._toggle_cloud_advanced_drawer)
+        adv_repo_toggle_row.addWidget(self.cloudAdvancedToggleBtn)
+        adv_repo_toggle_row.addStretch(1)
+        repo_box_lay.addLayout(adv_repo_toggle_row)
+
+        self.cloudAdvancedContainer = QWidget(self.cloudRepoBox)
+        adv_lay = QVBoxLayout(self.cloudAdvancedContainer)
+        adv_lay.setContentsMargins(0, 4, 0, 0)
+        adv_lay.setSpacing(8)
+
+        # Existing repo picker row
+        existing_repo_row = QHBoxLayout()
+        existing_repo_row.setSpacing(8)
+        self.existingRepoCombo = ComboBox(self.cloudAdvancedContainer)
+        self.existingRepoCombo.setMinimumWidth(0)
+        self.existingRepoCombo.addItem(tr("cloud.select_existing_repo"), userData=None)
+        self.existingRepoCombo.currentIndexChanged.connect(self._on_existing_repo_selected)
+        self.fetchReposBtn = PushButton(
+            FIF.SYNC, escape_qt_mnemonic(tr("cloud.fetch_repos")), self.cloudAdvancedContainer
+        )
+        self.fetchReposBtn.clicked.connect(self._fetch_my_repos)
+        existing_repo_row.addWidget(self.existingRepoCombo, 1)
+        existing_repo_row.addWidget(self.fetchReposBtn)
+        adv_lay.addLayout(existing_repo_row)
+
+        # Sync-only checkbox (for existing repositories)
+        sync_only_box = QVBoxLayout()
+        sync_only_box.setContentsMargins(0, 0, 0, 0)
+        sync_only_box.setSpacing(2)
+        self.syncOnlyCheck = CheckBox(
+            escape_qt_mnemonic(tr("cloud.sync_only")), self.cloudAdvancedContainer
+        )
+        self.syncOnlyHint = CaptionLabel(tr("cloud.sync_only_hint"), self.cloudAdvancedContainer)
+        self.syncOnlyHint.setWordWrap(True)
+        sync_only_box.addWidget(self.syncOnlyCheck)
+        sync_only_box.addWidget(self.syncOnlyHint)
+        adv_lay.addLayout(sync_only_box)
+
+        # Collapsible PAT fallback
         pat_toggle_row = QHBoxLayout()
         pat_toggle_row.setContentsMargins(0, 0, 0, 0)
         pat_toggle_row.setSpacing(6)
         self.patToggleBtn = TransparentPushButton(
-            FIF.CHEVRON_RIGHT, escape_qt_mnemonic(tr("cloud.pat_toggle")), self.cloudSection
+            FIF.CHEVRON_RIGHT, escape_qt_mnemonic(tr("cloud.pat_toggle")), self.cloudAdvancedContainer
         )
         self.patToggleBtn.setMinimumWidth(0)
         self.patToggleBtn.clicked.connect(self._toggle_pat_drawer)
         pat_toggle_row.addWidget(self.patToggleBtn)
         pat_toggle_row.addStretch(1)
-        c_lay.addLayout(pat_toggle_row)
+        adv_lay.addLayout(pat_toggle_row)
 
-        self.patContainer = QWidget(self.cloudSection)
+        self.patContainer = QWidget(self.cloudAdvancedContainer)
         pat_grid = QGridLayout(self.patContainer)
         pat_grid.setContentsMargins(0, 0, 0, 0)
         pat_grid.setHorizontalSpacing(8)
@@ -784,113 +900,73 @@ class ContentPage(SmoothScrollArea):
         pat_grid.addWidget(self.patEdit, 1, 0)
         pat_grid.addWidget(self.savePatBtn, 1, 1)
         self.patContainer.hide()
-        c_lay.addWidget(self.patContainer)
+        adv_lay.addWidget(self.patContainer)
 
-        # Existing repo picker row
-        existing_repo_row = QHBoxLayout()
-        existing_repo_row.setSpacing(8)
-        self.existingRepoCombo = ComboBox(self.cloudSection)
-        self.existingRepoCombo.setMinimumWidth(0)
-        self.existingRepoCombo.addItem(tr("cloud.select_existing_repo"), userData=None)
-        self.existingRepoCombo.currentIndexChanged.connect(self._on_existing_repo_selected)
-        self.fetchReposBtn = PushButton(
-            FIF.SYNC, escape_qt_mnemonic(tr("cloud.fetch_repos")), self.cloudSection
-        )
-        self.fetchReposBtn.clicked.connect(self._fetch_my_repos)
-        existing_repo_row.addWidget(self.existingRepoCombo, 1)
-        existing_repo_row.addWidget(self.fetchReposBtn)
-        c_lay.addLayout(existing_repo_row)
+        self.cloudAdvancedContainer.hide()
+        repo_box_lay.addWidget(self.cloudAdvancedContainer)
+        c_lay.addWidget(self.cloudRepoBox)
 
-        # Private repo switch
-        priv_row = QHBoxLayout()
-        priv_row.setSpacing(10)
-        self.privateRepoLabel = BodyLabel(tr("cloud.private_repo"), self.cloudSection)
-        self.privateRepoLabel.setWordWrap(True)
-        self.privateRepoSwitch = SwitchButton(self.cloudSection)
-        self.privateRepoSwitch.checkedChanged.connect(self._on_private_repo_changed)
-        priv_row.addWidget(self.privateRepoLabel, 1)
-        priv_row.addWidget(self.privateRepoSwitch)
-        c_lay.addLayout(priv_row)
+        # Group 2: Daily Cloud Schedule (visual time chips + quick presets + calm delay note + raw cron)
+        self.cloudScheduleBox = QFrame(self.cloudSection)
+        self.cloudScheduleBox.setObjectName("cloudScheduleBox")
+        sched_lay = QVBoxLayout(self.cloudScheduleBox)
+        sched_lay.setContentsMargins(12, 10, 12, 10)
+        sched_lay.setSpacing(8)
 
-        # Repo name grid (2-row so long path / error badge never overflows)
-        repo_grid = QGridLayout()
-        repo_grid.setContentsMargins(0, 0, 0, 0)
-        repo_grid.setHorizontalSpacing(8)
-        repo_grid.setVerticalSpacing(6)
-        repo_grid.setColumnStretch(0, 1)
-        repo_top = QHBoxLayout()
-        repo_top.setSpacing(8)
-        self.repoNameLabel = BodyLabel(tr("cloud.repo_name"), self.cloudSection)
-        self.repoValidBadge = StatusPill("", "warning", self.cloudSection)
-        self.repoValidCaption = CaptionLabel("", self.cloudSection)
-        self.repoValidCaption.setStyleSheet("color: #2f9e44;")
-        repo_top.addWidget(self.repoNameLabel)
-        repo_top.addWidget(self.repoValidBadge)
-        repo_top.addWidget(self.repoValidCaption)
-        repo_top.addStretch(1)
-        self.repoNameEdit = LineEdit(self.cloudSection)
-        self.repoNameEdit.setMinimumWidth(0)
-        self.repoNameEdit.setPlaceholderText(tr("cloud.repo_name_hint"))
-        self.repoNameEdit.textChanged.connect(self._on_repo_name_changed)
-        repo_grid.addLayout(repo_top, 0, 0)
-        repo_grid.addWidget(self.repoNameEdit, 1, 0)
-        c_lay.addLayout(repo_grid)
-
-        # Sync-only checkbox (for existing repositories)
-        sync_only_box = QVBoxLayout()
-        sync_only_box.setContentsMargins(0, 0, 0, 0)
-        sync_only_box.setSpacing(2)
-        self.syncOnlyCheck = CheckBox(
-            escape_qt_mnemonic(tr("cloud.sync_only")), self.cloudSection
-        )
-        self.syncOnlyHint = CaptionLabel(tr("cloud.sync_only_hint"), self.cloudSection)
-        self.syncOnlyHint.setWordWrap(True)
-        sync_only_box.addWidget(self.syncOnlyCheck)
-        sync_only_box.addWidget(self.syncOnlyHint)
-        c_lay.addLayout(sync_only_box)
-
-        # Cloud schedule picker (visual times + quick-fill + delay note + collapsed raw cron)
-        cloud_time_grid = QGridLayout()
-        cloud_time_grid.setContentsMargins(0, 0, 0, 0)
-        cloud_time_grid.setHorizontalSpacing(8)
-        cloud_time_grid.setVerticalSpacing(6)
         tz_short = self._active_tz_info()["short"]
-        self.cloudTimeLabel = BodyLabel(tr("schedule.cloud_times", tz=tz_short), self.cloudSection)
+        self.cloudTimeLabel = StrongBodyLabel(
+            tr("cloud.section_schedule", tz=tz_short), self.cloudScheduleBox
+        )
         self.cloudTimeLabel.setWordWrap(True)
-        self.cloudTimePicker = TimePicker(self.cloudSection)
+        sched_lay.addWidget(self.cloudTimeLabel)
+
+        cloud_picker_row = QHBoxLayout()
+        cloud_picker_row.setContentsMargins(0, 0, 0, 0)
+        cloud_picker_row.setSpacing(8)
+        self.cloudTimePicker = TimePicker(self.cloudScheduleBox)
         self.cloudTimePicker.setTime(QTime(8, 15))
         self.addCloudTimeBtn = PushButton(
-            FIF.ADD, escape_qt_mnemonic(tr("schedule.add_time")), self.cloudSection
+            FIF.ADD, escape_qt_mnemonic(tr("schedule.add_time")), self.cloudScheduleBox
         )
         self.removeCloudTimeBtn = PushButton(
-            FIF.REMOVE, escape_qt_mnemonic(tr("common.remove")), self.cloudSection
+            FIF.REMOVE, escape_qt_mnemonic(tr("common.remove")), self.cloudScheduleBox
         )
+        self.removeCloudTimeBtn.hide()
         self.addCloudTimeBtn.clicked.connect(self._add_cloud_time)
         self.removeCloudTimeBtn.clicked.connect(self._remove_selected_cloud_time)
-        cloud_time_grid.addWidget(self.cloudTimeLabel, 0, 0, 1, 4)
-        cloud_time_grid.addWidget(self.cloudTimePicker, 1, 0)
-        cloud_time_grid.addWidget(self.addCloudTimeBtn, 1, 1)
-        cloud_time_grid.addWidget(self.removeCloudTimeBtn, 1, 2)
-        cloud_time_grid.setColumnStretch(3, 1)
-        c_lay.addLayout(cloud_time_grid)
+        cloud_picker_row.addWidget(self.cloudTimePicker, 0, Qt.AlignVCenter)
+        cloud_picker_row.addWidget(self.addCloudTimeBtn, 0, Qt.AlignVCenter)
+        cloud_picker_row.addStretch(1)
+        sched_lay.addLayout(cloud_picker_row)
 
-        self.cloudTimesList = ListWidget(self.cloudSection)
-        self.cloudTimesList.setFixedHeight(84)
-        c_lay.addWidget(self.cloudTimesList)
+        self.cloudTimesChips = ChipFlowWidget(
+            empty_text=tr("schedule.times_empty"),
+            icon=FIF.DATE_TIME,
+            parent=self.cloudScheduleBox,
+        )
+        self.cloudTimesChips.set_remove_tooltip(tr("common.remove"))
+        self.cloudTimesChips.item_removed.connect(self._remove_cloud_time_by_key)
+        sched_lay.addWidget(self.cloudTimesChips)
+
+        # Hidden backing ListWidget kept synced for backward test compatibility
+        self.cloudTimesList = ListWidget(self.cloudScheduleBox)
+        self.cloudTimesList.hide()
 
         presets_flow = FlowLayout(isTight=True)
         presets_flow.setContentsMargins(0, 0, 0, 0)
         presets_flow.setHorizontalSpacing(8)
         presets_flow.setVerticalSpacing(6)
-        self.quickPresetsLabel = CaptionLabel(tr("schedule.quick_presets"), self.cloudSection)
+        self.quickPresetsLabel = CaptionLabel(tr("schedule.quick_presets"), self.cloudScheduleBox)
+        self.quickPresetsLabel.setFixedHeight(32)
+        self.quickPresetsLabel.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         self.preset1Btn = PushButton(
-            escape_qt_mnemonic(tr("schedule.preset_offpeak_1")), self.cloudSection
+            escape_qt_mnemonic(tr("schedule.preset_offpeak_1")), self.cloudScheduleBox
         )
         self.preset2Btn = PushButton(
-            escape_qt_mnemonic(tr("schedule.preset_offpeak_2")), self.cloudSection
+            escape_qt_mnemonic(tr("schedule.preset_offpeak_2")), self.cloudScheduleBox
         )
         self.preset3Btn = PushButton(
-            escape_qt_mnemonic(tr("schedule.preset_offpeak_3")), self.cloudSection
+            escape_qt_mnemonic(tr("schedule.preset_offpeak_3")), self.cloudScheduleBox
         )
         self.preset1Btn.clicked.connect(lambda: self._apply_cloud_preset(["08:15"]))
         self.preset2Btn.clicked.connect(lambda: self._apply_cloud_preset(["08:15", "20:15"]))
@@ -899,42 +975,35 @@ class ContentPage(SmoothScrollArea):
         presets_flow.addWidget(self.preset1Btn)
         presets_flow.addWidget(self.preset2Btn)
         presets_flow.addWidget(self.preset3Btn)
-        c_lay.addLayout(presets_flow)
+        sched_lay.addLayout(presets_flow)
 
-        self.cronSummaryLabel = CaptionLabel("", self.cloudSection)
+        self.cronSummaryLabel = CaptionLabel("", self.cloudScheduleBox)
         self.cronSummaryLabel.setWordWrap(True)
-        c_lay.addWidget(self.cronSummaryLabel)
+        sched_lay.addWidget(self.cronSummaryLabel)
 
-        self.cloudDelayBox = QFrame(self.cloudSection)
+        self.cloudDelayBox = QFrame(self.cloudScheduleBox)
         self.cloudDelayBox.setObjectName("cloudDelayBox")
-        self.cloudDelayBox.setStyleSheet(
-            "QFrame#cloudDelayBox {"
-            "  border: 1px solid rgba(217, 119, 6, 0.45);"
-            "  background-color: rgba(217, 119, 6, 0.08);"
-            "  border-radius: 6px;"
-            "}"
-        )
         delay_lay = QHBoxLayout(self.cloudDelayBox)
-        delay_lay.setContentsMargins(10, 8, 10, 8)
+        delay_lay.setContentsMargins(10, 7, 10, 7)
         delay_lay.setSpacing(8)
         self.cloudDelayNote = CaptionLabel(tr("schedule.cloud_delay_note"), self.cloudDelayBox)
         self.cloudDelayNote.setWordWrap(True)
         delay_lay.addWidget(self.cloudDelayNote, 1)
-        c_lay.addWidget(self.cloudDelayBox)
+        sched_lay.addWidget(self.cloudDelayBox)
 
         raw_cron_toggle_row = QHBoxLayout()
         raw_cron_toggle_row.setContentsMargins(0, 0, 0, 0)
         raw_cron_toggle_row.setSpacing(6)
         self.rawCronToggleBtn = TransparentPushButton(
-            FIF.CHEVRON_RIGHT, escape_qt_mnemonic(tr("schedule.raw_cron_toggle")), self.cloudSection
+            FIF.CHEVRON_RIGHT, escape_qt_mnemonic(tr("schedule.raw_cron_toggle")), self.cloudScheduleBox
         )
         self.rawCronToggleBtn.setMinimumWidth(0)
         self.rawCronToggleBtn.clicked.connect(self._toggle_raw_cron_drawer)
         raw_cron_toggle_row.addWidget(self.rawCronToggleBtn)
         raw_cron_toggle_row.addStretch(1)
-        c_lay.addLayout(raw_cron_toggle_row)
+        sched_lay.addLayout(raw_cron_toggle_row)
 
-        self.rawCronContainer = QWidget(self.cloudSection)
+        self.rawCronContainer = QWidget(self.cloudScheduleBox)
         rc_lay = QVBoxLayout(self.rawCronContainer)
         rc_lay.setContentsMargins(0, 0, 0, 0)
         rc_lay.setSpacing(6)
@@ -947,9 +1016,11 @@ class ContentPage(SmoothScrollArea):
         rc_lay.addWidget(self.cronLabel)
         rc_lay.addWidget(self.customCronEdit)
         self.rawCronContainer.hide()
-        c_lay.addWidget(self.rawCronContainer)
+        sched_lay.addWidget(self.rawCronContainer)
 
-        # Deploy button row
+        c_lay.addWidget(self.cloudScheduleBox)
+
+        # Group 3: Deploy Action Footer
         deploy_row = QHBoxLayout()
         deploy_row.setSpacing(10)
         self.deployBtn = PrimaryPushButton(
@@ -961,6 +1032,12 @@ class ContentPage(SmoothScrollArea):
         deploy_row.addWidget(self.deployBtn)
         deploy_row.addWidget(self.deployStatusLabel, 1)
         c_lay.addLayout(deploy_row)
+
+        self._apply_cloud_subbox_styles()
+        try:
+            qconfig.themeChanged.connect(self._apply_cloud_subbox_styles)
+        except Exception:
+            pass
 
         mode_body.addWidget(self.cloudSection)
         self.modeCard.viewLayout.addLayout(mode_body)
@@ -1001,7 +1078,7 @@ class ContentPage(SmoothScrollArea):
             self.timezoneCombo.setCurrentIndex(idx_tz if idx_tz >= 0 else 0)
             tz_short = self._active_tz_info()["short"]
             self.localTimesLabel.setText(tr("schedule.local_times_tz", tz=tz_short))
-            self.cloudTimeLabel.setText(tr("schedule.cloud_times", tz=tz_short))
+            self.cloudTimeLabel.setText(tr("cloud.section_schedule", tz=tz_short))
 
             cloud_times = list(getattr(st, "cloud_times", None) or ["08:00"])
             raw_cron = str(st.cloud_cron or "").strip()
@@ -1255,7 +1332,7 @@ class ContentPage(SmoothScrollArea):
             if idx_tz >= 0 and self.timezoneCombo.currentIndex() != idx_tz:
                 self.timezoneCombo.setCurrentIndex(idx_tz)
             self.localTimesLabel.setText(tr("schedule.local_times_tz", tz=tz_short))
-            self.cloudTimeLabel.setText(tr("schedule.cloud_times", tz=tz_short))
+            self.cloudTimeLabel.setText(tr("cloud.section_schedule", tz=tz_short))
             self._reload_times_list()
             self._reload_cloud_times_list()
             if not self._custom_cron_dirty:
@@ -1283,10 +1360,14 @@ class ContentPage(SmoothScrollArea):
     def _reload_times_list(self) -> None:
         self.timesList.clear()
         tz_short = self._active_tz_info()["short"]
+        chip_items: list[tuple[str, str]] = []
         for t in self._state.local_times:
-            item = QListWidgetItem(FIF.DATE_TIME.icon(), f"{t} {tz_short}")
+            label = f"{t} {tz_short}"
+            chip_items.append((t, label))
+            item = QListWidgetItem(FIF.DATE_TIME.icon(), label)
             item.setSizeHint(QSize(0, 32))
             self.timesList.addItem(item)
+        self.localTimesChips.set_items(chip_items)
 
     def _add_local_time(self) -> None:
         qt = self.timePicker.getTime()
@@ -1296,23 +1377,29 @@ class ContentPage(SmoothScrollArea):
             self._reload_times_list()
             self.state_changed.emit()
 
+    def _remove_local_time_by_key(self, hhmm: str) -> None:
+        target = str(hhmm or "").strip()
+        if target not in self._state.local_times:
+            return
+        if len(self._state.local_times) == 1:
+            InfoBar.warning(
+                tr("common.warning"),
+                tr("schedule.local_times"),
+                duration=2500,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+            return
+        self._state.local_times = [t for t in self._state.local_times if t != target]
+        self._reload_times_list()
+        self.state_changed.emit()
+
     def _remove_selected_time(self) -> None:
         row = self.timesList.currentRow()
         if row < 0 and self.timesList.count() > 0:
             row = self.timesList.count() - 1
         if 0 <= row < len(self._state.local_times):
-            if len(self._state.local_times) == 1:
-                InfoBar.warning(
-                    tr("common.warning"),
-                    tr("schedule.local_times"),
-                    duration=2500,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    parent=self.window(),
-                )
-                return
-            del self._state.local_times[row]
-            self._reload_times_list()
-            self.state_changed.emit()
+            self._remove_local_time_by_key(self._state.local_times[row])
 
     def _update_windows_tasks_badge(self) -> None:
         cnt = max(0, int(self._windows_tasks_count or 0))
@@ -1423,8 +1510,53 @@ class ContentPage(SmoothScrollArea):
             self._schedule_save()
 
     # -- GitHub Auth & Deploy --------------------------------------------
+    def _apply_cloud_subbox_styles(self, _theme=None) -> None:
+        if isDarkTheme():
+            sub_bg = "rgba(255, 255, 255, 0.025)"
+            sub_border = "rgba(255, 255, 255, 0.07)"
+            note_bg = "rgba(255, 255, 255, 0.03)"
+            note_border = "rgba(255, 255, 255, 0.08)"
+            note_accent = "rgba(96, 205, 255, 0.55)"
+            valid_fg = "#6ccb5f"
+        else:
+            sub_bg = "rgba(0, 0, 0, 0.02)"
+            sub_border = "rgba(0, 0, 0, 0.07)"
+            note_bg = "rgba(0, 0, 0, 0.025)"
+            note_border = "rgba(0, 0, 0, 0.08)"
+            note_accent = "rgba(0, 95, 184, 0.50)"
+            valid_fg = "#0f7b0f"
+
+        box_css = (
+            " background-color: " + sub_bg + ";"
+            " border: 1px solid " + sub_border + ";"
+            " border-radius: 6px;"
+        )
+        self.cloudRepoBox.setStyleSheet(f"QFrame#cloudRepoBox {{{box_css}}}")
+        self.cloudScheduleBox.setStyleSheet(f"QFrame#cloudScheduleBox {{{box_css}}}")
+        self.cloudDelayBox.setStyleSheet(
+            f"QFrame#cloudDelayBox {{"
+            f" background-color: {note_bg};"
+            f" border: 1px solid {note_border};"
+            f" border-left: 3px solid {note_accent};"
+            f" border-radius: 4px;"
+            f"}}"
+        )
+        self.repoValidCaption.setStyleSheet(f"color: {valid_fg};")
+
+    def _set_cloud_advanced_expanded(self, expanded: bool) -> None:
+        self._cloud_advanced_expanded = bool(expanded)
+        self.cloudAdvancedContainer.setVisible(self._cloud_advanced_expanded)
+        self.cloudAdvancedToggleBtn.setIcon(
+            FIF.CHEVRON_DOWN_MED if self._cloud_advanced_expanded else FIF.CHEVRON_RIGHT
+        )
+
+    def _toggle_cloud_advanced_drawer(self) -> None:
+        self._set_cloud_advanced_expanded(not self._cloud_advanced_expanded)
+
     def _set_pat_expanded(self, expanded: bool) -> None:
         self._pat_expanded = bool(expanded)
+        if self._pat_expanded and not self._cloud_advanced_expanded:
+            self._set_cloud_advanced_expanded(True)
         self.patContainer.setVisible(self._pat_expanded)
         self.patToggleBtn.setIcon(
             FIF.CHEVRON_DOWN_MED if self._pat_expanded else FIF.CHEVRON_RIGHT
@@ -1649,10 +1781,14 @@ class ContentPage(SmoothScrollArea):
     def _reload_cloud_times_list(self) -> None:
         self.cloudTimesList.clear()
         tz_short = self._active_tz_info()["short"]
+        chip_items: list[tuple[str, str]] = []
         for t in self._active_cloud_times():
-            item = QListWidgetItem(FIF.DATE_TIME.icon(), f"{t} {tz_short}")
+            label = f"{t} {tz_short}"
+            chip_items.append((t, label))
+            item = QListWidgetItem(FIF.DATE_TIME.icon(), label)
             item.setSizeHint(QSize(0, 32))
             self.cloudTimesList.addItem(item)
+        self.cloudTimesChips.set_items(chip_items)
 
     def _set_cloud_times(self, times: list[str]) -> None:
         cleaned = sorted(dict.fromkeys(str(t).strip() for t in times if str(t).strip()))
@@ -1681,23 +1817,29 @@ class ContentPage(SmoothScrollArea):
         if hhmm not in current:
             self._set_cloud_times([*current, hhmm])
 
+    def _remove_cloud_time_by_key(self, hhmm: str) -> None:
+        target = str(hhmm or "").strip()
+        current = self._active_cloud_times()
+        if target not in current:
+            return
+        if len(current) == 1:
+            InfoBar.warning(
+                tr("common.warning"),
+                tr("schedule.cloud_times", tz=self._active_tz_info()["short"]),
+                duration=2500,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+            return
+        self._set_cloud_times([t for t in current if t != target])
+
     def _remove_selected_cloud_time(self) -> None:
         current = self._active_cloud_times()
         row = self.cloudTimesList.currentRow()
         if row < 0 and self.cloudTimesList.count() > 0:
             row = self.cloudTimesList.count() - 1
         if 0 <= row < len(current):
-            if len(current) == 1:
-                InfoBar.warning(
-                    tr("common.warning"),
-                    tr("schedule.cloud_times", tz=self._active_tz_info()["short"]),
-                    duration=2500,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    parent=self.window(),
-                )
-                return
-            del current[row]
-            self._set_cloud_times(current)
+            self._remove_cloud_time_by_key(current[row])
 
     def _apply_cloud_preset(self, times: list[str]) -> None:
         self._set_cloud_times(times)
@@ -1915,6 +2057,8 @@ class ContentPage(SmoothScrollArea):
         self.localHeading.setText(tr("dashboard.mode_local"))
         tz_short = self._active_tz_info()["short"]
         self.localTimesLabel.setText(tr("schedule.local_times_tz", tz=tz_short))
+        self.localTimesChips.set_empty_text(tr("schedule.times_empty"))
+        self.localTimesChips.set_remove_tooltip(tr("common.remove"))
         self.addTimeBtn.setText(escape_qt_mnemonic(tr("schedule.add_time")))
         self.removeTimeBtn.setText(escape_qt_mnemonic(tr("common.remove")))
         win_sync_txt = escape_qt_mnemonic(tr("schedule.sync_windows"))
@@ -1924,6 +2068,8 @@ class ContentPage(SmoothScrollArea):
         self.headlessLabel.setText(tr("schedule.local_headless"))
         self.dailyCapLabel.setText(tr("content.daily_cap_label"))
         self.cloudHeading.setText(tr("cloud.title"))
+        self.cloudRepoSectionLabel.setText(tr("cloud.section_account_repo"))
+        self.cloudAdvancedToggleBtn.setText(escape_qt_mnemonic(tr("cloud.repo_advanced_toggle")))
         self.ghSigninBtn.setText(escape_qt_mnemonic(tr("cloud.signin_device")))
         self.ghSwitchBtn.setText(escape_qt_mnemonic(tr("cloud.reconnect_github")))
         self.ghSignoutBtn.setText(escape_qt_mnemonic(tr("cloud.signout")))
@@ -1939,7 +2085,9 @@ class ContentPage(SmoothScrollArea):
         self.repoNameEdit.setPlaceholderText(tr("cloud.repo_name_hint"))
         self.syncOnlyCheck.setText(escape_qt_mnemonic(tr("cloud.sync_only")))
         self.syncOnlyHint.setText(tr("cloud.sync_only_hint"))
-        self.cloudTimeLabel.setText(tr("schedule.cloud_times", tz=tz_short))
+        self.cloudTimeLabel.setText(tr("cloud.section_schedule", tz=tz_short))
+        self.cloudTimesChips.set_empty_text(tr("schedule.times_empty"))
+        self.cloudTimesChips.set_remove_tooltip(tr("common.remove"))
         self.addCloudTimeBtn.setText(escape_qt_mnemonic(tr("schedule.add_time")))
         self.removeCloudTimeBtn.setText(escape_qt_mnemonic(tr("common.remove")))
         self.quickPresetsLabel.setText(tr("schedule.quick_presets"))
