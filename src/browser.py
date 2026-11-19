@@ -8,6 +8,22 @@ logger = logging.getLogger("tiktok-streak")
 
 MESSAGES_URL = "https://www.tiktok.com/messages?allow_label=true&lang=en&scene=business"
 
+_HTTPONLY_COOKIES = frozenset({
+    "sessionid",
+    "sessionid_ss",
+    "sid_tt",
+    "sid_guard",
+    "uid_tt",
+    "uid_tt_ss",
+    "odin_tt",
+    "ttwid",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+    "d_ticket",
+    "cmpl_token",
+    "tt_chain_token",
+})
+
 
 def init_browser(headless: bool = None, capture: bool = False) -> tuple:
     if headless is None:
@@ -129,11 +145,24 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
     logger.info("[%s] Injecting session cookies...", account_name)
     browser.get("https://www.tiktok.com")
     browser.delete_all_cookies()
+    try:
+        browser.execute_cdp_cmd("Network.clearBrowserCookies", {})
+    except Exception:
+        pass
+    try:
+        browser.execute_cdp_cmd(
+            "Storage.clearDataForOrigin",
+            {"origin": "https://www.tiktok.com", "storageTypes": "all"},
+        )
+    except Exception:
+        pass
     # Drop any WS/HTTP SEND_MESSAGE template stashed for the previous account
     # and reset hook buffers so replay templates never bleed across accounts.
     try:
         browser.execute_script(
             "try {"
+            "  localStorage.clear();"
+            "  sessionStorage.clear();"
             "  sessionStorage.removeItem('__tmplB64');"
             "  sessionStorage.removeItem('__httpSendB64');"
             "  sessionStorage.removeItem('__httpSendUrl');"
@@ -154,18 +183,40 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
     cookies_to_inject = parse_cookie_payload(os.getenv("TIKTOK_COOKIES", "").strip())
     cookies_to_inject.update(parse_cookie_payload(session_id))
 
+    # Best-effort runtime hydration when only a bare sessionid was supplied without
+    # regional routing cookies (tt-target-idc / store-idc).
+    if (
+        cookies_to_inject.get("sessionid")
+        and not cookies_to_inject.get("tt-target-idc")
+        and not cookies_to_inject.get("store-idc")
+    ):
+        try:
+            from gui.services.tiktok_auth import check_session_api
+
+            api_res = check_session_api(cookies_to_inject, timeout=8.0)
+            if isinstance(api_res, dict) and api_res.get("cookie_text"):
+                hydrated = parse_cookie_payload(api_res["cookie_text"])
+                if isinstance(hydrated, dict):
+                    for hk, hv in hydrated.items():
+                        if hk and hv and hk not in cookies_to_inject:
+                            cookies_to_inject[hk] = hv
+        except Exception as exc:
+            logger.debug("[%s] Runtime bare-session hydration skipped: %s", account_name, exc)
+
     for c_name, c_val in cookies_to_inject.items():
         if not c_name or not c_val:
             continue
         try:
-            browser.add_cookie({
+            cookie_dict = {
                 "name": c_name,
                 "value": c_val,
-                "domain": ".tiktok.com",
                 "path": "/",
                 "secure": True,
-                "httpOnly": True,
-            })
+                "httpOnly": c_name in _HTTPONLY_COOKIES,
+            }
+            if not c_name.startswith("__Host-"):
+                cookie_dict["domain"] = ".tiktok.com"
+            browser.add_cookie(cookie_dict)
         except Exception as e:
             logger.debug("Failed adding cookie %s: %s", c_name, e)
 
@@ -175,6 +226,13 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
 
     if "login" in browser.current_url:
         dump_debug_diagnostics(browser, f"session_expired_{account_name}")
+        if not (cookies_to_inject.get("tt-target-idc") or cookies_to_inject.get("store-idc")):
+            raise SessionExpiredError(
+                f"[{account_name}] Session invalid or expired (redirected to login page). "
+                "Regional routing cookies (tt-target-idc / store-idc) are missing — a bare "
+                "sessionid works locally in your home region but fails on US GitHub Actions runners; "
+                "re-authenticate via Guided Login, Verify, or a full Cookie export."
+            )
         raise SessionExpiredError(f"[{account_name}] Session invalid or expired. Redirected to login page.")
 
     # Some sessions are bounced from /messages to the Business Suite inbox,

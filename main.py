@@ -116,14 +116,16 @@ def run(
     all_results = []
     has_critical_failure = False
     rate_limited = False
+    multi_account = len(accounts) > 1
 
     try:
-        browser, _wait = init_browser(headless=headless)
+        if not multi_account:
+            browser, _wait = init_browser(headless=headless)
 
-        # Hook WebSockets before any navigation so the IM client's sockets are captured.
-        install_ws_hook(browser)
-        # Guard the DM file input before navigation so photo sends work too.
-        install_media_guard(browser)
+            # Hook WebSockets before any navigation so the IM client's sockets are captured.
+            install_ws_hook(browser)
+            # Guard the DM file input before navigation so photo sends work too.
+            install_media_guard(browser)
 
         try:
             cap = max(0, int((os.getenv("DAILY_CAP") or "0").strip() or "0"))
@@ -154,184 +156,200 @@ def run(
             }
 
             try:
-                authenticate_session(browser, account.session_id, account.name)
-            except Exception as e:
-                err = f"Authentication failed: {e}"
-                logger.error("[%s] %s", account.name, err)
-                acc_result["failures"].append(err)
-                all_results.append(acc_result)
-                has_critical_failure = True
-                _emit_progress(
-                    progress_cb,
-                    stage="account_done",
-                    account=account.name,
-                    account_index=a_idx,
-                    accounts_total=len(accounts),
-                    ok=False,
-                    message=err,
-                )
-                continue
-
-            if not account.friends:
-                logger.warning("[%s] No target friends configured. Skipping.", account.name)
-                acc_result["failures"].append("No friends specified in friends list")
-                all_results.append(acc_result)
-                _emit_progress(
-                    progress_cb,
-                    stage="account_done",
-                    account=account.name,
-                    account_index=a_idx,
-                    accounts_total=len(accounts),
-                    ok=False,
-                    message="No target friends configured.",
-                )
-                continue
-
-            # Shuffle order + cap so runs don't hit friends in a fixed pattern.
-            friends = list(account.friends)
-            random.shuffle(friends)
-            item_id = parse_aweme_id(account.video_url) if account.video_url else None
-            if account.video_url and not item_id:
-                logger.warning("[%s] Could not parse video id from video_url=%r.", account.name, account.video_url)
-
-            for f_idx, friend in enumerate(friends, start=1):
-                if _is_cancelled(stop_event):
-                    break
-
-                logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(friends), friend)
-                _emit_progress(
-                    progress_cb,
-                    stage="friend_start",
-                    account=account.name,
-                    account_index=a_idx,
-                    accounts_total=len(accounts),
-                    friend=friend,
-                    friend_index=f_idx,
-                    friends_total=len(friends),
-                    message=f"[{account.name}] Messaging @{friend} ({f_idx}/{len(friends)})...",
-                )
+                if multi_account:
+                    browser, _wait = init_browser(headless=headless)
+                    # Hook WebSockets before any navigation so the IM client's sockets are captured.
+                    install_ws_hook(browser)
+                    # Guard the DM file input before navigation so photo sends work too.
+                    install_media_guard(browser)
 
                 try:
-                    if stop_event is not None:
-                        res = send_streak_message(
-                            browser=browser,
-                            friend=friend,
-                            message_text=account.message,
-                            stop_event=stop_event,
-                        )
-                    else:
-                        res = send_streak_message(
-                            browser=browser,
-                            friend=friend,
-                            message_text=account.message,
-                        )
-                except RateLimitError as e:
-                    err = f"Rate limit at @{friend}: {e}"
-                    logger.error("[%s] %s. Stopping run.", account.name, err)
+                    authenticate_session(browser, account.session_id, account.name)
+                except Exception as e:
+                    err = f"Authentication failed: {e}"
+                    logger.error("[%s] %s", account.name, err)
                     acc_result["failures"].append(err)
+                    all_results.append(acc_result)
                     has_critical_failure = True
-                    rate_limited = True
-                    notify_telegram(
-                        title="TikTok Rate Limit Reached",
-                        details=f"[{account.name}] {err}",
-                        action_tip=getattr(e, "action_tip", RateLimitError.action_tip),
-                        is_error=True,
+                    _emit_progress(
+                        progress_cb,
+                        stage="account_done",
+                        account=account.name,
+                        account_index=a_idx,
+                        accounts_total=len(accounts),
+                        ok=False,
+                        message=err,
+                    )
+                    continue
+
+                if not account.friends:
+                    logger.warning("[%s] No target friends configured. Skipping.", account.name)
+                    acc_result["failures"].append("No friends specified in friends list")
+                    all_results.append(acc_result)
+                    _emit_progress(
+                        progress_cb,
+                        stage="account_done",
+                        account=account.name,
+                        account_index=a_idx,
+                        accounts_total=len(accounts),
+                        ok=False,
+                        message="No target friends configured.",
+                    )
+                    continue
+
+                # Shuffle order + cap so runs don't hit friends in a fixed pattern.
+                friends = list(account.friends)
+                random.shuffle(friends)
+                item_id = parse_aweme_id(account.video_url) if account.video_url else None
+                if account.video_url and not item_id:
+                    logger.warning("[%s] Could not parse video id from video_url=%r.", account.name, account.video_url)
+
+                for f_idx, friend in enumerate(friends, start=1):
+                    if _is_cancelled(stop_event):
+                        break
+
+                    logger.info("[%s] [%d/%d] Sending streak message to @%s...", account.name, f_idx, len(friends), friend)
+                    _emit_progress(
+                        progress_cb,
+                        stage="friend_start",
+                        account=account.name,
+                        account_index=a_idx,
+                        accounts_total=len(accounts),
+                        friend=friend,
+                        friend_index=f_idx,
+                        friends_total=len(friends),
+                        message=f"[{account.name}] Messaging @{friend} ({f_idx}/{len(friends)})...",
+                    )
+
+                    try:
+                        if stop_event is not None:
+                            res = send_streak_message(
+                                browser=browser,
+                                friend=friend,
+                                message_text=account.message,
+                                stop_event=stop_event,
+                            )
+                        else:
+                            res = send_streak_message(
+                                browser=browser,
+                                friend=friend,
+                                message_text=account.message,
+                            )
+                    except RateLimitError as e:
+                        err = f"Rate limit at @{friend}: {e}"
+                        logger.error("[%s] %s. Stopping run.", account.name, err)
+                        acc_result["failures"].append(err)
+                        has_critical_failure = True
+                        rate_limited = True
+                        notify_telegram(
+                            title="TikTok Rate Limit Reached",
+                            details=f"[{account.name}] {err}",
+                            action_tip=getattr(e, "action_tip", RateLimitError.action_tip),
+                            is_error=True,
+                        )
+                        _emit_progress(
+                            progress_cb,
+                            stage="rate_limit",
+                            account=account.name,
+                            friend=friend,
+                            message=err,
+                        )
+                        break
+
+                    if res["sent"]:
+                        acc_result["sent"] += 1
+                        logger.info("[%s] Streak message delivered to @%s.", account.name, friend)
+                    elif _is_cancelled(stop_event) and res.get("error") == "Cancelled":
+                        logger.info("[%s] Send to @%s cancelled.", account.name, friend)
+                        break
+                    else:
+                        err = f"@{friend}: {res['error']}"
+                        acc_result["failures"].append(err)
+                        logger.error("[%s] Text to @%s FAILED: %s", account.name, friend, res["error"])
+
+                    if _is_cancelled(stop_event):
+                        break
+
+                    # Send N video-share cards (streak progression needs more than one).
+                    shares_here = 0
+                    if item_id and account.share_times > 0 and not _is_cancelled(stop_event):
+                        for s_idx in range(account.share_times):
+                            if _is_cancelled(stop_event):
+                                break
+                            sres = send_share_card(browser, friend, item_id)
+                            if sres["sent"]:
+                                shares_here += 1
+                                acc_result["shares_sent"] += 1
+                                logger.info("[%s] Share card %d/%d delivered to @%s.", account.name, s_idx + 1, account.share_times, friend)
+                            else:
+                                acc_result["failures"].append(f"@{friend} share {s_idx + 1}: {sres['error']}")
+                                logger.error("[%s] Share %d/%d to @%s FAILED: %s",
+                                             account.name, s_idx + 1, account.share_times, friend, sres["error"])
+                            if s_idx + 1 < account.share_times:
+                                _sleep_or_stop(random.uniform(1.5, 3.0), stop_event)
+
+                    # Send 1 photo (streak progression also needs a media message).
+                    photo_ok = None
+                    if account.photo_path and not _is_cancelled(stop_event):
+                        pres = send_photo_card(browser, friend, account.photo_path)
+                        if pres["sent"]:
+                            photo_ok = True
+                            acc_result["photos_sent"] += 1
+                            logger.info("[%s] Photo delivered to @%s.", account.name, friend)
+                        else:
+                            photo_ok = False
+                            acc_result["failures"].append(f"@{friend} photo: {pres['error']}")
+                            logger.error("[%s] Photo to @%s FAILED: %s", account.name, friend, pres["error"])
+                    elif not account.photo_path:
+                        logger.info("[%s] Photo disabled for @%s (no photo_path).", account.name, friend)
+
+                    logger.info(
+                        "[%s] @%s summary -> text=%s share=%d/%d photo=%s",
+                        account.name, friend,
+                        "ok" if res["sent"] else "FAIL",
+                        shares_here, account.share_times if item_id else 0,
+                        "n/a" if photo_ok is None else ("ok" if photo_ok else "FAIL"),
                     )
                     _emit_progress(
                         progress_cb,
-                        stage="rate_limit",
+                        stage="friend_done",
                         account=account.name,
                         friend=friend,
-                        message=err,
+                        friend_index=f_idx,
+                        friends_total=len(friends),
+                        ok=bool(res["sent"]),
+                        sent=acc_result["sent"],
+                        shares_sent=acc_result["shares_sent"],
+                        photos_sent=acc_result["photos_sent"],
+                        message=f"[{account.name}] @{friend} -> text={'ok' if res['sent'] else 'FAIL'}",
                     )
-                    break
 
-                if res["sent"]:
-                    acc_result["sent"] += 1
-                    logger.info("[%s] Streak message delivered to @%s.", account.name, friend)
-                elif _is_cancelled(stop_event) and res.get("error") == "Cancelled":
-                    logger.info("[%s] Send to @%s cancelled.", account.name, friend)
-                    break
-                else:
-                    err = f"@{friend}: {res['error']}"
-                    acc_result["failures"].append(err)
-                    logger.error("[%s] Text to @%s FAILED: %s", account.name, friend, res["error"])
+                    if cap and acc_result["sent"] >= cap:
+                        logger.info("[%s] Daily cap of %d reached; stopping.", account.name, cap)
+                        break
 
-                if _is_cancelled(stop_event):
-                    break
+                    if f_idx < len(friends) and not _is_cancelled(stop_event):
+                        _sleep_or_stop(random.uniform(3.0, 8.0), stop_event)
 
-                # Send N video-share cards (streak progression needs more than one).
-                shares_here = 0
-                if item_id and account.share_times > 0 and not _is_cancelled(stop_event):
-                    for s_idx in range(account.share_times):
-                        if _is_cancelled(stop_event):
-                            break
-                        sres = send_share_card(browser, friend, item_id)
-                        if sres["sent"]:
-                            shares_here += 1
-                            acc_result["shares_sent"] += 1
-                            logger.info("[%s] Share card %d/%d delivered to @%s.", account.name, s_idx + 1, account.share_times, friend)
-                        else:
-                            acc_result["failures"].append(f"@{friend} share {s_idx + 1}: {sres['error']}")
-                            logger.error("[%s] Share %d/%d to @%s FAILED: %s",
-                                         account.name, s_idx + 1, account.share_times, friend, sres["error"])
-                        if s_idx + 1 < account.share_times:
-                            _sleep_or_stop(random.uniform(1.5, 3.0), stop_event)
-
-                # Send 1 photo (streak progression also needs a media message).
-                photo_ok = None
-                if account.photo_path and not _is_cancelled(stop_event):
-                    pres = send_photo_card(browser, friend, account.photo_path)
-                    if pres["sent"]:
-                        photo_ok = True
-                        acc_result["photos_sent"] += 1
-                        logger.info("[%s] Photo delivered to @%s.", account.name, friend)
-                    else:
-                        photo_ok = False
-                        acc_result["failures"].append(f"@{friend} photo: {pres['error']}")
-                        logger.error("[%s] Photo to @%s FAILED: %s", account.name, friend, pres["error"])
-                elif not account.photo_path:
-                    logger.info("[%s] Photo disabled for @%s (no photo_path).", account.name, friend)
-
-                logger.info(
-                    "[%s] @%s summary -> text=%s share=%d/%d photo=%s",
-                    account.name, friend,
-                    "ok" if res["sent"] else "FAIL",
-                    shares_here, account.share_times if item_id else 0,
-                    "n/a" if photo_ok is None else ("ok" if photo_ok else "FAIL"),
-                )
+                all_results.append(acc_result)
                 _emit_progress(
                     progress_cb,
-                    stage="friend_done",
+                    stage="account_done",
                     account=account.name,
-                    friend=friend,
-                    friend_index=f_idx,
-                    friends_total=len(friends),
-                    ok=bool(res["sent"]),
+                    account_index=a_idx,
+                    accounts_total=len(accounts),
                     sent=acc_result["sent"],
-                    shares_sent=acc_result["shares_sent"],
-                    photos_sent=acc_result["photos_sent"],
-                    message=f"[{account.name}] @{friend} -> text={'ok' if res['sent'] else 'FAIL'}",
+                    ok=not acc_result["failures"],
+                    message=f"[{account.name}] finished: {acc_result['sent']}/{acc_result['friends_total']} sent.",
                 )
+            finally:
+                if multi_account and browser is not None:
+                    try:
+                        browser.quit()
+                    except Exception as qe:
+                        logger.debug("browser.quit() failed: %s", qe)
+                    browser = None
 
-                if cap and acc_result["sent"] >= cap:
-                    logger.info("[%s] Daily cap of %d reached; stopping.", account.name, cap)
-                    break
-
-                if f_idx < len(friends) and not _is_cancelled(stop_event):
-                    _sleep_or_stop(random.uniform(3.0, 8.0), stop_event)
-
-            all_results.append(acc_result)
-            _emit_progress(
-                progress_cb,
-                stage="account_done",
-                account=account.name,
-                account_index=a_idx,
-                accounts_total=len(accounts),
-                sent=acc_result["sent"],
-                ok=not acc_result["failures"],
-                message=f"[{account.name}] finished: {acc_result['sent']}/{acc_result['friends_total']} sent.",
-            )
             if rate_limited or _is_cancelled(stop_event):
                 break
 
