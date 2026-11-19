@@ -173,7 +173,7 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
     assert win.content_interface.titleLabel.text() == "Pesan, Media & Teman"
     assert win.run_interface.titleLabel.text() == "Jalankan & Log"
     assert win.run_interface.logViewer.titleLabel.text() == "Log & Diagnostik"
-    assert win.settings_interface.titleLabel.text() == "Pengaturan & Workspace"
+    assert win.settings_interface.titleLabel.text() == "Pengaturan"
     assert win.settings_interface.themeCombo.itemText(0) == "Sistem"
 
     idx_en = win.settings_interface.langCombo.findData("en")
@@ -186,7 +186,7 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
     assert win.accounts_interface.titleLabel.text() == "TikTok Accounts"
     assert win.content_interface.titleLabel.text() == "Message, Media & Friends"
     assert win.run_interface.titleLabel.text() == "Run & Logs"
-    assert win.settings_interface.titleLabel.text() == "Settings & Workspace"
+    assert win.settings_interface.titleLabel.text() == "Settings"
     assert win.settings_interface.themeCombo.itemText(0) == "System"
 
     # Light -> Dark -> System theme switching via SettingsPage theme combo
@@ -1993,6 +1993,27 @@ def test_winui3_badges_friend_chips_time_chips_and_security_dialog(
     assert isinstance(cp.localSection, SimpleCardWidget)
     assert isinstance(ap.browserCard, SimpleCardWidget)
     assert isinstance(hp.privacyCard, SimpleCardWidget)
+
+    # Single-line Video Share header title, header videoBadge, Verify Link wording, matched Accounts header button heights, and collapsed CLI drawer
+    assert cp.videoCard.headerLabel.wordWrap() is False
+    assert cp.videoBadge.parentWidget() is cp.videoCard.headerView
+    assert cp.resolveShortBtn.text() == "Verify Link"
+    win.show()
+    qapp.processEvents()
+    assert ap.privacyBtn.height() == ap.modeSegment.height()
+    set_language("id")
+    qapp.processEvents()
+    assert ap.privacyBtn.height() == ap.modeSegment.height()
+    assert cp.videoCard.headerLabel.wordWrap() is False
+    assert cp.resolveShortBtn.text() == "Verifikasi Link"
+    set_language("en")
+    qapp.processEvents()
+
+    assert sp.cliExportCard.isExpand is False
+    sp.cliExportCard.setExpand(True)
+    qapp.processEvents()
+    assert sp.cliExportCard.isExpand is True
+    assert sp.workspaceDirEdit.minimumWidth() >= 200
 
     # 4) SecurityPrivacyDialog instantiates & opens cleanly from Home, Accounts, and Settings
     opened: list[str] = []

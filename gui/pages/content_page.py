@@ -498,7 +498,7 @@ class ContentPage(SmoothScrollArea):
         # 2. Video Share card
         self.videoCard = HeaderCardWidget(self.view)
         self.videoCard.setTitle(tr("content.video_toggle"))
-        self.videoCard.headerLabel.setWordWrap(True)
+        self.videoCard.headerView.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.videoBadge = StatusPill("", "info", self.videoCard)
         self.videoSwitch = SwitchButton(self.videoCard)
         self.videoSwitch.checkedChanged.connect(self._on_video_toggled)
@@ -1186,6 +1186,7 @@ class ContentPage(SmoothScrollArea):
         if not raw:
             return
         self.resolveShortBtn.setEnabled(False)
+        self.resolveShortBtn.setText(escape_qt_mnemonic(tr("accounts.verifying")))
         self._workers.start_task(
             validate_video_url,
             raw,
@@ -1197,6 +1198,7 @@ class ContentPage(SmoothScrollArea):
 
     def _on_short_resolved(self, res: dict[str, Any]) -> None:
         self.resolveShortBtn.setEnabled(self.videoSwitch.isChecked())
+        self.resolveShortBtn.setText(escape_qt_mnemonic(tr("content.video_resolve")))
         if res.get("valid"):
             self.videoUrlEdit.setText(res["normalized_url"])
             InfoBar.success(
@@ -1217,6 +1219,7 @@ class ContentPage(SmoothScrollArea):
 
     def _on_short_error(self, err: str) -> None:
         self.resolveShortBtn.setEnabled(self.videoSwitch.isChecked())
+        self.resolveShortBtn.setText(escape_qt_mnemonic(tr("content.video_resolve")))
         InfoBar.error(
             tr("common.error"),
             err,

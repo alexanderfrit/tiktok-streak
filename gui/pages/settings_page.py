@@ -6,9 +6,12 @@ from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFileDialog, QFrame, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    BodyLabel,
+    CaptionLabel,
     ComboBox,
+    ExpandGroupSettingCard,
     FluentIcon as FIF,
     HyperlinkButton,
     InfoBar,
@@ -47,6 +50,33 @@ except ImportError:  # pragma: no cover
         return TIMEZONE_CHOICES[0]
 from gui.widgets.security_dialog import SecurityPrivacyDialog
 from gui.workers import WorkerController
+
+
+class _ExpandGroupRow(QWidget):
+    """Sub-row inside an ExpandGroupSettingCard with title, caption, and right controls."""
+
+    def __init__(self, title: str, content: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.hBoxLayout = QHBoxLayout(self)
+        self.hBoxLayout.setContentsMargins(48, 12, 16, 12)
+        self.hBoxLayout.setSpacing(8)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+        self.titleLabel = BodyLabel(title, self)
+        self.contentLabel = CaptionLabel(content, self)
+        self.contentLabel.setWordWrap(True)
+        text_col.addWidget(self.titleLabel)
+        text_col.addWidget(self.contentLabel)
+
+        self.hBoxLayout.addLayout(text_col, 1)
+
+    def setTitle(self, text: str) -> None:
+        self.titleLabel.setText(text)
+
+    def setContent(self, text: str) -> None:
+        self.contentLabel.setText(text)
 
 
 class SettingsPage(SmoothScrollArea):
@@ -209,7 +239,7 @@ class SettingsPage(SmoothScrollArea):
         self.telegramGroup.addSettingCard(self.tgChatCard)
         self.vBoxLayout.addWidget(self.telegramGroup)
 
-        # 3. GitHub & Local Workspace
+        # 3. Account, Privacy & Data
         self.workspaceGroup = SettingCardGroup(tr("settings.workspace_group"), self.view)
 
         self.ghAccountCard = SettingCard(
@@ -222,37 +252,15 @@ class SettingsPage(SmoothScrollArea):
         self.ghAccountCard.hBoxLayout.addWidget(self.ghSignoutBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.ghAccountCard.hBoxLayout.addSpacing(16)
 
-        self.workspaceDirCard = SettingCard(
-            FIF.FOLDER, tr("settings.workspace_dir"), tr("settings.workspace_dir_desc"), self.workspaceGroup
+        self.securityCard = SettingCard(
+            FIF.INFO, tr("settings.security_card_title"), tr("settings.security_card_desc"), self.workspaceGroup
         )
-        self.workspaceDirEdit = LineEdit(self.workspaceDirCard)
-        self.workspaceDirEdit.setMinimumWidth(150)
-        self.workspaceDirEdit.setMaximumWidth(260)
-        self.workspaceDirEdit.textChanged.connect(self._on_workspace_dir_changed)
-        self.workspaceBrowseBtn = PushButton(
-            FIF.FOLDER_ADD, escape_qt_mnemonic(tr("common.browse")), self.workspaceDirCard
+        self.openSecurityBtn = PushButton(
+            FIF.INFO, escape_qt_mnemonic(tr("security.how_protected_btn")), self.securityCard
         )
-        self.workspaceBrowseBtn.clicked.connect(self._browse_workspace)
-        self.workspaceDirCard.hBoxLayout.addWidget(self.workspaceDirEdit, 0, Qt.AlignRight | Qt.AlignVCenter)
-        self.workspaceDirCard.hBoxLayout.addSpacing(8)
-        self.workspaceDirCard.hBoxLayout.addWidget(self.workspaceBrowseBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
-        self.workspaceDirCard.hBoxLayout.addSpacing(16)
-
-        self.workspaceSyncCard = SettingCard(
-            FIF.SYNC, tr("settings.export_workspace"), tr("settings.export_workspace_desc"), self.workspaceGroup
-        )
-        self.syncWorkspaceBtn = PushButton(
-            FIF.SAVE, escape_qt_mnemonic(tr("settings.sync_now")), self.workspaceSyncCard
-        )
-        self.importWorkspaceBtn = PushButton(
-            FIF.DOWNLOAD, escape_qt_mnemonic(tr("settings.import_now")), self.workspaceSyncCard
-        )
-        self.syncWorkspaceBtn.clicked.connect(self._sync_workspace_now)
-        self.importWorkspaceBtn.clicked.connect(self._import_workspace_now)
-        self.workspaceSyncCard.hBoxLayout.addWidget(self.syncWorkspaceBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
-        self.workspaceSyncCard.hBoxLayout.addSpacing(8)
-        self.workspaceSyncCard.hBoxLayout.addWidget(self.importWorkspaceBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
-        self.workspaceSyncCard.hBoxLayout.addSpacing(16)
+        self.openSecurityBtn.clicked.connect(self._open_security_dialog)
+        self.securityCard.hBoxLayout.addWidget(self.openSecurityBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.securityCard.hBoxLayout.addSpacing(16)
 
         self.configFolderCard = SettingCard(
             FIF.DOCUMENT, tr("settings.open_config_dir"), str(self._config_store.config_dir), self.workspaceGroup
@@ -264,15 +272,41 @@ class SettingsPage(SmoothScrollArea):
         self.configFolderCard.hBoxLayout.addWidget(self.openConfigDirBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.configFolderCard.hBoxLayout.addSpacing(16)
 
-        self.securityCard = SettingCard(
-            FIF.INFO, tr("settings.security_card_title"), tr("settings.security_card_desc"), self.workspaceGroup
+        # Collapsible optional Developer / CLI (.env, accounts.json) drawer
+        self.cliExportCard = ExpandGroupSettingCard(
+            FIF.CODE, tr("settings.cli_export_title"), tr("settings.cli_export_desc"), self.workspaceGroup
         )
-        self.openSecurityBtn = PushButton(
-            FIF.INFO, escape_qt_mnemonic(tr("security.how_protected_btn")), self.securityCard
+
+        self.workspaceDirCard = _ExpandGroupRow(
+            tr("settings.workspace_dir"), tr("settings.workspace_dir_desc"), self.cliExportCard
         )
-        self.openSecurityBtn.clicked.connect(self._open_security_dialog)
-        self.securityCard.hBoxLayout.addWidget(self.openSecurityBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
-        self.securityCard.hBoxLayout.addSpacing(16)
+        self.workspaceDirEdit = LineEdit(self.workspaceDirCard)
+        self.workspaceDirEdit.setMinimumWidth(200)
+        self.workspaceDirEdit.setMaximumWidth(280)
+        self.workspaceDirEdit.textChanged.connect(self._on_workspace_dir_changed)
+        self.workspaceBrowseBtn = PushButton(
+            FIF.FOLDER_ADD, escape_qt_mnemonic(tr("common.browse")), self.workspaceDirCard
+        )
+        self.workspaceBrowseBtn.clicked.connect(self._browse_workspace)
+        self.workspaceDirCard.hBoxLayout.addWidget(self.workspaceDirEdit, 0, Qt.AlignVCenter)
+        self.workspaceDirCard.hBoxLayout.addWidget(self.workspaceBrowseBtn, 0, Qt.AlignVCenter)
+
+        self.workspaceSyncCard = _ExpandGroupRow(
+            tr("settings.export_workspace"), tr("settings.export_workspace_desc"), self.cliExportCard
+        )
+        self.syncWorkspaceBtn = PushButton(
+            FIF.SAVE, escape_qt_mnemonic(tr("settings.sync_now")), self.workspaceSyncCard
+        )
+        self.importWorkspaceBtn = PushButton(
+            FIF.DOWNLOAD, escape_qt_mnemonic(tr("settings.import_now")), self.workspaceSyncCard
+        )
+        self.syncWorkspaceBtn.clicked.connect(self._sync_workspace_now)
+        self.importWorkspaceBtn.clicked.connect(self._import_workspace_now)
+        self.workspaceSyncCard.hBoxLayout.addWidget(self.syncWorkspaceBtn, 0, Qt.AlignVCenter)
+        self.workspaceSyncCard.hBoxLayout.addWidget(self.importWorkspaceBtn, 0, Qt.AlignVCenter)
+
+        self.cliExportCard.addGroupWidget(self.workspaceDirCard)
+        self.cliExportCard.addGroupWidget(self.workspaceSyncCard)
 
         self.resetCard = SettingCard(
             FIF.DELETE, tr("settings.reset_all"), tr("settings.clear_secrets"), self.workspaceGroup
@@ -285,10 +319,9 @@ class SettingsPage(SmoothScrollArea):
         self.resetCard.hBoxLayout.addSpacing(16)
 
         self.workspaceGroup.addSettingCard(self.ghAccountCard)
-        self.workspaceGroup.addSettingCard(self.workspaceDirCard)
-        self.workspaceGroup.addSettingCard(self.workspaceSyncCard)
-        self.workspaceGroup.addSettingCard(self.configFolderCard)
         self.workspaceGroup.addSettingCard(self.securityCard)
+        self.workspaceGroup.addSettingCard(self.configFolderCard)
+        self.workspaceGroup.addSettingCard(self.cliExportCard)
         self.workspaceGroup.addSettingCard(self.resetCard)
         self.vBoxLayout.addWidget(self.workspaceGroup)
         self.vBoxLayout.addStretch(1)
@@ -676,6 +709,8 @@ class SettingsPage(SmoothScrollArea):
 
         self.workspaceGroup.titleLabel.setText(tr("settings.workspace_group"))
         self.ghSignoutBtn.setText(escape_qt_mnemonic(tr("cloud.signout")))
+        self.cliExportCard.setTitle(tr("settings.cli_export_title"))
+        self.cliExportCard.setContent(tr("settings.cli_export_desc"))
         self.workspaceDirCard.setTitle(tr("settings.workspace_dir"))
         self.workspaceDirCard.setContent(tr("settings.workspace_dir_desc"))
         self.workspaceBrowseBtn.setText(escape_qt_mnemonic(tr("common.browse")))
@@ -691,6 +726,8 @@ class SettingsPage(SmoothScrollArea):
         self.resetCard.setTitle(tr("settings.reset_all"))
         self.resetCard.setContent(tr("settings.clear_secrets"))
         self.resetAllBtn.setText(escape_qt_mnemonic(tr("settings.reset_all")))
+        if hasattr(self.cliExportCard, "_adjustViewSize"):
+            self.cliExportCard._adjustViewSize()
         self.refresh_from_state()
 
 
