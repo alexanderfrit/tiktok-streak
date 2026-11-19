@@ -155,6 +155,7 @@ class AccountsPage(SmoothScrollArea):
         header_row.addWidget(self.privacyBtn, 0, Qt.AlignTop)
         header_row.addWidget(self.modeSegment, 0, Qt.AlignTop)
         self.vBoxLayout.addLayout(header_row)
+        self._sync_header_control_heights()
 
         # Browser selector card
         self.browserCard = SimpleCardWidget(self.view)
@@ -852,6 +853,21 @@ class AccountsPage(SmoothScrollArea):
         else:
             self.multiHiddenHint.hide()
 
+    def _sync_header_control_heights(self) -> None:
+        self.privacyBtn.setMinimumHeight(0)
+        self.privacyBtn.setMaximumHeight(16777215)
+        self.modeSegment.setMinimumHeight(0)
+        self.modeSegment.setMaximumHeight(16777215)
+        target_h = max(
+            self.privacyBtn.sizeHint().height(),
+            self.modeSegment.sizeHint().height(),
+            33,
+        )
+        self.privacyBtn.setFixedHeight(target_h)
+        self.modeSegment.setFixedHeight(target_h)
+        for item in self.modeSegment.items.values():
+            item.setFixedHeight(target_h)
+
     def _open_security_dialog(self) -> None:
         dlg = SecurityPrivacyDialog(self.window(), config_dir=self._config_store.config_dir)
         dlg.exec()
@@ -862,6 +878,7 @@ class AccountsPage(SmoothScrollArea):
         self.privacyBtn.setText(escape_qt_mnemonic(tr("security.how_protected_btn")))
         self.modeSegment.items["single"].setText(tr("accounts.single_mode"))
         self.modeSegment.items["multi"].setText(tr("accounts.multi_mode"))
+        self._sync_header_control_heights()
         self.browserTitle.setText(tr("accounts.browser_profile"))
         self.refreshBrowsersBtn.setText(escape_qt_mnemonic(tr("common.refresh")))
         self.addAccountBtn.setText(escape_qt_mnemonic(tr("accounts.add_account")))
