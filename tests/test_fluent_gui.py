@@ -493,7 +493,7 @@ def test_accounts_page_v20_ux_and_guided_login(qapp: QApplication, make_window, 
     assert acc.username == "guided_user"
     assert acc.inbox_verified is True
     assert secrets.get_account_cookie(acc.id) == "sessionid=guided_sid; ttwid=abc"
-    assert ap._cards[0].inboxBadge.text() == tr("accounts.inbox_verified")
+    assert ap._cards[0].inboxBadge.text() == tr("accounts.local_only_badge")
 
 
 def test_cookie_dialog_validate_and_paste_flow(qapp: QApplication, make_window, monkeypatch: pytest.MonkeyPatch):
@@ -693,12 +693,13 @@ def test_content_page_github_deploy_and_local_schedule(qapp: QApplication, make_
         accounts=[acc1],
         github_private=True,
         github_repo_name="my-private-streak",
+        timezone="Asia/Jakarta",
         cloud_cron="0 1,13 * * *",
         video_enabled=False,
         photo_enabled=False,
     )
     win, _store, secrets, _mem, _tmp = make_window(state=state, smoke_test=True)
-    secrets.set_account_cookie("a1", "sessionid=sid_deploy")
+    secrets.set_account_cookie("a1", "sessionid=sid_deploy; tt-target-idc=useast2a")
     secrets.set_github_token("ghp_deploy_token_1234567890")
 
     cp = win.content_interface
@@ -774,6 +775,7 @@ def test_run_page_local_cloud_and_log_viewer_redaction(qapp: QApplication, make_
         accounts=[acc],
         github_login="octocat",
         github_repo_name="my-streak",
+        timezone="Asia/Jakarta",
         headless_local=True,
         video_enabled=False,
         photo_enabled=False,
@@ -791,7 +793,7 @@ def test_run_page_local_cloud_and_log_viewer_redaction(qapp: QApplication, make_
     assert rp.friendCombo.count() == 2
     assert rp.runCloudBtn.isEnabled() is True
 
-    # 1) Quick test (1-friend visible run) + LogViewer redaction
+    # 1) Quick test honors showBrowserSwitch (Off -> headless=True, On -> headless=False) + LogViewer redaction
     smoke_calls: list[dict] = []
 
     def fake_smoke(self, st, ss, friend, account_id=None, headless=False, stop_event=None, log_cb=None, progress_cb=None):
@@ -803,11 +805,20 @@ def test_run_page_local_cloud_and_log_viewer_redaction(qapp: QApplication, make_
         return {"ok": True, "elapsed": 2, "results": [{"name": "Main", "sent": 1}]}
 
     monkeypatch.setattr("gui.pages.run_page.LocalRunner.run_smoke_test", fake_smoke)
+    assert rp.showBrowserSwitch.isChecked() is False
     rp.quickTestBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("local_run"), timeout=4.0)
     qapp.processEvents()
 
-    assert smoke_calls == [{"friend": "alice", "account_id": "a1", "headless": False}]
+    rp.showBrowserSwitch.setChecked(True)
+    rp.quickTestBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("local_run"), timeout=4.0)
+    qapp.processEvents()
+
+    assert smoke_calls == [
+        {"friend": "alice", "account_id": "a1", "headless": True},
+        {"friend": "alice", "account_id": "a1", "headless": False},
+    ]
     assert win.state.last_test_ok is True
     log_text = rp.logViewer.editor.toPlainText()
     assert secret_sid not in log_text
@@ -1234,7 +1245,7 @@ def test_v021_existing_repo_picker_owner_repo_sync_only_and_run_page(
         photo_enabled=False,
     )
     win, _store, secrets, _mem, _tmp = make_window(state=state, smoke_test=True)
-    secrets.set_account_cookie("a1", "sessionid=sid_repo")
+    secrets.set_account_cookie("a1", "sessionid=sid_repo; tt-target-idc=useast2a")
     secrets.set_github_token("ghp_repo_picker_token_12345")
 
     cp = win.content_interface
@@ -1555,6 +1566,317 @@ def test_v022_accounts_content_run_and_logviewer_craftsmanship(
     editor_font = rp.logViewer.editor.font()
     assert editor_font.fixedPitch() is True
     assert editor_font.families()[0] == "Cascadia Mono"
+
+
+# ---------------------------------------------------------------------------
+# 11. v1.1.0 Auth Verify UX, Timezone / Cloud Schedule & Layout Bounds
+# ---------------------------------------------------------------------------
+
+def test_v110_account_card_verify_ux_and_accounts_page_cookie_upgrade(
+    qapp: QApplication,
+    make_window,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    acc = AccountProfile(id="a1", name="Main", friends=["alice"], username="", inbox_verified=False)
+    win, _store, secrets, _mem, _tmp = make_window(state=AppState(accounts=[acc]), smoke_test=True)
+    ap = win.accounts_interface
+    ap.refresh_from_state()
+    qapp.processEvents()
+
+    card = ap._cards[0]
+    assert card.verifyInboxBtn.text() == "Verify"
+    assert card.verifySpinner.isHidden() is True
+
+    # Language switch updates Verify label cleanly
+    set_language("id")
+    qapp.processEvents()
+    assert card.verifyInboxBtn.text() == "Verifikasi"
+    set_language("en")
+    qapp.processEvents()
+    assert card.verifyInboxBtn.text() == "Verify"
+
+    # set_verifying(True/False) toggles spinner, status label, button, and badge
+    card.set_verifying(True, "Opening headless browser...")
+    assert card.verifySpinner.isHidden() is False
+    assert card.verifyStatusLabel.text() == "Opening headless browser..."
+    assert card.verifyInboxBtn.isEnabled() is False
+    assert card.verifyInboxBtn.text() == tr("accounts.verifying")
+    assert card.inboxBadge.text() == tr("accounts.verifying")
+    assert card.inboxBadge.level() == "info"
+
+    card.set_verifying(False)
+    assert card.verifySpinner.isHidden() is True
+    assert card.verifyInboxBtn.text() == "Verify"
+
+    # Paste bare cookie -> _check_pasted_cookie hydrates regional cookie and persists it
+    monkeypatch.setattr(CookieDialog, "exec", lambda self: (
+        self.textEdit.setPlainText("sessionid=bare_paste_1"),
+        self.validate(),
+        True,
+    )[-1])
+    monkeypatch.setattr(
+        "gui.pages.accounts_page._check_pasted_cookie",
+        lambda payload: {
+            "ok": True,
+            "username": "pasted_regional",
+            "cookie_text": "sessionid=bare_paste_1; tt-target-idc=alisg; store-idc=alisg",
+            "cloud_ready": True,
+        },
+    )
+    ap._open_paste_dialog("a1")
+    _pump_until(qapp, lambda: not win.workers.is_running("check_cookie_a1"), timeout=4.0)
+    qapp.processEvents()
+
+    stored_after_paste = secrets.get_account_cookie("a1")
+    assert "tt-target-idc=alisg" in stored_after_paste
+    assert card.inboxBadge.text() == tr("accounts.inbox_unchecked")
+    assert tr("accounts.cookies_cloud_ready", count=3) in card.authDetailLabel.text()
+
+    # Reset to bare cookie & verify: first captcha_detected=True, then local-only, then upgraded cloud-ready
+    live_acc = win.state.accounts[0]
+    secrets.set_account_cookie("a1", "sessionid=bare_only_2")
+    live_acc.inbox_verified = True
+    card.load_profile(live_acc, has_cookie=True, cookie_payload="sessionid=bare_only_2")
+    assert card.inboxBadge.text() == tr("accounts.local_only_badge")
+    assert card.inboxBadge.level() == "warning"
+    assert tr("accounts.cookies_local_only", count=1) in card.authDetailLabel.text()
+
+    # Captcha detected keeps unverified / turns off spinner
+    live_acc.inbox_verified = False
+    card.load_profile(live_acc, has_cookie=True, cookie_payload="sessionid=bare_only_2")
+    monkeypatch.setattr(
+        "gui.pages.accounts_page.verify_inbox_headless",
+        lambda payload, status_cb=None: (
+            status_cb("Verifying /messages inbox...") if status_cb else None,
+            {
+                "ok": False,
+                "inbox_verified": False,
+                "captcha_detected": True,
+                "username": "pasted_regional",
+                "error": "CaptchaVerificationRequired",
+            },
+        )[-1],
+    )
+    ap._start_verify_inbox("a1")
+    _pump_until(qapp, lambda: not win.workers.is_running("verify_inbox_a1"), timeout=4.0)
+    qapp.processEvents()
+    assert card.verifySpinner.isHidden() is True
+    assert live_acc.inbox_verified is False
+
+    # Successful verify upgrades cookie_text and flips badge to Verified
+    monkeypatch.setattr(
+        "gui.pages.accounts_page.verify_inbox_headless",
+        lambda payload, status_cb=None: (
+            status_cb("Collecting full session cookies...") if status_cb else None,
+            {
+                "ok": True,
+                "inbox_verified": True,
+                "captcha_detected": False,
+                "cloud_ready": True,
+                "cookie_count": 4,
+                "upgraded_cookie_text": "sessionid=bare_only_2; tt-target-idc=useast2a; store-idc=useast2a; msToken=ms1",
+                "username": "verified_user",
+            },
+        )[-1],
+    )
+    ap._start_verify_inbox("a1")
+    _pump_until(qapp, lambda: not win.workers.is_running("verify_inbox_a1"), timeout=4.0)
+    qapp.processEvents()
+
+    assert live_acc.inbox_verified is True
+    assert live_acc.username == "verified_user"
+    assert "tt-target-idc=useast2a" in secrets.get_account_cookie("a1")
+    assert card.inboxBadge.text() == tr("accounts.inbox_verified")
+    assert card.inboxBadge.level() == "success"
+    assert tr("accounts.cookies_cloud_ready", count=4) in card.authDetailLabel.text()
+
+
+def test_v110_content_page_timezone_visual_cloud_schedule_and_bare_deploy_confirm(
+    qapp: QApplication,
+    make_window,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    acc = AccountProfile(id="a1", name="Main", friends=["alice"])
+    state = AppState(
+        accounts=[acc],
+        mode="both",
+        timezone="Asia/Jakarta",
+        local_times=["08:00"],
+        cloud_times=["08:00"],
+        cloud_cron="0 1 * * *",
+        github_private=True,
+        github_repo_name="my-streak",
+        video_enabled=False,
+        photo_enabled=False,
+    )
+    win, _store, secrets, _mem, _tmp = make_window(state=state, smoke_test=True)
+    secrets.set_account_cookie("a1", "sessionid=bare_deploy_sid")
+    secrets.set_github_token("ghp_v110_token_12345")
+
+    cp = win.content_interface
+    cp.refresh_from_state()
+    qapp.processEvents()
+
+    # Raw cron drawer collapsed by default & delay note visible
+    assert cp.rawCronContainer.isHidden() is True
+    assert cp.cloudDelayNote.text() == tr("schedule.cloud_delay_note")
+    assert cp.cloudTimesList.count() == 1
+    assert "08:00 WIB" in cp.cloudTimesList.item(0).text()
+
+    # Visual cloudTimePicker add + remove
+    cp.cloudTimePicker.setTime(QTime(20, 30))
+    cp.addCloudTimeBtn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["08:00", "20:30"]
+    assert win.state.cloud_cron == "0 1 * * *\n30 13 * * *"
+    assert cp.cloudTimesList.count() == 2
+
+    cp.cloudTimesList.setCurrentRow(0)
+    cp.removeCloudTimeBtn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["20:30"]
+    assert win.state.cloud_cron == "30 13 * * *"
+
+    # Quick-fill off-peak presets
+    cp.preset2Btn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["08:15", "20:15"]
+    assert win.state.cloud_cron == "15 1,13 * * *"
+    assert "08:15, 20:15 WIB" in cp.cronSummaryLabel.text()
+
+    cp.preset3Btn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["08:15", "14:15", "20:15"]
+    assert win.state.cloud_cron == "15 1,7,13 * * *"
+
+    cp.preset1Btn.click()
+    qapp.processEvents()
+    assert win.state.cloud_times == ["08:15"]
+    assert win.state.cloud_cron == "15 1 * * *"
+
+    # Timezone switch updates labels, lists, summary, and non-dirty raw cron
+    idx_utc = cp.timezoneCombo.findData("UTC")
+    assert idx_utc >= 0
+    cp.timezoneCombo.setCurrentIndex(idx_utc)
+    qapp.processEvents()
+    assert win.state.timezone == "UTC"
+    assert "UTC" in cp.localTimesLabel.text()
+    assert "UTC" in cp.cloudTimeLabel.text()
+    assert "08:15 UTC" in cp.cloudTimesList.item(0).text()
+    assert win.state.cloud_cron == "15 8 * * *"
+
+    # Raw cron toggle expands customCronEdit and edits mark custom cron dirty
+    cp.rawCronToggleBtn.click()
+    qapp.processEvents()
+    assert cp.rawCronContainer.isHidden() is False
+    cp.customCronEdit.setText("15 2 * * *; 45 14 * * *")
+    qapp.processEvents()
+    assert cp._custom_cron_dirty is True
+    assert win.state.cloud_cron == "15 2 * * *\n45 14 * * *"
+
+    # Bare-session deploy confirmation: Cancel aborts before GitHub.whoami
+    whoami_calls: list[str] = []
+    deployed_crons: list[str] = []
+    monkeypatch.setattr(
+        "gui.pages.content_page.GitHub.whoami",
+        lambda self: (whoami_calls.append("whoami"), {"login": "octocat", "scopes_header_present": True, "scopes": ["repo", "workflow"]})[-1],
+    )
+    monkeypatch.setattr(
+        "gui.pages.content_page.GitHub.create_private_repo_with_bot",
+        lambda self, owner, repo_name, source_dir=None, cron_expr=None, progress_cb=None: (
+            deployed_crons.append(str(cron_expr)),
+            {"full_name": f"{owner}/{repo_name}", "html_url": f"https://github.com/{owner}/{repo_name}"},
+        )[-1],
+    )
+    monkeypatch.setattr(
+        "gui.pages.content_page.GitHub.sync_secrets",
+        lambda self, full_name, desired, managed_names=None: {"written": list(desired.keys()), "deleted": []},
+    )
+
+    monkeypatch.setattr("gui.pages.content_page.MessageBox.exec", lambda self: 0)
+    cp.deployBtn.click()
+    qapp.processEvents()
+    assert whoami_calls == []
+
+    # Continue proceeds and passes multi-line cron_expr
+    monkeypatch.setattr("gui.pages.content_page.MessageBox.exec", lambda self: 1)
+    cp.deployBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("deploy_github"), timeout=4.0)
+    qapp.processEvents()
+    assert whoami_calls == ["whoami"]
+    assert deployed_crons == ["15 2 * * *\n45 14 * * *"]
+
+
+def test_v110_settings_timezone_runpage_timestamps_i18n_and_layout_bounds(
+    qapp: QApplication,
+    make_window,
+):
+    from gui.services.i18n import TRANSLATIONS
+
+    acc = AccountProfile(id="a1", name="Main", friends=["alice"])
+    state = AppState(
+        multi_account=True,
+        accounts=[acc],
+        mode="both",
+        timezone="Asia/Jakarta",
+        github_login="octocat",
+        github_repo_name="my-streak",
+    )
+    win, _store, secrets, _mem, _tmp = make_window(state=state, smoke_test=True)
+    secrets.set_account_cookie("a1", "sessionid=sid_ok; tt-target-idc=useast2a")
+    secrets.set_github_token("ghp_tok_12345")
+
+    sp = win.settings_interface
+    cp = win.content_interface
+    rp = win.run_interface
+
+    assert sp.timezoneCard.minimumSizeHint().width() <= 585
+
+    rp._populate_runs_table([
+        {
+            "id": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "event": "schedule",
+            "created_at": "2026-11-18T01:05:00Z",
+        }
+    ])
+    qapp.processEvents()
+    assert rp.runsTable.item(0, 3).text() == "2026-11-18 08:05 WIB"
+
+    # Changing timezone in SettingsPage syncs RunPage timestamps and ContentPage combo
+    idx_ny = sp.timezoneCombo.findData("America/New_York")
+    assert idx_ny >= 0
+    sp.timezoneCombo.setCurrentIndex(idx_ny)
+    qapp.processEvents()
+    assert win.state.timezone == "America/New_York"
+
+    rp.refresh_from_state()
+    cp.refresh_from_state()
+    qapp.processEvents()
+    assert rp.runsTable.item(0, 3).text() == "2026-11-17 20:05 ET"
+    assert cp.timezoneCombo.currentData() == "America/New_York"
+
+    # Layout geometry check at 860x620 and 1080x760 (offscreen fallback font is wider on Home/Accounts)
+    win.show()
+    for w, h in ((860, 620), (1080, 760)):
+        win.resize(w, h)
+        qapp.processEvents()
+        for route, page in (("content", cp), ("settings", sp)):
+            win.navigate_to(route)
+            qapp.processEvents()
+            assert page.horizontalScrollBar().maximum() == 0, f"{route} overflowed at {w}x{h}"
+        if w >= 1080:
+            win.navigate_to("run")
+            qapp.processEvents()
+            assert rp.horizontalScrollBar().maximum() == 0, f"run overflowed at {w}x{h}"
+        assert cp.view.minimumSizeHint().width() <= 840
+        assert sp.timezoneCard.minimumSizeHint().width() <= 585
+        assert rp.openRunBtn.geometry().right() <= rp.cloudCard.width()
+
+    # Programmatic i18n parity check (EN == ID keys)
+    assert set(TRANSLATIONS["en"].keys()) == set(TRANSLATIONS["id"].keys())
+
 
 
 
