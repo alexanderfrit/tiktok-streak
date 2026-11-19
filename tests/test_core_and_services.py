@@ -344,6 +344,75 @@ class TestSrcBrowser:
                 authenticate_session(mock_browser, "sid", "BizAcc")
             mock_dump.assert_called_once()
 
+    def test_authenticate_session_cdp_cleanup_selective_httponly_host_prefix_and_hydration(self, monkeypatch):
+        from src.browser import authenticate_session
+        from src.exceptions import SessionExpiredError
+
+        monkeypatch.delenv("TIKTOK_COOKIES", raising=False)
+        mock_browser = MagicMock()
+        mock_browser.current_url = "https://www.tiktok.com/messages?lang=en"
+        added_cookies: list[dict] = []
+        mock_browser.add_cookie.side_effect = lambda c: added_cookies.append(dict(c))
+
+        payload = (
+            "sessionid=sid_val; msToken=ms_val; store-idc=alisg; "
+            "__Host-csrf=host_tok; sid_guard=guard_val"
+        )
+        with patch("time.sleep", return_value=None):
+            authenticate_session(mock_browser, payload, "HydratedAcc")
+
+        # CDP cookie + storage cleanup and localStorage/sessionStorage clear
+        mock_browser.execute_cdp_cmd.assert_any_call("Network.clearBrowserCookies", {})
+        mock_browser.execute_cdp_cmd.assert_any_call(
+            "Storage.clearDataForOrigin",
+            {"origin": "https://www.tiktok.com", "storageTypes": "all"},
+        )
+        script = mock_browser.execute_script.call_args.args[0]
+        assert "localStorage.clear();" in script
+        assert "sessionStorage.clear();" in script
+
+        by_name = {c["name"]: c for c in added_cookies}
+        # Selective httpOnly: auth cookies True, JS-readable regional/token cookies False
+        assert by_name["sessionid"]["httpOnly"] is True
+        assert by_name["sid_guard"]["httpOnly"] is True
+        assert by_name["msToken"]["httpOnly"] is False
+        assert by_name["store-idc"]["httpOnly"] is False
+        # __Host- cookies omit domain attribute; standard cookies include .tiktok.com
+        assert "domain" not in by_name["__Host-csrf"]
+        assert by_name["sessionid"]["domain"] == ".tiktok.com"
+
+        # Best-effort runtime hydration for bare sessionid without regional cookies
+        added_cookies.clear()
+        with patch("time.sleep", return_value=None), \
+             patch(
+                 "gui.services.tiktok_auth.check_session_api",
+                 return_value={
+                     "ok": True,
+                     "cookie_text": "sessionid=hydrated_should_not_override; tt-target-idc=useast2a; store-idc=useast2a",
+                 },
+             ) as mock_api:
+            authenticate_session(mock_browser, "sessionid=bare_sid; ttwid=tw_orig", "BareAcc")
+        mock_api.assert_called_once()
+        hydrated_by_name = {c["name"]: c for c in added_cookies}
+        assert hydrated_by_name["sessionid"]["value"] == "bare_sid"
+        assert hydrated_by_name["tt-target-idc"]["value"] == "useast2a"
+        assert hydrated_by_name["store-idc"]["value"] == "useast2a"
+
+        # Hydration failure is swallowed gracefully and /login without regional cookies gives actionable error
+        mock_browser.current_url = "https://www.tiktok.com/login"
+        with patch("time.sleep", return_value=None), \
+             patch("src.browser.dump_debug_diagnostics"), \
+             patch("gui.services.tiktok_auth.check_session_api", side_effect=RuntimeError("network down")):
+            with pytest.raises(SessionExpiredError, match="tt-target-idc / store-idc"):
+                authenticate_session(mock_browser, "sessionid=bare_sid", "BareExpired")
+
+        # /login WITH regional cookies raises standard SessionExpiredError without missing-regional tip
+        with patch("time.sleep", return_value=None), \
+             patch("src.browser.dump_debug_diagnostics"):
+            with pytest.raises(SessionExpiredError) as exc_info:
+                authenticate_session(mock_browser, "sessionid=sid_ok; tt-target-idc=useast2a", "RegionalExpired")
+            assert "tt-target-idc / store-idc" not in str(exc_info.value)
+
 
 # ===========================================================================
 # 4. src/actions.py & main.py
@@ -469,6 +538,81 @@ class TestActionsAndMain:
                 main.cli_main(["--headful", "--only-account", "Primary", "--only-friend", "bob"])
             assert exc_info.value.code == 1
             mock_run.assert_called_once_with(headless=False, only_account="Primary", only_friend="bob")
+
+    def test_main_run_multi_account_browser_isolation_and_rate_limit(self):
+        import main
+        from src.config import AccountConfig
+        from src.exceptions import RateLimitError, SessionExpiredError
+
+        acc1 = AccountConfig(name="A1", session_id="s1", friends=["f1"], video_url="", share_times=0, photo_path="")
+        acc2 = AccountConfig(name="A2", session_id="s2", friends=["f2"], video_url="", share_times=0, photo_path="")
+
+        # 1) Normal multi-account run creates and quits a fresh browser per account
+        b1, b2 = MagicMock(), MagicMock()
+        browsers = iter([b1, b2])
+        call_log: list[str] = []
+
+        def fake_init(headless=None):
+            b = next(browsers)
+            call_log.append(f"init:{'b1' if b is b1 else 'b2'}")
+            return b, MagicMock()
+
+        b1.quit.side_effect = lambda: call_log.append("quit:b1")
+        b2.quit.side_effect = lambda: call_log.append("quit:b2")
+
+        with patch("main.init_browser", side_effect=fake_init), \
+             patch("main.install_ws_hook") as mock_ws, \
+             patch("main.install_media_guard") as mock_mg, \
+             patch("main.authenticate_session") as mock_auth, \
+             patch("main.send_streak_message", return_value={"friend": "f1", "sent": True, "error": None}), \
+             patch("main.notify_streak_summary"), \
+             patch("time.sleep", return_value=None):
+            res = main.run(accounts_override=[acc1, acc2], headless=True)
+
+        assert res["ok"] is True
+        assert call_log == ["init:b1", "quit:b1", "init:b2", "quit:b2"]
+        assert mock_ws.call_count == 2
+        assert mock_mg.call_count == 2
+        assert mock_auth.call_args_list[0].args[0] is b1
+        assert mock_auth.call_args_list[1].args[0] is b2
+        b1.quit.assert_called_once()
+        b2.quit.assert_called_once()
+
+        # 2) Auth failure on A1 still quits b1 cleanly before starting b2 for A2
+        b1_err, b2_ok = MagicMock(), MagicMock()
+        with patch("main.init_browser", side_effect=[(b1_err, MagicMock()), (b2_ok, MagicMock())]), \
+             patch("main.install_ws_hook"), \
+             patch("main.install_media_guard"), \
+             patch("main.authenticate_session", side_effect=[SessionExpiredError("expired"), None]), \
+             patch("main.send_streak_message", return_value={"friend": "f2", "sent": True, "error": None}), \
+             patch("main.notify_telegram"), \
+             patch("main.notify_streak_summary"), \
+             patch("time.sleep", return_value=None):
+            res_auth_err = main.run(accounts_override=[acc1, acc2], headless=True)
+
+        assert res_auth_err["ok"] is False
+        assert res_auth_err["critical_failure"] is True
+        assert len(res_auth_err["results"]) == 2
+        b1_err.quit.assert_called_once()
+        b2_ok.quit.assert_called_once()
+
+        # 3) RateLimitError on A1 quits b1 exactly once and halts before A2
+        b1_rl = MagicMock()
+        with patch("main.init_browser", return_value=(b1_rl, MagicMock())) as mock_init_rl, \
+             patch("main.install_ws_hook"), \
+             patch("main.install_media_guard"), \
+             patch("main.authenticate_session"), \
+             patch("main.send_streak_message", side_effect=RateLimitError("Too fast")), \
+             patch("main.notify_telegram"), \
+             patch("main.notify_streak_summary"), \
+             patch("time.sleep", return_value=None):
+            res_rl = main.run(accounts_override=[acc1, acc2], headless=True)
+
+        assert res_rl["ok"] is False
+        assert res_rl["critical_failure"] is True
+        assert len(res_rl["results"]) == 1
+        assert mock_init_rl.call_count == 1
+        b1_rl.quit.assert_called_once()
 
 
 # ===========================================================================
@@ -601,6 +745,49 @@ class TestStorageService:
 
         store.reset()
         assert store.exists() is False
+
+    def test_appstate_timezone_and_cloud_times_migration(self, tmp_path):
+        from gui.services.storage import AppState, ConfigStore
+
+        # Legacy payload without timezone/cloud_times migrates from cloud_cron
+        legacy = {
+            "cloud_cron": "15 1,13 * * *",
+            "local_times": ["08:15", "20:15"],
+        }
+        migrated = AppState.from_dict(legacy)
+        assert migrated.cloud_cron == "15 1,13 * * *"
+        # Unknown/invalid timezone falls back to Asia/Jakarta
+        migrated_explicit_tz = AppState.from_dict({
+            "timezone": "Asia/Jakarta",
+            "cloud_cron": "15 1,13 * * *",
+        })
+        assert migrated_explicit_tz.timezone == "Asia/Jakarta"
+        assert migrated_explicit_tz.cloud_times == ["08:15", "20:15"]
+
+        # Non-WIB timezone migration (America/New_York UTC-5: 01:15 UTC -> 20:15, 13:15 UTC -> 08:15)
+        migrated_ny = AppState.from_dict({
+            "timezone": "America/New_York",
+            "cloud_cron": "15 1,13 * * *",
+        })
+        assert migrated_ny.timezone == "America/New_York"
+        assert migrated_ny.cloud_times == ["08:15", "20:15"]
+
+        # Explicit cloud_times deduplicated & validated, invalid entries dropped
+        explicit = AppState.from_dict({
+            "timezone": "Asia/Tokyo",
+            "cloud_times": ["8:5", "08:05", "bad", "21:30"],
+            "cloud_cron": "5 23 * * *\n30 12 * * *",
+        })
+        assert explicit.timezone == "Asia/Tokyo"
+        assert explicit.cloud_times == ["08:05", "21:30"]
+
+        # Roundtrip via ConfigStore
+        store = ConfigStore(tmp_path / "tz_cfg")
+        store.save(explicit)
+        loaded = store.load()
+        assert loaded.timezone == "Asia/Tokyo"
+        assert loaded.cloud_times == ["08:05", "21:30"]
+        assert loaded.cloud_cron == "5 23 * * *\n30 12 * * *"
 
     def test_secret_store_keyring_dpapi_fallback_and_clear_all(self, tmp_path, monkeypatch):
         from gui.services.storage import SecretStore
@@ -847,6 +1034,63 @@ class TestValidatorsService:
 
         assert cron_to_wib_summary("0 1,13 * * *", lang="en") == "Daily at 08:00, 20:00 WIB"
         assert cron_to_wib_summary("30 19 * * *", lang="id") == "Setiap hari pukul 02:30 WIB"
+
+    def test_timezone_presets_multi_cron_and_timestamp_formatting(self):
+        from datetime import datetime, timedelta, timezone
+        from gui.services.validators import (
+            TIMEZONE_CHOICES,
+            crons_to_local_times,
+            detect_local_timezone,
+            format_schedule_summary,
+            format_utc_timestamp,
+            get_timezone_info,
+            times_to_utc_crons,
+        )
+
+        assert len(TIMEZONE_CHOICES) >= 20
+        assert get_timezone_info("asia/tokyo")["short"] == "JST"
+        assert get_timezone_info("unknown/zone")["id"] == "Asia/Jakarta"
+
+        # detect_local_timezone matches matching offset and falls back on unusual offset
+        with patch("gui.services.validators.datetime") as mock_dt:
+            mock_dt.now.return_value.astimezone.return_value.utcoffset.return_value = timedelta(hours=9)
+            assert detect_local_timezone() == "Asia/Jayapura"
+            mock_dt.now.return_value.astimezone.return_value.utcoffset.return_value = timedelta(hours=-5)
+            assert detect_local_timezone() == "America/New_York"
+            mock_dt.now.return_value.astimezone.return_value.utcoffset.return_value = timedelta(hours=3, minutes=45)
+            assert detect_local_timezone() == "Asia/Jakarta"
+
+        # times_to_utc_crons: same minute grouped, mixed minutes produce multiple sorted crons
+        assert times_to_utc_crons(["08:15", "20:15"], "Asia/Jakarta") == ["15 1,13 * * *"]
+        assert times_to_utc_crons(["08:00", "20:30"], "Asia/Jakarta") == [
+            "0 1 * * *",
+            "30 13 * * *",
+        ]
+        # Non-WIB offsets: IST (+05:30) and ET (-05:00) with midnight wraparound
+        assert times_to_utc_crons(["06:00", "22:00"], "Asia/Kolkata") == ["30 0,16 * * *"]
+        assert times_to_utc_crons(["21:15", "08:15"], "America/New_York") == ["15 2,13 * * *"]
+        assert times_to_utc_crons("00:00", "UTC") == ["0 0 * * *"]
+        with pytest.raises(ValueError):
+            times_to_utc_crons([], "UTC")
+
+        # crons_to_local_times roundtrip
+        assert crons_to_local_times(["0 1 * * *", "30 13 * * *"], "Asia/Jakarta") == ["08:00", "20:30"]
+        assert crons_to_local_times("30 0,16 * * *", "Asia/Kolkata") == ["06:00", "22:00"]
+        assert crons_to_local_times("*/15 * * * *", "UTC") == []
+
+        # format_schedule_summary
+        assert format_schedule_summary(["15 1,13 * * *"], "Asia/Jakarta", "en") == "Daily at 08:15, 20:15 WIB (01:15, 13:15 UTC)"
+        assert format_schedule_summary(["0 1 * * *", "30 13 * * *"], "Asia/Jakarta", "id") == "Setiap hari pukul 08:00, 20:30 WIB (01:00, 13:30 UTC)"
+        assert format_schedule_summary(["15 8 * * *"], "UTC", "en") == "Daily at 08:15 UTC"
+        assert format_schedule_summary("*/30 * * * *", "Asia/Jakarta", "en") == "Cron UTC: */30 * * * *"
+        assert format_schedule_summary("", "Asia/Jakarta", "id") == "Jadwal tidak valid"
+
+        # format_utc_timestamp
+        assert format_utc_timestamp("") == ""
+        assert format_utc_timestamp("not-a-date") == "not-a-date"
+        assert format_utc_timestamp("2026-11-18T01:05:00Z", "Asia/Jakarta") == "2026-11-18 08:05 WIB"
+        assert format_utc_timestamp("2026-11-18T01:05:00+00:00", "Asia/Tokyo") == "2026-11-18 10:05 JST"
+        assert format_utc_timestamp("2026-11-18T01:05:00Z", "America/New_York") == "2026-11-17 20:05 ET"
 
 
 # ===========================================================================
@@ -1292,6 +1536,122 @@ class TestTikTokAuthService:
             res_exp = verify_inbox_headless("sessionid=abc")
         assert res_exp["ok"] is False and res_exp["session_expired"] is True
 
+    def test_cloud_cookie_readiness_and_set_cookie_hydration(self):
+        from gui.services.tiktok_auth import check_cloud_cookie_readiness, check_session_api
+
+        # Bare 3-key session vs full regional cookies
+        bare = check_cloud_cookie_readiness("sessionid=s1; sessionid_ss=s1; sid_tt=s1")
+        assert bare["cloud_ready"] is False
+        assert bare["is_bare_session"] is True
+        assert bare["has_regional"] is False
+        assert bare["count"] == 3
+        assert bare["missing_regional"] == ["tt-target-idc", "store-idc"]
+
+        regional = check_cloud_cookie_readiness("sessionid=s1; tt-target-idc=useast2a; ttwid=tw1")
+        assert regional["cloud_ready"] is True
+        assert regional["is_bare_session"] is False
+        assert regional["has_regional"] is True
+        assert regional["missing_regional"] == ["store-idc"]
+
+        many_without_regional = check_cloud_cookie_readiness(
+            "sessionid=s1; ttwid=t; odin_tt=o; uid_tt=u; msToken=m"
+        )
+        assert many_without_regional["cloud_ready"] is False
+        assert many_without_regional["is_bare_session"] is False
+
+        # check_session_api hydrates Set-Cookie headers (and skips deleted / Max-Age=0)
+        class _HeadersWithGetAll:
+            def get_all(self, name):
+                if name.lower() == "set-cookie":
+                    return [
+                        "tt-target-idc=alisg; Path=/; Domain=.tiktok.com",
+                        "store-idc=alisg; Path=/; HttpOnly",
+                        "sid_guard=guard123; Path=/; Max-Age=3600",
+                        "old_cookie=deleted; Path=/",
+                        "zero_age=skipme; Max-Age=0; Path=/",
+                    ]
+                return []
+
+        resp = _FakeHTTPResponse(
+            {"data": {"username": "hydrated_user", "user_id_str": "77"}},
+            headers=_HeadersWithGetAll(),
+        )
+        with patch("urllib.request.urlopen", return_value=resp):
+            res = check_session_api("sessionid=bare_sid")
+        assert res["ok"] is True
+        assert res["cloud_ready"] is True
+        assert res["cookie_count"] >= 4
+        assert "tt-target-idc=alisg" in res["cookie_text"]
+        assert "store-idc=alisg" in res["cookie_text"]
+        assert "sid_guard=guard123" in res["cookie_text"]
+        assert "old_cookie" not in res["cookie_text"]
+        assert "zero_age" not in res["cookie_text"]
+
+    def test_verify_inbox_headless_captcha_status_cb_and_cookie_harvest(self):
+        from gui.services.tiktok_auth import verify_inbox_headless
+
+        # 1) Captcha detection returns captcha_detected=True
+        statuses_cap: list[str] = []
+        browser_cap = MagicMock()
+        browser_cap.current_url = "https://www.tiktok.com/messages?lang=en"
+        browser_cap.execute_script.return_value = {"inbox": False, "captcha": True}
+        with patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "cap_user", "cookie_text": "sessionid=abc"}), \
+             patch("src.browser.init_browser", return_value=(browser_cap, MagicMock())), \
+             patch("src.browser.authenticate_session"):
+            res_cap = verify_inbox_headless("sessionid=abc", status_cb=statuses_cap.append)
+        assert res_cap["ok"] is False
+        assert res_cap["captcha_detected"] is True
+        assert res_cap["inbox_verified"] is False
+        assert res_cap["username"] == "cap_user"
+        assert any("Verifying /messages inbox" in s for s in statuses_cap)
+        browser_cap.quit.assert_called_once()
+
+        # 2) CDP Network.getAllCookies harvesting upgrades bare cookies -> cloud_ready=True
+        statuses_ok: list[str] = []
+        browser_cdp = MagicMock()
+        browser_cdp.current_url = "https://www.tiktok.com/messages?lang=en"
+        browser_cdp.execute_script.return_value = {"inbox": True, "captcha": False}
+        browser_cdp.execute_cdp_cmd.return_value = {
+            "cookies": [
+                {"name": "sessionid", "value": "abc", "domain": ".tiktok.com"},
+                {"name": "tt-target-idc", "value": "useast2a", "domain": ".tiktok.com"},
+                {"name": "store-idc", "value": "useast2a", "domain": ".tiktok.com"},
+                {"name": "msToken", "value": "ms_xyz", "domain": "www.tiktok.com"},
+                {"name": "ignored", "value": "nope", "domain": "example.com"},
+            ]
+        }
+        with patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "alice", "cookie_text": "sessionid=abc"}), \
+             patch("src.browser.init_browser", return_value=(browser_cdp, MagicMock())), \
+             patch("src.browser.authenticate_session"):
+            res_cdp = verify_inbox_headless("sessionid=abc", status_cb=statuses_ok.append)
+        assert res_cdp["ok"] is True
+        assert res_cdp["inbox_verified"] is True
+        assert res_cdp["cloud_ready"] is True
+        assert res_cdp["cookie_count"] == 4
+        assert "tt-target-idc=useast2a" in res_cdp["upgraded_cookie_text"]
+        assert "store-idc=useast2a" in res_cdp["upgraded_cookie_text"]
+        assert "ignored=" not in res_cdp["upgraded_cookie_text"]
+        assert any("Collecting full session cookies" in s for s in statuses_ok)
+        browser_cdp.quit.assert_called_once()
+
+        # 3) Fallback to browser.get_cookies() when CDP Network.getAllCookies fails
+        browser_fb = MagicMock()
+        browser_fb.current_url = "https://www.tiktok.com/messages"
+        browser_fb.execute_script.return_value = {"inbox": True, "captcha": False}
+        browser_fb.execute_cdp_cmd.side_effect = RuntimeError("cdp disabled")
+        browser_fb.get_cookies.return_value = [
+            {"name": "sessionid", "value": "abc", "domain": ".tiktok.com"},
+            {"name": "tt-target-idc", "value": "alisg", "domain": ".tiktok.com"},
+        ]
+        with patch("gui.services.tiktok_auth.check_session_api", return_value={"ok": True, "username": "bob", "cookie_text": "sessionid=abc"}), \
+             patch("src.browser.init_browser", return_value=(browser_fb, MagicMock())), \
+             patch("src.browser.authenticate_session"):
+            res_fb = verify_inbox_headless("sessionid=abc")
+        assert res_fb["ok"] is True
+        assert res_fb["cloud_ready"] is True
+        assert "tt-target-idc=alisg" in res_fb["upgraded_cookie_text"]
+        browser_fb.quit.assert_called_once()
+
 
 # ===========================================================================
 # 10. gui/services/github_api.py
@@ -1651,6 +2011,65 @@ class TestGitHubApiService:
             with pytest.raises(GitHubError) as exc_info:
                 gh.create_private_repo_with_bot("alice", "no-wf", push_files=False)
             assert exc_info.value.status_code == 404
+
+    def test_multi_cron_extract_and_rewrite_under_schedule(self):
+        from gui.services.github_api import (
+            GitHub,
+            GitHubError,
+            _extract_workflow_cron_text,
+            _rewrite_workflow_cron_text,
+        )
+
+        yaml_1 = (
+            "name: TikTok Streak\n"
+            "on:\n"
+            "  schedule:\n"
+            "    - cron: '0 1 * * *' # morning\n"
+            "  workflow_dispatch:\n"
+            "jobs:\n"
+            "  run:\n"
+            "    runs-on: ubuntu-latest\n"
+        )
+        assert _extract_workflow_cron_text(yaml_1) == "0 1 * * *"
+
+        # 1 -> 2 crons
+        yaml_2 = _rewrite_workflow_cron_text(yaml_1, ["15 1 * * *", "30 13 * * *"])
+        assert _extract_workflow_cron_text(yaml_2) == "15 1 * * *\n30 13 * * *"
+        assert "  workflow_dispatch:\n" in yaml_2
+
+        # 2 -> 1 cron removes extra line cleanly
+        yaml_back = _rewrite_workflow_cron_text(yaml_2, "45 2 * * *")
+        assert _extract_workflow_cron_text(yaml_back) == "45 2 * * *"
+        assert yaml_back.count("- cron:") == 1
+
+        # Ignores commented cron lines & preserves CRLF
+        yaml_crlf = "on:\r\n  schedule:\r\n    # - cron: '9 9 * * *'\r\n    - cron: '0 1 * * *'\r\n    - cron: '30 13 * * *'\r\n  workflow_dispatch:\r\n"
+        assert _extract_workflow_cron_text(yaml_crlf) == "0 1 * * *\n30 13 * * *"
+        rewritten_crlf = _rewrite_workflow_cron_text(yaml_crlf, "15 2 * * *\n45 14 * * *")
+        assert "\r\n" in rewritten_crlf
+        assert _extract_workflow_cron_text(rewritten_crlf) == "15 2 * * *\n45 14 * * *"
+
+        # Invalid cron raises GitHubError
+        with pytest.raises(GitHubError):
+            _rewrite_workflow_cron_text(yaml_1, "0 1 * *\n")
+
+        # GitHub.update_workflow_cron accepts multi-line cron string
+        gh = GitHub("tok")
+        b64_yaml = base64.b64encode(yaml_1.encode("utf-8")).decode("ascii")
+
+        def fake_req(method, path, body=None, api=None):
+            if method == "GET" and "/contents/" in path:
+                return {"content": b64_yaml, "sha": "wf_sha"}
+            if method == "GET" and path == "/repos/alice/my-repo":
+                return {"default_branch": "main"}
+            if method == "PUT" and "/contents/" in path:
+                return {"sent_body": body}
+            return {}
+
+        with patch.object(gh, "_req", side_effect=fake_req):
+            put_res = gh.update_workflow_cron("alice/my-repo", "0 1 * * *\n30 13 * * *")
+        decoded = base64.b64decode(put_res["sent_body"]["content"]).decode("utf-8")
+        assert _extract_workflow_cron_text(decoded) == "0 1 * * *\n30 13 * * *"
 
 
 # ===========================================================================
