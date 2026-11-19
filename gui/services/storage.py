@@ -16,7 +16,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from gui.services.validators import export_friends_csv, import_friends_csv, normalize_friends
+from gui.services.validators import (
+    _parse_hhmm,
+    crons_to_local_times,
+    detect_local_timezone,
+    export_friends_csv,
+    get_timezone_info,
+    import_friends_csv,
+    normalize_friends,
+)
 
 logger = logging.getLogger("tiktok-streak")
 
@@ -161,7 +169,9 @@ class AppState:
     photo_path: str = ""
     daily_cap: int = 0
     headless_local: bool = True
+    timezone: str = field(default_factory=detect_local_timezone)
     local_times: list[str] = field(default_factory=lambda: ["08:00"])
+    cloud_times: list[str] = field(default_factory=lambda: ["08:00"])
     cloud_cron: str = "0 1 * * *"
     github_login: str = ""
     github_repo_name: str = "tiktok-streak"
@@ -195,6 +205,33 @@ class AppState:
             local_times = [t.strip() for t in raw_times.split(",") if t.strip()] or ["08:00"]
         else:
             local_times = ["08:00"]
+
+        raw_tz = str(data.get("timezone") or "").strip()
+        resolved_tz = get_timezone_info(raw_tz or detect_local_timezone())["id"]
+
+        cloud_cron = str(data.get("cloud_cron") or "0 1 * * *").strip() or "0 1 * * *"
+
+        raw_cloud_times = data.get("cloud_times")
+        if isinstance(raw_cloud_times, list):
+            cloud_candidates = [str(t).strip() for t in raw_cloud_times if str(t).strip()]
+        elif isinstance(raw_cloud_times, str) and raw_cloud_times.strip():
+            cloud_candidates = [t.strip() for t in raw_cloud_times.split(",") if t.strip()]
+        else:
+            cloud_candidates = []
+
+        cloud_times: list[str] = []
+        seen_cloud: set[str] = set()
+        for item in cloud_candidates:
+            try:
+                hh, mm = _parse_hhmm(item)
+            except ValueError:
+                continue
+            norm = f"{hh:02d}:{mm:02d}"
+            if norm not in seen_cloud:
+                seen_cloud.add(norm)
+                cloud_times.append(norm)
+        if not cloud_times:
+            cloud_times = crons_to_local_times(cloud_cron, tz_id=resolved_tz) or ["08:00"]
 
         try:
             share_times = max(0, int(data.get("share_times", 2)))
@@ -237,8 +274,10 @@ class AppState:
             photo_path=str(data.get("photo_path") or ""),
             daily_cap=daily_cap,
             headless_local=bool(data.get("headless_local", True)),
+            timezone=resolved_tz,
             local_times=local_times,
-            cloud_cron=str(data.get("cloud_cron") or "0 1 * * *").strip() or "0 1 * * *",
+            cloud_times=cloud_times,
+            cloud_cron=cloud_cron,
             github_login=str(data.get("github_login") or "").strip(),
             github_repo_name=str(data.get("github_repo_name") or "tiktok-streak").strip() or "tiktok-streak",
             github_private=bool(data.get("github_private", True)),

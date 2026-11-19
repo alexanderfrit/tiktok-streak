@@ -2,14 +2,19 @@ name: TikTok Daily Streak
 
 on:
   schedule:
-    # Schedule uses UTC time (UTC = WIB - 7 hours)
+    # Schedule uses UTC time (UTC = local time - timezone offset).
+    # Note: GitHub Actions scheduled workflows share a best-effort queue and are
+    # often delayed 15 minutes to 1-4+ hours during peak load (especially at :00).
+    # Off-peak minutes (e.g. :15 or :17) are recommended; use the Local PC
+    # Task Scheduler if you require exact-minute execution.
     # Examples:
-    #   Once a day at 08:00 WIB (01:00 UTC):
-    #     - cron: '0 1 * * *'
-    #   Twice a day at 08:00 and 20:00 WIB (01:00 and 13:00 UTC):
-    #     - cron: '0 1,13 * * *'
-    #   Three times a day at 08:00, 14:00, and 20:00 WIB (01:00, 07:00, 13:00 UTC):
-    #     - cron: '0 1,7,13 * * *'
+    #   Once a day at 08:15 WIB / UTC+7 (01:15 UTC):
+    #     - cron: '15 1 * * *'
+    #   Twice a day at 08:15 and 20:15 WIB / UTC+7 (01:15 and 13:15 UTC):
+    #     - cron: '15 1,13 * * *'
+    #   Mixed minutes (e.g. 08:17 and 20:35 WIB / UTC+7) use multiple - cron lines:
+    #     - cron: '17 1 * * *'
+    #     - cron: '35 13 * * *'
     - cron: '0 1 * * *'
   workflow_dispatch:
 
