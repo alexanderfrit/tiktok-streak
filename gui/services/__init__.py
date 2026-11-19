@@ -59,6 +59,7 @@ from gui.services.storage import (
     import_local_workspace,
     redact_secrets,
 )
+from gui.services import tiktok_auth as _tiktok_auth
 from gui.services.tiktok_auth import (
     check_session_api,
     extract_session_summary,
@@ -67,17 +68,27 @@ from gui.services.tiktok_auth import (
     verify_inbox_headless,
 )
 from gui.services.validators import (
+    TIMEZONE_CHOICES,
     cron_to_wib_summary,
+    crons_to_local_times,
+    detect_local_timezone,
     export_friends_csv,
+    format_schedule_summary,
+    format_utc_timestamp,
+    get_timezone_info,
     import_friends_csv,
     normalize_friends,
     parse_aweme_id,
     prepare_photo_secret,
     times_to_utc_cron,
+    times_to_utc_crons,
     validate_repo_name,
     validate_telegram_token,
     validate_video_url,
 )
+
+if hasattr(_tiktok_auth, "check_cloud_cookie_readiness"):
+    check_cloud_cookie_readiness = _tiktok_auth.check_cloud_cookie_readiness
 
 __all__ = [
     # i18n
@@ -102,13 +113,20 @@ __all__ = [
     "import_local_workspace",
     "redact_secrets",
     # validators
+    "TIMEZONE_CHOICES",
     "cron_to_wib_summary",
+    "crons_to_local_times",
+    "detect_local_timezone",
     "export_friends_csv",
+    "format_schedule_summary",
+    "format_utc_timestamp",
+    "get_timezone_info",
     "import_friends_csv",
     "normalize_friends",
     "parse_aweme_id",
     "prepare_photo_secret",
     "times_to_utc_cron",
+    "times_to_utc_crons",
     "validate_repo_name",
     "validate_telegram_token",
     "validate_video_url",
@@ -149,3 +167,6 @@ __all__ = [
     "remove_all_tasks",
     "sync_daily_tasks",
 ]
+
+if hasattr(_tiktok_auth, "check_cloud_cookie_readiness"):
+    __all__.append("check_cloud_cookie_readiness")

@@ -13,8 +13,9 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -377,11 +378,200 @@ def validate_telegram_token(token: str) -> dict:
     return {"valid": True, "ok": True, "token": cleaned, "bot_id": m.group(1), "error": None}
 
 
+TIMEZONE_CHOICES: tuple[dict[str, Any], ...] = (
+    {"id": "Asia/Jakarta", "short": "WIB", "label": "WIB — Jakarta / Western Indonesia (UTC+7)", "offset_minutes": 420},
+    {"id": "Asia/Makassar", "short": "WITA", "label": "WITA — Makassar / Central Indonesia (UTC+8)", "offset_minutes": 480},
+    {"id": "Asia/Jayapura", "short": "WIT", "label": "WIT — Jayapura / Eastern Indonesia (UTC+9)", "offset_minutes": 540},
+    {"id": "Asia/Singapore", "short": "SGT", "label": "SGT — Singapore (UTC+8)", "offset_minutes": 480},
+    {"id": "Asia/Kuala_Lumpur", "short": "MYT", "label": "MYT — Malaysia (UTC+8)", "offset_minutes": 480},
+    {"id": "Asia/Bangkok", "short": "ICT", "label": "ICT — Bangkok / Indochina (UTC+7)", "offset_minutes": 420},
+    {"id": "Asia/Manila", "short": "PHT", "label": "PHT — Manila (UTC+8)", "offset_minutes": 480},
+    {"id": "Asia/Tokyo", "short": "JST", "label": "JST — Tokyo (UTC+9)", "offset_minutes": 540},
+    {"id": "Asia/Seoul", "short": "KST", "label": "KST — Seoul (UTC+9)", "offset_minutes": 540},
+    {"id": "Asia/Kolkata", "short": "IST", "label": "IST — India (UTC+5:30)", "offset_minutes": 330},
+    {"id": "Asia/Dubai", "short": "GST", "label": "GST — Dubai (UTC+4)", "offset_minutes": 240},
+    {"id": "UTC", "short": "UTC", "label": "UTC — Coordinated Universal Time (UTC+0)", "offset_minutes": 0},
+    {"id": "Europe/London", "short": "GMT", "label": "GMT/BST — London (UTC+0)", "offset_minutes": 0},
+    {"id": "Europe/Berlin", "short": "CET", "label": "CET — Central Europe (UTC+1)", "offset_minutes": 60},
+    {"id": "America/New_York", "short": "ET", "label": "ET — US Eastern (UTC-5)", "offset_minutes": -300},
+    {"id": "America/Chicago", "short": "CT", "label": "CT — US Central (UTC-6)", "offset_minutes": -360},
+    {"id": "America/Denver", "short": "MT", "label": "MT — US Mountain (UTC-7)", "offset_minutes": -420},
+    {"id": "America/Los_Angeles", "short": "PT", "label": "PT — US Pacific (UTC-8)", "offset_minutes": -480},
+    {"id": "America/Sao_Paulo", "short": "BRT", "label": "BRT — Sao Paulo (UTC-3)", "offset_minutes": -180},
+    {"id": "Australia/Sydney", "short": "AEST", "label": "AEST — Sydney (UTC+10)", "offset_minutes": 600},
+    {"id": "Pacific/Auckland", "short": "NZST", "label": "NZST — Auckland (UTC+12)", "offset_minutes": 720},
+)
+
+_TIMEZONE_BY_ID: dict[str, dict[str, Any]] = {
+    tz["id"].lower(): tz for tz in TIMEZONE_CHOICES
+}
+_DEFAULT_TIMEZONE_INFO: dict[str, Any] = _TIMEZONE_BY_ID["asia/jakarta"]
+
+
+def get_timezone_info(tz_id: str | None) -> dict[str, Any]:
+    """Look up a timezone preset by ID (case-insensitively), defaulting to Asia/Jakarta."""
+    key = str(tz_id or "").strip().lower()
+    entry = _TIMEZONE_BY_ID.get(key, _DEFAULT_TIMEZONE_INFO)
+    return dict(entry)
+
+
+def detect_local_timezone() -> str:
+    """Detect the closest timezone preset ID from the host system UTC offset."""
+    try:
+        offset = datetime.now().astimezone().utcoffset()
+        if offset is None:
+            return "Asia/Jakarta"
+        offset_minutes = int(round(offset.total_seconds() / 60))
+    except Exception:
+        return "Asia/Jakarta"
+
+    for tz in TIMEZONE_CHOICES:
+        if tz["offset_minutes"] == offset_minutes:
+            return str(tz["id"])
+    return "Asia/Jakarta"
+
+
 def _parse_hhmm(value: str) -> tuple[int, int]:
     m = _TIME_HHMM_RE.match(str(value or "").strip())
     if not m:
         raise ValueError(f"Invalid HH:MM time: {value!r} (expected 00:00-23:59)")
     return int(m.group(1)), int(m.group(2))
+
+
+def _split_time_items(times_hhmm: Sequence[str] | str) -> list[str]:
+    if isinstance(times_hhmm, str):
+        return [x.strip() for x in re.split(r"[\r\n,;]+", times_hhmm) if x.strip()]
+    return [str(x).strip() for x in times_hhmm if str(x).strip()]
+
+
+def _split_cron_items(crons: Sequence[str] | str) -> list[str]:
+    if isinstance(crons, str):
+        raw_lines = crons.splitlines()
+    else:
+        raw_lines = []
+        for item in crons:
+            raw_lines.extend(str(item or "").splitlines())
+    return [" ".join(line.strip().split()) for line in raw_lines if line.strip()]
+
+
+def _parse_simple_daily_cron(cron_line: str) -> tuple[int, list[int]] | None:
+    parts = " ".join(str(cron_line or "").strip().split()).split(" ")
+    if len(parts) != 5:
+        return None
+    minute_s, hour_s, dom, mon, dow = parts
+    if dom != "*" or mon != "*" or dow != "*" or not minute_s.isdigit():
+        return None
+    minute = int(minute_s)
+    if not (0 <= minute <= 59):
+        return None
+    hour_tokens = [h.strip() for h in hour_s.split(",") if h.strip()]
+    if not hour_tokens or not all(h.isdigit() and 0 <= int(h) <= 23 for h in hour_tokens):
+        return None
+    return minute, [int(h) for h in hour_tokens]
+
+
+def times_to_utc_crons(times_hhmm: Sequence[str] | str, tz_id: str = "Asia/Jakarta") -> list[str]:
+    """Convert daily HH:MM times in ``tz_id`` into sorted 5-field UTC cron strings.
+
+    Times that map to the same UTC minute are grouped into a single
+    ``"{utc_m} {hours_csv} * * *"`` entry; mixed minutes emit multiple cron lines.
+    """
+    items = _split_time_items(times_hhmm)
+    if not items:
+        raise ValueError("At least one daily time (HH:MM) is required.")
+
+    offset_minutes = int(get_timezone_info(tz_id)["offset_minutes"])
+    hours_by_minute: dict[int, set[int]] = {}
+    for item in items:
+        hh, mm = _parse_hhmm(item)
+        total_min = (hh * 60 + mm - offset_minutes) % (24 * 60)
+        utc_h, utc_m = divmod(total_min, 60)
+        hours_by_minute.setdefault(utc_m, set()).add(utc_h)
+
+    crons: list[str] = []
+    for utc_m in sorted(hours_by_minute):
+        hours_csv = ",".join(str(h) for h in sorted(hours_by_minute[utc_m]))
+        crons.append(f"{utc_m} {hours_csv} * * *")
+    return crons
+
+
+def crons_to_local_times(crons: Sequence[str] | str, tz_id: str = "Asia/Jakarta") -> list[str]:
+    """Parse standard daily ``M H * * *`` UTC cron entries back into sorted local ``HH:MM`` strings."""
+    lines = _split_cron_items(crons)
+    if not lines:
+        return []
+
+    offset_minutes = int(get_timezone_info(tz_id)["offset_minutes"])
+    local_pairs: set[tuple[int, int]] = set()
+    for line in lines:
+        parsed = _parse_simple_daily_cron(line)
+        if parsed is None:
+            continue
+        minute, hours = parsed
+        for utc_h in hours:
+            total_min = (utc_h * 60 + minute + offset_minutes) % (24 * 60)
+            lh, lm = divmod(total_min, 60)
+            local_pairs.add((lh, lm))
+
+    return [f"{lh:02d}:{lm:02d}" for lh, lm in sorted(local_pairs)]
+
+
+def format_schedule_summary(
+    crons: Sequence[str] | str,
+    tz_id: str = "Asia/Jakarta",
+    lang: str = "en",
+) -> str:
+    """Format one or more UTC cron expressions into a human-readable schedule summary."""
+    lines = _split_cron_items(crons)
+    is_id = str(lang or "en").lower().startswith("id")
+    if not lines:
+        return "Jadwal tidak valid" if is_id else "Invalid schedule"
+
+    tz_info = get_timezone_info(tz_id)
+    offset_minutes = int(tz_info["offset_minutes"])
+    short = str(tz_info["short"])
+
+    parsed_entries = [_parse_simple_daily_cron(line) for line in lines]
+    if all(entry is not None for entry in parsed_entries):
+        utc_pairs: set[tuple[int, int]] = set()
+        local_pairs: set[tuple[int, int]] = set()
+        for entry in parsed_entries:
+            assert entry is not None
+            minute, hours = entry
+            for utc_h in hours:
+                utc_pairs.add((utc_h, minute))
+                total_min = (utc_h * 60 + minute + offset_minutes) % (24 * 60)
+                lh, lm = divmod(total_min, 60)
+                local_pairs.add((lh, lm))
+
+        local_str = ", ".join(f"{lh:02d}:{lm:02d}" for lh, lm in sorted(local_pairs))
+        utc_str = ", ".join(f"{uh:02d}:{um:02d}" for uh, um in sorted(utc_pairs))
+        prefix = "Setiap hari pukul" if is_id else "Daily at"
+        if short == "UTC":
+            return f"{prefix} {local_str} UTC"
+        return f"{prefix} {local_str} {short} ({utc_str} UTC)"
+
+    return f"Cron UTC: {', '.join(lines)}"
+
+
+def format_utc_timestamp(iso_str: str, tz_id: str = "Asia/Jakarta") -> str:
+    """Format an ISO-8601 UTC timestamp string into the user's selected timezone."""
+    cleaned = str(iso_str or "").strip()
+    if not cleaned:
+        return ""
+    norm = cleaned[:-1] + "+00:00" if cleaned.upper().endswith("Z") else cleaned
+    try:
+        dt = datetime.fromisoformat(norm)
+    except ValueError:
+        return cleaned
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    tz_info = get_timezone_info(tz_id)
+    target_tz = timezone(timedelta(minutes=int(tz_info["offset_minutes"])))
+    local_dt = dt.astimezone(target_tz)
+    return f"{local_dt:%Y-%m-%d %H:%M} {tz_info['short']}"
 
 
 def times_to_utc_cron(times_hhmm: Sequence[str] | str) -> str:
@@ -443,13 +633,20 @@ def cron_to_wib_summary(cron: str, lang: str = "en") -> str:
 
 
 __all__ = [
+    "TIMEZONE_CHOICES",
     "cron_to_wib_summary",
+    "crons_to_local_times",
+    "detect_local_timezone",
     "export_friends_csv",
+    "format_schedule_summary",
+    "format_utc_timestamp",
+    "get_timezone_info",
     "import_friends_csv",
     "normalize_friends",
     "parse_aweme_id",
     "prepare_photo_secret",
     "times_to_utc_cron",
+    "times_to_utc_crons",
     "validate_repo_name",
     "validate_telegram_token",
     "validate_video_url",
