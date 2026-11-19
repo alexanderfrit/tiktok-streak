@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 import inspect
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
@@ -67,6 +67,23 @@ def _import_and_check_browser(source: dict[str, Any]) -> dict[str, Any]:
 
 def _check_pasted_cookie(cookie_text: str) -> dict[str, Any]:
     return check_session_api(cookie_text)
+
+
+def _verify_inbox_task(
+    cookie_payload: str,
+    log_cb: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    fn = verify_inbox_headless
+    kwargs: dict[str, Any] = {}
+    try:
+        sig = inspect.signature(fn)
+        if "status_cb" in sig.parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
+            kwargs["status_cb"] = log_cb
+    except (TypeError, ValueError):
+        pass
+    return fn(cookie_payload, **kwargs)
 
 
 class AccountsPage(SmoothScrollArea):
@@ -252,12 +269,14 @@ class AccountsPage(SmoothScrollArea):
 
         can_remove = is_multi and len(self._state.accounts) > 1
         for acc in visible_accounts:
-            has_cookie = bool(self._secrets.get_account_cookie(acc.id))
+            cookie_payload = self._secrets.get_account_cookie(acc.id)
+            has_cookie = bool(cookie_payload)
             card = AccountCard(
                 profile=acc,
                 has_cookie=has_cookie,
                 multi_account=is_multi,
                 can_remove=can_remove,
+                cookie_payload=cookie_payload,
                 parent=self.cardsHost,
             )
             card.changed.connect(self._on_card_changed)
@@ -448,7 +467,7 @@ class AccountsPage(SmoothScrollArea):
             acc.auth_method = f"guided ({res.get('browser', 'browser')})"
             acc.last_checked = _now_label()
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=True, cookie_payload=cookie_text)
             self.state_changed.emit()
             InfoBar.success(
                 tr("common.success"),
@@ -557,13 +576,14 @@ class AccountsPage(SmoothScrollArea):
         cookie_text = str(res["cookie_text"])
         api = res.get("api") or {}
         if api.get("ok"):
-            self._secrets.set_account_cookie(acc.id, cookie_text)
+            upgraded = str(api.get("cookie_text") or "").strip() or cookie_text
+            self._secrets.set_account_cookie(acc.id, upgraded)
             acc.username = str(api.get("username") or "").strip()
             acc.inbox_verified = False
             acc.auth_method = str(res.get("source_label") or "browser")
             acc.last_checked = _now_label()
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=True, cookie_payload=upgraded)
             self.state_changed.emit()
             InfoBar.success(
                 tr("common.success"),
@@ -579,7 +599,7 @@ class AccountsPage(SmoothScrollArea):
             acc.auth_method = str(res.get("source_label") or "browser")
             acc.last_checked = _now_label()
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=True, cookie_payload=cookie_text)
             self.state_changed.emit()
             InfoBar.warning(
                 tr("common.warning"),
@@ -612,7 +632,7 @@ class AccountsPage(SmoothScrollArea):
         acc.last_checked = _now_label()
         card = self._find_card(account_id)
         if card:
-            card.load_profile(acc, has_cookie=True)
+            card.load_profile(acc, has_cookie=True, cookie_payload=cookie_payload)
         self.state_changed.emit()
 
         # Verify session username asynchronously
@@ -635,11 +655,16 @@ class AccountsPage(SmoothScrollArea):
         card = self._find_card(account_id)
         if acc is None:
             return
+        upgraded = str(api.get("cookie_text") or "").strip()
+        if upgraded:
+            self._secrets.set_account_cookie(acc.id, upgraded)
+        cookie_payload = self._secrets.get_account_cookie(acc.id)
+
         if api.get("ok"):
             acc.username = str(api.get("username") or "").strip()
             acc.last_checked = _now_label()
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=True, cookie_payload=cookie_payload)
             self.state_changed.emit()
             InfoBar.success(
                 tr("common.success"),
@@ -649,6 +674,8 @@ class AccountsPage(SmoothScrollArea):
                 parent=self.window(),
             )
         elif api.get("waf_blocked"):
+            if card:
+                card.load_profile(acc, has_cookie=True, cookie_payload=cookie_payload)
             InfoBar.warning(
                 tr("common.warning"),
                 tr("err.waf"),
@@ -660,7 +687,7 @@ class AccountsPage(SmoothScrollArea):
             acc.auth_method = "expired"
             acc.inbox_verified = False
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=True, cookie_payload=cookie_payload)
             self.state_changed.emit()
             InfoBar.error(
                 tr("accounts.inbox_expired"),
@@ -671,6 +698,9 @@ class AccountsPage(SmoothScrollArea):
             )
 
     def _start_verify_inbox(self, account_id: str) -> None:
+        task_key = f"verify_inbox_{account_id}"
+        if self._workers.is_running(task_key):
+            return
         acc = self._find_account(account_id)
         if acc is None:
             return
@@ -687,22 +717,36 @@ class AccountsPage(SmoothScrollArea):
 
         card = self._find_card(account_id)
         if card:
-            card.verifyInboxBtn.setEnabled(False)
+            card.set_verifying(True, tr("accounts.verifying"))
         self._workers.start_task(
-            verify_inbox_headless,
+            _verify_inbox_task,
             cookie_payload,
-            task_key=f"verify_inbox_{account_id}",
+            task_key=task_key,
+            pass_log_cb=True,
+            on_log=lambda msg, aid=account_id: self._on_verify_status(aid, msg),
             on_finished=lambda res, aid=account_id: self._on_verify_finished(aid, res),
             on_error=lambda err, aid=account_id: self._on_verify_error(aid, err),
         )
+
+    def _on_verify_status(self, account_id: str, msg: str) -> None:
+        card = self._find_card(account_id)
+        if card:
+            card.set_verify_status(msg)
+        self.log_emitted.emit(msg)
 
     def _on_verify_finished(self, account_id: str, res: dict[str, Any]) -> None:
         acc = self._find_account(account_id)
         card = self._find_card(account_id)
         if card:
-            card.verifyInboxBtn.setEnabled(True)
+            card.set_verifying(False)
         if acc is None:
             return
+
+        res = res if isinstance(res, dict) else {}
+        upgraded = str(res.get("upgraded_cookie_text") or res.get("cookie_text") or "").strip()
+        if upgraded:
+            self._secrets.set_account_cookie(acc.id, upgraded)
+        cookie_payload = self._secrets.get_account_cookie(acc.id)
 
         if res.get("username"):
             acc.username = str(res["username"]).strip()
@@ -713,12 +757,32 @@ class AccountsPage(SmoothScrollArea):
             if (acc.auth_method or "").lower() in ("expired", "business_suite", ""):
                 acc.auth_method = "verified"
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=bool(cookie_payload), cookie_payload=cookie_payload)
             self.state_changed.emit()
-            InfoBar.success(
-                tr("accounts.inbox_verified"),
-                tr("accounts.inbox_ok"),
-                duration=3500,
+            if res.get("cloud_ready") is False:
+                InfoBar.warning(
+                    tr("accounts.local_only_badge"),
+                    tr("accounts.verify_cloud_warn"),
+                    duration=6500,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self.window(),
+                )
+            else:
+                InfoBar.success(
+                    tr("accounts.inbox_verified"),
+                    tr("accounts.inbox_ok"),
+                    duration=3500,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self.window(),
+                )
+        elif res.get("captcha_detected"):
+            if card:
+                card.load_profile(acc, has_cookie=bool(cookie_payload), cookie_payload=cookie_payload)
+            self.state_changed.emit()
+            InfoBar.warning(
+                tr("common.warning"),
+                tr("accounts.verify_captcha_err"),
+                duration=6500,
                 position=InfoBarPosition.TOP_RIGHT,
                 parent=self.window(),
             )
@@ -726,7 +790,7 @@ class AccountsPage(SmoothScrollArea):
             acc.inbox_verified = False
             acc.auth_method = "business_suite"
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=bool(cookie_payload), cookie_payload=cookie_payload)
             self.state_changed.emit()
             InfoBar.error(
                 tr("accounts.inbox_blocked"),
@@ -739,7 +803,7 @@ class AccountsPage(SmoothScrollArea):
             acc.inbox_verified = False
             acc.auth_method = "expired"
             if card:
-                card.load_profile(acc, has_cookie=True)
+                card.load_profile(acc, has_cookie=bool(cookie_payload), cookie_payload=cookie_payload)
             self.state_changed.emit()
             InfoBar.error(
                 tr("accounts.inbox_expired"),
@@ -749,6 +813,8 @@ class AccountsPage(SmoothScrollArea):
                 parent=self.window(),
             )
         else:
+            if card:
+                card.load_profile(acc, has_cookie=bool(cookie_payload), cookie_payload=cookie_payload)
             InfoBar.error(
                 tr("common.error"),
                 friendly_error(res.get("error")),
@@ -760,7 +826,7 @@ class AccountsPage(SmoothScrollArea):
     def _on_verify_error(self, account_id: str, err: str) -> None:
         card = self._find_card(account_id)
         if card:
-            card.verifyInboxBtn.setEnabled(True)
+            card.set_verifying(False)
         InfoBar.error(
             tr("common.error"),
             err,

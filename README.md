@@ -69,6 +69,7 @@ Everything you need to set up and run daily streaks on Windows using `TikTokStre
    > **Why a new browser window opens:** Modern Chrome and Edge on Windows lock stored cookies with App-Bound Encryption (`v20`), so external apps cannot read `sessionid` straight off your disk. Guided Browser Login opens an isolated clean window without automation flags, lets you log in normally, and grabs your cookies as soon as `/messages` loads.
 2. Sign in to TikTok in that window. Once your inbox appears, click **I'm Logged In — Grab Now** (or wait for it to detect `/messages` automatically).
    - You can also use **Import from Browser** (works on unlocked Chrome/Edge profiles and Firefox) or **Paste Cookie Manually**.
+   - Click **Verify** on an account card to confirm `/messages` inbox access in headless mode and auto-upgrade manual cookies with TikTok's regional routing cookies (`tt-target-idc`, `store-idc`) for GitHub Cloud compatibility. If TikTok blocks API hydration, use **Sign in via Browser (Recommended)** or paste the full `Cookie:` header.
    - Business Suite accounts without `/messages` cannot send DM streaks and are flagged during verification.
 3. Add your friends' usernames under **Target Friends (`@usernames`)**, or click **Import friends.csv**.
 4. Switch **Multi-Account** on at the top right if you want to manage more than one TikTok account.
@@ -77,19 +78,22 @@ Everything you need to set up and run daily streaks on Windows using `TikTokStre
 
 - **Message:** Set the daily message text sent to each friend (default: `🔥 Daily Streak`).
 - **Video Share Card & Photo Card:** Keep the defaults, paste your own TikTok video URL or pick a custom photo, or toggle either switch off to send text only.
+- **Schedule Timezone:** Pick your local timezone at the top of **Schedule & Execution** (also available in **Settings**) so both Local and Cloud run times display and convert from your local clock.
 - **Delivery Mode:**
   - **Local PC (Windows Task Scheduler):** Runs automatically on your PC at the times you add under **Local Schedule** (your PC needs to be turned on at those times).
   - **Cloud (GitHub Actions):** Runs on GitHub's servers even while your PC is off.
     1. Click **Sign in with GitHub** and approve the browser login prompt (`repo` and `workflow` permissions).
     2. Keep **Create Private Repository** switched on so your bot repository and action logs stay private (or choose an existing repo with **Fetch My Repos**).
-    3. Choose your daily **WIB** run time and click **Save & Deploy to GitHub**.
+    3. Add your daily run times (or click an off-peak **Quick fill** preset like `08:15` / `20:15`) and click **Save & Deploy to GitHub**.
   - **Hybrid:** Combines both Local PC scheduling and GitHub Cloud runs.
+
+> **GitHub Actions Schedule Delays:** GitHub Actions scheduled workflows run on a shared best-effort queue. Schedules set on the top of the hour (`:00`) often start **15 minutes to 1–4+ hours late** (for example, an `08:00` schedule firing around `11:00–12:00`). Pick off-peak minutes like `:15` or `:17` and leave buffer before midnight so your streak does not slip to the next day, or use **Local PC (Windows Task Scheduler)** when you need exact timing.
 
 ### 4. Test With One Friend First (**Run & Logs** tab)
 
 1. Pick one friend under **Select friend for 1-friend smoke test**.
-2. Optionally switch on **Show browser window** if you want to watch it happen live.
-3. Click **Quick Test (1 Friend, Visible)** to confirm your session and message flow work before running against everyone.
+2. Toggle **Show browser window** on if you want to watch the run live, or leave it off to run headless (this switch controls both **Quick Test (1 Friend)** and **Run Full Streak Locally**).
+3. Click **Quick Test (1 Friend)** to confirm your session and message flow work before running against everyone.
 4. For cloud runs, check **GitHub Cloud Monitor** to run workflows on demand (**Run on GitHub Now**), inspect job logs, or download `debug-diagnostics` screenshots if anything fails.
 
 ### 5. Theme, Language, and Telegram Alerts (**Settings** tab)
@@ -102,10 +106,11 @@ Everything you need to set up and run daily streaks on Windows using `TikTokStre
 | Issue | Reason | Fix |
 |---|---|---|
 | Chrome / Edge profile shows `v20` | Windows App-Bound Encryption blocks reading cookies from disk | Use **Sign in via Browser (Recommended)** or **Paste Cookie Manually**. |
-| `SessionExpiredError` | Saved `sessionid` expired or signed out | Run **Sign in via Browser** again and re-deploy secrets if using Cloud mode. |
+| `SessionExpiredError` | Saved `sessionid` expired, or manual cookie lacks regional routing cookies on US GitHub runners | Click **Verify** on the account card to auto-upgrade regional cookies, or run **Sign in via Browser (Recommended)** and re-deploy secrets. |
 | `InboxUnavailableError` | Account redirected to TikTok Business Suite without `/messages` | Switch to a standard personal TikTok account. |
 | `DMBlockedError` / `UserNotFoundError` | Handle not found or DMs restricted | Double-check `@username` spelling and confirm a mutual thread exists in `/messages`. |
 | `RateLimitError` | Too many messages sent in a short burst | Execution stops automatically; wait for cooldown or lower **Daily Friend Cap**. |
+| GitHub scheduled run fires 1–4h late | GitHub Actions shared cron queue congestion (especially at `:00`) | Use off-peak minutes like `:15` or `:17` with buffer before midnight, or use **Local PC (Windows Task Scheduler)** for exact timing. |
 | Timeout / selector failure | Slow inbox load or DOM change | Select the failed run in **Run & Logs** -> **Download Debug Artifacts**. |
 
 ---
@@ -295,16 +300,18 @@ python fetch_friends.py                                     # Export mutual inbo
 | `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot API token |
 | `TELEGRAM_CHAT_ID` | Optional | Target Telegram chat ID |
 
-GitHub Actions cron runs in **UTC** (`UTC = WIB - 7 hours`):
+GitHub Actions cron runs in **UTC** (the GUI converts your selected **Schedule Timezone** automatically, e.g., `UTC = WIB - 7 hours`, and writes multiple `- cron:` entries when times have different UTC minutes):
 
 | Schedule (WIB) | UTC Equivalent | `.github/workflows/streak.yml` `cron` |
 |---|---|---|
-| `08:00 WIB` daily | `01:00 UTC` | `'0 1 * * *'` |
-| `08:00` & `20:00 WIB` | `01:00` & `13:00 UTC` | `'0 1,13 * * *'` |
-| `08:00`, `14:00`, `20:00 WIB` | `01:00`, `07:00`, `13:00 UTC` | `'0 1,7,13 * * *'` |
+| `08:15 WIB` daily | `01:15 UTC` | `'15 1 * * *'` |
+| `08:15` & `20:15 WIB` | `01:15` & `13:15 UTC` | `'15 1,13 * * *'` |
+| `08:15`, `14:15`, `20:15 WIB` | `01:15`, `07:15`, `13:15 UTC` | `'15 1,7,13 * * *'` |
 | Every 6 hours | `00:00`, `06:00`, `12:00`, `18:00 UTC` | `'0 */6 * * *'` |
 
-Windows Task Scheduler (`schtasks`) commands (`--run-bot`):
+#### GitHub Actions Schedule Delays
+
+GitHub Actions `schedule` triggers share a best-effort queue across GitHub. Jobs scheduled at `:00` frequently experience **15 minutes to 1–4+ hours** of queue delay (for example, `08:00` firing around `11:00–12:00`). Prefer off-peak minutes such as `:15` or `:17` and leave buffer before midnight in your timezone, or use Windows Task Scheduler (`schtasks`) for exact wall-clock timing:
 ```powershell
 schtasks /Create /TN "TikTokStreakDaily_0800" /TR "pythonw.exe C:\path\to\tiktok-streak\run_gui.py --run-bot" /SC DAILY /ST 08:00 /F
 schtasks /Delete /TN "TikTokStreakDaily_0800" /F
