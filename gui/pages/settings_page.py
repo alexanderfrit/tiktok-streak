@@ -139,8 +139,8 @@ class SettingsPage(SmoothScrollArea):
             FIF.GLOBE, tr("settings.timezone"), None, self.appearanceGroup
         )
         self.timezoneCombo = ComboBox(self.timezoneCard)
-        self.timezoneCombo.setMinimumWidth(200)
-        self.timezoneCombo.setMaximumWidth(280)
+        self.timezoneCombo.setMinimumWidth(285)
+        self.timezoneCombo.setMaximumWidth(340)
         for tz in TIMEZONE_CHOICES:
             self.timezoneCombo.addItem(tz["label"], userData=tz["id"])
         self.timezoneCombo.currentIndexChanged.connect(self._on_timezone_changed)
