@@ -146,7 +146,10 @@ def resolve_source_dir(source_dir: str | Path | None = None) -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _collect_bot_files(source_dir: Path, cron_expr: str | None = None) -> dict[str, bytes]:
+def _collect_bot_files(
+    source_dir: Path,
+    cron_expr: str | Iterable[str] | None = None,
+) -> dict[str, bytes]:
     """Collect bundled bot source files to commit into a private repo."""
     required_paths = [
         "main.py",
@@ -178,24 +181,121 @@ def _collect_bot_files(source_dir: Path, cron_expr: str | None = None) -> dict[s
     return files
 
 
-def _extract_workflow_cron_text(yaml_text: str) -> str:
-    m = _CRON_LINE_RE.search(yaml_text)
-    return m.group(3).strip() if m else ""
+_SCHEDULE_HEADER_RE = re.compile(r"^([ \t]*)schedule:\s*(?:#.*)?$")
 
 
-def _rewrite_workflow_cron_text(yaml_text: str, cron_expr: str) -> str:
-    cleaned = " ".join(str(cron_expr or "").strip().split())
-    if len(cleaned.split(" ")) != 5:
+def _normalize_cron_entries(cron_expr: str | Iterable[str]) -> list[str]:
+    """Validate and normalize one or more 5-field cron expressions."""
+    if cron_expr is None:
+        raw_items: list[str] = []
+    elif isinstance(cron_expr, str):
+        raw_items = cron_expr.splitlines()
+    else:
+        raw_items = [str(item) for item in cron_expr]
+
+    entries: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        cleaned = " ".join(str(raw).strip().split())
+        if not cleaned:
+            continue
+        if len(cleaned.split(" ")) != 5:
+            raise GitHubError(f"Invalid 5-field cron expression: {raw!r}")
+        if cleaned not in seen:
+            seen.add(cleaned)
+            entries.append(cleaned)
+
+    if not entries:
         raise GitHubError(f"Invalid 5-field cron expression: {cron_expr!r}")
+    return entries
 
-    def _repl(match: re.Match[str]) -> str:
-        prefix, _quote, _old, suffix = match.groups()
-        return f"{prefix}'{cleaned}'{suffix}"
 
-    updated, count = _CRON_LINE_RE.subn(_repl, yaml_text, count=1)
-    if count == 0:
+def _find_schedule_cron_line_indices(lines: list[str]) -> list[int]:
+    """Locate line indices of active `- cron:` entries under `schedule:` (or globally)."""
+    schedule_indent: int | None = None
+    in_schedule = False
+    scoped_indices: list[int] = []
+
+    for idx, raw_line in enumerate(lines):
+        stripped_eol = raw_line.rstrip("\r\n")
+        if not in_schedule:
+            m_hdr = _SCHEDULE_HEADER_RE.match(stripped_eol)
+            if m_hdr:
+                schedule_indent = len(m_hdr.group(1).expandtabs(4))
+                in_schedule = True
+            continue
+
+        stripped = stripped_eol.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        line_indent = len((stripped_eol[: len(stripped_eol) - len(stripped_eol.lstrip(" \t"))]).expandtabs(4))
+        assert schedule_indent is not None
+        if line_indent <= schedule_indent:
+            break
+
+        if _CRON_LINE_RE.match(stripped_eol):
+            scoped_indices.append(idx)
+
+    if scoped_indices:
+        return scoped_indices
+
+    return [
+        idx
+        for idx, raw_line in enumerate(lines)
+        if _CRON_LINE_RE.match(raw_line.rstrip("\r\n"))
+    ]
+
+
+def _extract_workflow_cron_text(yaml_text: str) -> str:
+    lines = yaml_text.splitlines(keepends=True)
+    indices = _find_schedule_cron_line_indices(lines)
+    crons: list[str] = []
+    for idx in indices:
+        m = _CRON_LINE_RE.match(lines[idx].rstrip("\r\n"))
+        if m:
+            val = m.group(3).strip()
+            if val:
+                crons.append(val)
+    return "\n".join(crons)
+
+
+def _rewrite_workflow_cron_text(yaml_text: str, cron_expr: str | Iterable[str]) -> str:
+    crons = _normalize_cron_entries(cron_expr)
+    lines = yaml_text.splitlines(keepends=True)
+    cron_indices = _find_schedule_cron_line_indices(lines)
+    if not cron_indices:
         raise GitHubError("Could not locate `- cron:` entry inside workflow YAML.")
-    return updated
+
+    first_idx = cron_indices[0]
+    first_raw = lines[first_idx]
+    first_match = _CRON_LINE_RE.match(first_raw.rstrip("\r\n"))
+    assert first_match is not None
+    prefix, _quote, _old, suffix = first_match.groups()
+    indent = prefix[: len(prefix) - len(prefix.lstrip(" \t"))]
+
+    first_eol = "\r\n" if first_raw.endswith("\r\n") else ("\n" if first_raw.endswith("\n") else "")
+    sep_eol = "\r\n" if "\r\n" in yaml_text else "\n"
+
+    replacement_lines: list[str] = []
+    for i, entry in enumerate(crons):
+        line_eol = first_eol if i == len(crons) - 1 else sep_eol
+        if i == 0:
+            replacement_lines.append(f"{prefix}'{entry}'{suffix}{line_eol}")
+        else:
+            replacement_lines.append(f"{indent}- cron: '{entry}'{line_eol}")
+
+    drop_indices = set(cron_indices[1:])
+    new_lines: list[str] = []
+    for idx, line in enumerate(lines):
+        if idx == first_idx:
+            new_lines.extend(replacement_lines)
+        elif idx in drop_indices:
+            continue
+        else:
+            new_lines.append(line)
+
+    return "".join(new_lines)
 
 
 class GitHub:
@@ -404,7 +504,7 @@ class GitHub:
         owner: str,
         repo_name: str,
         source_dir: str | Path | None = None,
-        cron_expr: str | None = None,
+        cron_expr: str | Iterable[str] | None = None,
         progress_cb: Callable[[str], None] | None = None,
         push_files: bool = True,
         timeout: float = 15.0,
@@ -460,7 +560,9 @@ class GitHub:
                 raise
 
             if cron_expr:
-                cleaned_cron = " ".join(str(cron_expr).strip().split())
+                normalized_crons = _normalize_cron_entries(cron_expr)
+                cleaned_cron = "\n".join(normalized_crons)
+                cron_label = "; ".join(normalized_crons)
                 try:
                     current_cron = self.get_workflow_cron(resolved_full, WORKFLOW_FILE, ref=branch)
                 except GitHubError as exc:
@@ -471,8 +573,8 @@ class GitHub:
                         ) from exc
                     raise
                 if current_cron != cleaned_cron:
-                    _progress(f"Updating workflow schedule to '{cleaned_cron}'...")
-                    self.update_workflow_cron(resolved_full, cleaned_cron, WORKFLOW_FILE, ref=branch)
+                    _progress(f"Updating workflow schedule to '{cron_label}'...")
+                    self.update_workflow_cron(resolved_full, normalized_crons, WORKFLOW_FILE, ref=branch)
 
             return {
                 "full_name": resolved_full,
@@ -708,21 +810,23 @@ class GitHub:
     def update_workflow_cron(
         self,
         full_name: str,
-        cron_expr: str,
+        cron_expr: str | Iterable[str],
         workflow_file: str = WORKFLOW_FILE,
         ref: str | None = None,
     ) -> dict:
+        normalized_crons = _normalize_cron_entries(cron_expr)
         enc_repo = _encode_repo(full_name)
         wf_path = _encode_rel_path(f".github/workflows/{workflow_file}")
         branch = ref or self.default_branch(full_name)
         current = self._req("GET", f"/repos/{enc_repo}/contents/{wf_path}?ref={_encode_seg(branch)}")
         raw_yaml = base64.b64decode(current["content"]).decode("utf-8", "replace")
-        updated_yaml = _rewrite_workflow_cron_text(raw_yaml, cron_expr)
+        updated_yaml = _rewrite_workflow_cron_text(raw_yaml, normalized_crons)
+        commit_label = "; ".join(normalized_crons)
         return self._req(
             "PUT",
             f"/repos/{enc_repo}/contents/{wf_path}",
             {
-                "message": f"Update streak schedule to {cron_expr}",
+                "message": f"Update streak schedule to {commit_label}",
                 "content": base64.b64encode(updated_yaml.encode("utf-8")).decode("ascii"),
                 "sha": current["sha"],
                 "branch": branch,
