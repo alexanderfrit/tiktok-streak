@@ -366,8 +366,12 @@ finally:
     shutil.rmtree(_tmpdir, ignore_errors=True)
 
 # 28. Recipient safety: OPEN_THREAD_JS must not substring-match short display names (e.g. "M" -> "max_demo")
-from src.share import OPEN_THREAD_JS as _ot_js, assert_active_chat_handle as _assert_hdr
+from src.share import OPEN_THREAD_JS as _ot_js, READ_ACTIVE_CHAT_HANDLE_JS as _hdr_js, assert_active_chat_handle as _assert_hdr
+from src.browser import HEADFUL_GUARD_JS as _hg_js
 assert "t.indexOf(txt)" not in _ot_js, "Unsafe reverse-substring matching must stay removed from OPEN_THREAD_JS"
+assert '[data-e2e="dm-new-chatbox"]' not in _hdr_js.split("var BUBBLE_EXCL")[1].split(";")[0], "dm-new-chatbox must not be excluded by BUBBLE_EXCL"
+assert "chat-uniqueid" in _hdr_js, "READ_ACTIVE_CHAT_HANDLE_JS should inspect data-e2e=chat-uniqueid"
+assert "dm-new-conversation-list" in _hg_js, "HEADFUL_GUARD_JS must include dm-new-conversation-list"
 _hdr_b = MagicMock()
 _hdr_b.execute_script.return_value = "morgan_other"
 _mismatch_raised = False

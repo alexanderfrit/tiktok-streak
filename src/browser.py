@@ -84,6 +84,7 @@ HEADFUL_GUARD_JS = r"""
   window.__guardBannerText = "TikTok Streak Bot running — Do NOT click inbox chats";
 
   var SIDEBAR_SEL = [
+    '[data-e2e="dm-new-conversation-list"]',
     '[data-e2e="dm-new-conversation-item"]',
     '[data-e2e="chat-item"]',
     '[data-e2e="dm-new-conversation-nickname"]',

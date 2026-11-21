@@ -28,11 +28,10 @@ CHAT_ITEM_CANDIDATES = [
 ]
 
 INBOX_SEARCH_CANDIDATES = [
-    (By.CSS_SELECTOR, 'input[data-e2e="search-user-input"]'),
+    (By.CSS_SELECTOR, '[data-e2e="dm-new-conversation-list"] input'),
     (By.CSS_SELECTOR, 'input[placeholder*="Search" i]'),
     (By.CSS_SELECTOR, 'input[placeholder*="Tìm" i]'),
     (By.CSS_SELECTOR, 'div[class*="SearchBar"] input'),
-    (By.CSS_SELECTOR, 'input[type="search"]'),
 ]
 
 MESSAGE_INPUT_CANDIDATES = [
@@ -44,7 +43,13 @@ MESSAGE_INPUT_CANDIDATES = [
 ]
 
 
-def find_elements_by_candidates(browser, candidates: list, description: str, timeout: float = 8.0) -> list:
+def find_elements_by_candidates(
+    browser,
+    candidates: list,
+    description: str,
+    timeout: float = 8.0,
+    dump_on_timeout: bool = True,
+) -> list:
     end_time = time.time() + timeout
     while time.time() < end_time:
         for by_type, selector in candidates:
@@ -57,12 +62,25 @@ def find_elements_by_candidates(browser, candidates: list, description: str, tim
                 continue
         time.sleep(0.4)
 
-    dump_debug_diagnostics(browser, "selector_timeout")
+    if dump_on_timeout:
+        dump_debug_diagnostics(browser, "selector_timeout")
     raise TimeoutError(f"Could not locate {description} using candidate selectors.")
 
 
-def find_element_by_candidates(browser, candidates: list, description: str, timeout: float = 8.0):
-    return find_elements_by_candidates(browser, candidates, description, timeout=timeout)[0]
+def find_element_by_candidates(
+    browser,
+    candidates: list,
+    description: str,
+    timeout: float = 8.0,
+    dump_on_timeout: bool = True,
+):
+    return find_elements_by_candidates(
+        browser,
+        candidates,
+        description,
+        timeout=timeout,
+        dump_on_timeout=dump_on_timeout,
+    )[0]
 
 
 def _is_cancelled(stop_event) -> bool:
@@ -306,10 +324,16 @@ def open_inbox_chat(browser, friend: str, stop_event=None) -> str:
     if _is_cancelled(stop_event):
         return ""
 
-    # Tier 2: Inbox search box (only if rendered by TikTok Web)
+    # Tier 2: Inbox search box (only if rendered inside the DM inbox pane)
     search_box = None
     try:
-        search_box = find_element_by_candidates(browser, INBOX_SEARCH_CANDIDATES, "inbox search box", timeout=2.5)
+        search_box = find_element_by_candidates(
+            browser,
+            INBOX_SEARCH_CANDIDATES,
+            "inbox search box",
+            timeout=2.0,
+            dump_on_timeout=False,
+        )
     except Exception:
         search_box = None
 
@@ -428,6 +452,7 @@ def open_inbox_chat(browser, friend: str, stop_event=None) -> str:
         except Exception:
             break
 
+    dump_debug_diagnostics(browser, f"open_chat_failed_{target}")
     raise DMBlockedError(
         f"Could not open verified chat for @{target} in /messages "
         f"(scanned {scanned} read thread(s), skipped {total_unread_skipped} unread thread(s); "
