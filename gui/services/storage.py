@@ -181,6 +181,10 @@ class AppState:
     telegram_enabled: bool = False
     workspace_dir: str = ""
     last_test_ok: bool = False
+    auto_check_updates: bool = True
+    skipped_update_version: str = ""
+    last_update_check_ts: int = 0
+    last_deployed_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -259,6 +263,11 @@ class AppState:
         if mode not in ("cloud", "local", "both"):
             mode = "cloud"
 
+        try:
+            last_update_check_ts = max(0, int(data.get("last_update_check_ts", 0) or 0))
+        except (TypeError, ValueError):
+            last_update_check_ts = 0
+
         return cls(
             language=lang,
             theme=theme,
@@ -286,6 +295,10 @@ class AppState:
             telegram_enabled=bool(data.get("telegram_enabled", False)),
             workspace_dir=str(data.get("workspace_dir") or "").strip(),
             last_test_ok=bool(data.get("last_test_ok", False)),
+            auto_check_updates=bool(data.get("auto_check_updates", True)),
+            skipped_update_version=str(data.get("skipped_update_version") or "").strip(),
+            last_update_check_ts=last_update_check_ts,
+            last_deployed_version=str(data.get("last_deployed_version") or "").strip(),
         )
 
 

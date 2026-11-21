@@ -14,6 +14,13 @@ class DMBlockedError(TikTokError):
     action_tip = "Ensure mutual follow on TikTok or check recipient's Direct Message privacy settings."
 
 
+class RecipientMismatchError(TikTokError):
+    action_tip = (
+        "Active chat recipient did not match target @username. "
+        "Avoid clicking other chats while the browser window is visible and retry."
+    )
+
+
 class InboxUnavailableError(TikTokError):
     action_tip = "This sessionid is redirected from /messages to Business Suite. Use a session whose web inbox loads at tiktok.com/messages."
 

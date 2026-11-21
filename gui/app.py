@@ -5,7 +5,9 @@ import ctypes
 import ctypes.wintypes
 import logging
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QLocale, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
@@ -14,6 +16,8 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     FluentTranslator,
     FluentWindow,
+    InfoBar,
+    InfoBarPosition,
     NavigationItemPosition,
     SplashScreen,
     SystemThemeListener,
@@ -42,6 +46,8 @@ from gui.services.theme import (
     get_windows_personalization,
     resolve_accent_color,
 )
+from gui.services.updater import CHECK_INTERVAL_SECONDS, check_for_update
+from gui.widgets.update_dialog import UpdateDialog
 from gui.workers import WorkerController
 
 logger = logging.getLogger("tiktok-streak")
@@ -132,6 +138,7 @@ class MainWindow(FluentWindow):
             QApplication.processEvents()
 
         self._nav_items: dict[str, object] = {}
+        self._latest_update_info: dict[str, Any] | None = None
         self._init_pages()
 
         self.navigationInterface.setExpandWidth(210)
@@ -154,6 +161,13 @@ class MainWindow(FluentWindow):
 
         if self.splashScreen is not None:
             self.splashScreen.finish()
+
+        if (
+            not self.smoke_test
+            and getattr(self.state, "auto_check_updates", True)
+            and (time.time() - int(getattr(self.state, "last_update_check_ts", 0) or 0) >= CHECK_INTERVAL_SECONDS)
+        ):
+            QTimer.singleShot(2000, lambda: self.check_for_app_updates(manual=False))
 
     def _init_pages(self) -> None:
         self.home_interface = HomePage(
@@ -182,6 +196,7 @@ class MainWindow(FluentWindow):
             config_store=self.config_store,
             secret_store=self.secret_store,
             worker_controller=self.workers,
+            smoke_test=self.smoke_test,
             parent=self,
         )
         self.settings_interface = SettingsPage(
@@ -233,15 +248,21 @@ class MainWindow(FluentWindow):
 
         # Wire cross-page interactions
         self.home_interface.navigate_requested.connect(self.navigate_to)
+        self.home_interface.update_requested.connect(self._open_update_dialog)
+        self.home_interface.skip_update_requested.connect(self._skip_update_version)
         self.accounts_interface.state_changed.connect(self._on_state_changed)
         self.content_interface.state_changed.connect(self._on_state_changed)
         self.run_interface.state_changed.connect(self._on_state_changed)
         self.settings_interface.state_changed.connect(self._on_state_changed)
 
+        self.content_interface.cloud_repos_updated.connect(self._on_cloud_repos_updated)
+        self.run_interface.cloud_schedule_toggled.connect(self.content_interface.set_repo_workflow_state)
+
         self.settings_interface.theme_changed.connect(self.set_theme)
         if hasattr(self.settings_interface, "accent_changed"):
             self.settings_interface.accent_changed.connect(self.set_accent_mode)
         self.settings_interface.workspace_reloaded.connect(self._on_workspace_reloaded)
+        self.settings_interface.check_updates_requested.connect(lambda: self.check_for_app_updates(manual=True))
 
         self.accounts_interface.log_emitted.connect(self.run_interface.append_log)
         self.content_interface.log_emitted.connect(self.run_interface.append_log)
@@ -253,6 +274,118 @@ class MainWindow(FluentWindow):
         self.settings_interface.flush_edits()
         self.home_interface.refresh_state(self.state)
         self.run_interface.refresh_from_state(self.state)
+        if self.stackedWidget.currentWidget() is self.content_interface:
+            self.content_interface.maybe_auto_scan_bot_repos()
+
+    def _on_cloud_repos_updated(self, repos: Any) -> None:
+        if not isinstance(repos, list):
+            return
+        target = self.run_interface._full_repo_name().strip().lower()
+        if not target:
+            return
+        match = next(
+            (r for r in repos if isinstance(r, dict) and str(r.get("full_name") or "").strip().lower() == target),
+            None,
+        )
+        if match is not None:
+            self.run_interface.set_cloud_workflow_state(
+                str(match.get("full_name") or target),
+                str(match.get("workflow_state") or ("active" if match.get("active") else "disabled_manually")),
+            )
+
+    def check_for_app_updates(self, manual: bool = False) -> None:
+        if self.workers.is_running("app_update_check"):
+            return
+        if manual:
+            self.settings_interface.set_update_check_status(checking=True)
+        self.workers.start_task(
+            check_for_update,
+            task_key="app_update_check",
+            on_finished=lambda res, m=manual: self._on_update_check_finished(res, manual=m),
+            on_error=lambda err, m=manual: self._on_update_check_error(err, manual=m),
+        )
+
+    def _on_update_check_finished(self, info: Any, manual: bool = False) -> None:
+        if not isinstance(info, dict):
+            info = {"ok": False, "has_update": False}
+        if info.get("ok"):
+            self.state.last_update_check_ts = int(time.time())
+            if not self.smoke_test:
+                try:
+                    self.config_store.save(self.state)
+                except Exception:
+                    pass
+        if info.get("has_update"):
+            self._latest_update_info = dict(info)
+        self.settings_interface.set_update_check_status(checking=False, info=info)
+        self.home_interface.set_available_update(info if info.get("has_update") else None)
+
+        latest = str(info.get("latest_version") or "").strip().lstrip("vV")
+        skipped = str(getattr(self.state, "skipped_update_version", "") or "").strip().lstrip("vV")
+        if info.get("has_update") and latest:
+            if manual:
+                self._open_update_dialog()
+            elif latest != skipped:
+                InfoBar.info(
+                    tr("update.banner_title", version=latest),
+                    tr("update.banner_desc"),
+                    duration=6000,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self,
+                )
+        elif manual:
+            if info.get("ok"):
+                InfoBar.success(
+                    tr("common.ready"),
+                    tr("settings.app_version_uptodate"),
+                    duration=3500,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self,
+                )
+            elif info.get("error"):
+                InfoBar.warning(
+                    tr("common.warning"),
+                    str(info["error"]),
+                    duration=4500,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self,
+                )
+
+    def _on_update_check_error(self, err: str, manual: bool = False) -> None:
+        self.settings_interface.set_update_check_status(
+            checking=False, info={"ok": False, "has_update": False, "error": err} if manual else None
+        )
+        if manual:
+            InfoBar.warning(
+                tr("common.warning"),
+                str(err),
+                duration=4500,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self,
+            )
+
+    def _open_update_dialog(self) -> None:
+        if not self._latest_update_info or not self._latest_update_info.get("has_update"):
+            self.check_for_app_updates(manual=True)
+            return
+        dlg = UpdateDialog(
+            parent=self,
+            update_info=self._latest_update_info,
+            worker_controller=self.workers,
+            download_dir=self.config_store.config_dir / "updates",
+        )
+        dlg.exec()
+        if dlg.user_skipped_version:
+            latest = str(self._latest_update_info.get("latest_version") or "").strip().lstrip("vV")
+            self._skip_update_version(latest)
+
+    def _skip_update_version(self, version: str) -> None:
+        clean = str(version or "").strip().lstrip("vV")
+        if not clean:
+            return
+        self.state.skipped_update_version = clean
+        self.home_interface.set_available_update(self._latest_update_info)
+        self._on_state_changed()
 
     def navigate_to(self, route_key: str) -> None:
         target = self._routes.get(route_key)

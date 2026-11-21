@@ -11,6 +11,8 @@ before navigating to /messages.
 """
 import logging, re, time
 from .browser import MESSAGES_URL
+from .config import clean_handle
+from .exceptions import RecipientMismatchError
 
 logger = logging.getLogger("tiktok-streak")
 
@@ -19,6 +21,8 @@ WS_HOOK_JS = r"""
 (function () {
   if (window.__hooked) return; window.__hooked = true;
   window.__socks = []; window.__sent = []; window.__recv = [];
+  window.__activeTargetHandle = window.__activeTargetHandle || null;
+  window.__friendSentStart = window.__friendSentStart || 0;
 
   function rvb(b, i) {
     var v = 0n, s = 0n, x;
@@ -87,13 +91,14 @@ WS_HOOK_JS = r"""
     try {
       var u8 = (typeof data === "string") ? window.__pb.enc(data) : new Uint8Array(data.buffer || data);
       var b64 = window.__pb.b64(u8);
-      window.__sent.push({ t: Date.now(), url: this.url, sock: window.__socks.indexOf(this), b64: b64 });
-      // Remember the latest borrowable SEND_MESSAGE frame. A reload between the
-      // text send and the share forge wipes window.__sent; this survives it.
+      var curHandle = window.__activeTargetHandle || null;
+      window.__sent.push({ t: Date.now(), url: this.url, sock: window.__socks.indexOf(this), b64: b64, handle: curHandle });
+      // Remember the latest borrowable SEND_MESSAGE frame for this target handle.
       try {
         var text = window.__pb.utf8(u8);
         if (text.indexOf("client_message_id") >= 0 && text.indexOf("aweType") >= 0) {
           sessionStorage.setItem("__tmplB64", b64);
+          sessionStorage.setItem("__tmplHandle", String(curHandle || ""));
         }
       } catch (e) {}
     } catch (e) {}
@@ -105,15 +110,58 @@ WS_HOOK_JS = r"""
 
 # The page sends DMs over HTTP, not the socket: `POST /v1/message/send` with a
 # protobuf body (ground truth in the capture dumps). This hook keeps the last
-# outgoing message/send request (url + body + headers) so a share card can be
-# replayed over the same transport. `window.__pb` (from WS_HOOK_JS) provides the
-# base64 helper. The request body is a Uint8Array; we b64 it on capture.
+# outgoing message/send request (url + body + headers, scoped to the active handle)
+# and passively harvests user handle <-> nickname metadata from IM/user responses.
 HTTP_SEND_HOOK_JS = r"""
 (function () {
   if (window.__httpHook) return; window.__httpHook = true;
   window.__httpSend = null;
   window.__mediaSend = null;   // last media (photo/share) message/send + status
   window.__imgCommit = 0;      // count of imagex CommitImageUpload (photo uploaded)
+  window.__dmUsersByHandle = window.__dmUsersByHandle || {};
+  window.__dmUsersByNick = window.__dmUsersByNick || {};
+
+  function harvestUsers(obj, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 6) return;
+    try {
+      if (Array.isArray(obj)) {
+        for (var i = 0; i < obj.length && i < 200; i++) harvestUsers(obj[i], depth + 1);
+        return;
+      }
+      var handle = obj.uniqueId || obj.unique_id || obj.username || obj.handle;
+      var nick = obj.nickname || obj.nick_name || obj.displayName || obj.name;
+      if (typeof handle === 'string' && /^[A-Za-z0-9._]{2,40}$/.test(handle.trim())) {
+        var hl = handle.trim().toLowerCase();
+        var ns = (typeof nick === 'string') ? nick.trim() : '';
+        if (ns) {
+          window.__dmUsersByHandle[hl] = ns;
+          var nl = ns.toLowerCase();
+          var list = window.__dmUsersByNick[nl] || [];
+          if (list.indexOf(hl) < 0) {
+            list.push(hl);
+            window.__dmUsersByNick[nl] = list;
+          }
+        } else if (!(hl in window.__dmUsersByHandle)) {
+          window.__dmUsersByHandle[hl] = '';
+        }
+      }
+      var keys = Object.keys(obj);
+      for (var k = 0; k < keys.length && k < 80; k++) {
+        var val = obj[keys[k]];
+        if (val && typeof val === 'object') harvestUsers(val, depth + 1);
+      }
+    } catch (e) {}
+  }
+
+  function tryHarvestText(url, txt) {
+    try {
+      var u = String(url || '');
+      if (!/(\/im\/|\/user\/|\/friend\/|\/message|conversation)/i.test(u)) return;
+      if (!txt || txt.charAt(0) !== '{' && txt.charAt(0) !== '[') return;
+      harvestUsers(JSON.parse(txt), 0);
+    } catch (e) {}
+  }
+
   function toU8(b) {
     try {
       if (b == null) return null;
@@ -142,10 +190,12 @@ HTTP_SEND_HOOK_JS = r"""
           for (var k in headers) hk[k] = headers[k];
         }
       }
-      window.__httpSend = { url: String(url), method: method || 'POST', headers: hk, b64: pb.b64(u8) };
+      var curHandle = window.__activeTargetHandle || null;
+      window.__httpSend = { url: String(url), method: method || 'POST', headers: hk, b64: pb.b64(u8), handle: curHandle };
       try {
         sessionStorage.setItem('__httpSendB64', window.__httpSend.b64);
         sessionStorage.setItem('__httpSendUrl', window.__httpSend.url);
+        sessionStorage.setItem('__httpSendHandle', String(curHandle || ''));
       } catch (e) {}
     } catch (e) {}
   }
@@ -180,6 +230,15 @@ HTTP_SEND_HOOK_JS = r"""
           window.__mediaSend = { t: Date.now(), headers: headersObj(h), status: null, kind: 'fetch' };
           p.then(function (r) { try { window.__mediaSend.status = r.status; } catch (e) {} },
                  function () { try { window.__mediaSend.status = -1; } catch (e) {} });
+        } else if (/(\/im\/|\/user\/|\/friend\/|\/message|conversation)/i.test(String(u || ''))) {
+          p.then(function (r) {
+            try {
+              var ct = (r && r.headers && r.headers.get) ? (r.headers.get('content-type') || '') : '';
+              if (ct.indexOf('json') >= 0 || ct === '') {
+                r.clone().text().then(function (txt) { tryHarvestText(u, txt); }).catch(function () {});
+              }
+            } catch (e) {}
+          }, function () {});
         }
       } catch (e) {}
       return p;
@@ -190,16 +249,42 @@ HTTP_SEND_HOOK_JS = r"""
   XMLHttpRequest.prototype.send = function (b) {
     try {
       keep(this.__u, this.__m, null, b);
+      var xhr = this;
       if (String(this.__u).indexOf('/v1/message/send') >= 0 && looksMedia(toU8(b))) {
-        var xhr = this;
         window.__mediaSend = { t: Date.now(), headers: {}, status: null, kind: 'xhr' };
         xhr.addEventListener('loadend', function () { try { window.__mediaSend.status = xhr.status; } catch (e) {} });
+      } else if (/(\/im\/|\/user\/|\/friend\/|\/message|conversation)/i.test(String(this.__u || ''))) {
+        xhr.addEventListener('load', function () {
+          try { tryHarvestText(xhr.__u, xhr.responseText); } catch (e) {}
+        });
       }
     } catch (e) {}
     return _send.apply(this, arguments);
   };
 })();
 """
+
+
+def reset_friend_send_capture(browser, friend: str) -> None:
+    """Scope WS/HTTP capture to `friend` and clear any prior recipient's templates."""
+    target = clean_handle(friend).lower()
+    try:
+        browser.execute_script(
+            "window.__activeTargetHandle = arguments[0];"
+            "window.__friendSentStart = (window.__sent || []).length;"
+            "window.__httpSend = null;"
+            "window.__mediaSend = null;"
+            "try {"
+            "  sessionStorage.removeItem('__tmplB64');"
+            "  sessionStorage.removeItem('__tmplHandle');"
+            "  sessionStorage.removeItem('__httpSendB64');"
+            "  sessionStorage.removeItem('__httpSendUrl');"
+            "  sessionStorage.removeItem('__httpSendHandle');"
+            "} catch (e) {}",
+            target,
+        )
+    except Exception as e:
+        logger.debug("reset_friend_send_capture skipped for @%s: %s", target, e)
 
 
 def install_ws_hook(browser) -> None:
@@ -366,51 +451,72 @@ return (function () {
 """ % (_json.dumps(template_b64), _json.dumps(share_json), int(preferred_sock))
 
 
-FIND_TEMPLATE_JS = r"""
+def _find_template_js(expected_friend: str | None = None) -> str:
+    import json as _json
+    expected_arg = _json.dumps(clean_handle(expected_friend).lower() if expected_friend else None)
+    return """
 return (function () {
+  var expected = %s;
   var sent = window.__sent || [];
-  for (var i = sent.length - 1; i >= 0; i--) {
+  var startIdx = Math.max(0, Number(window.__friendSentStart || 0));
+  if (startIdx > sent.length) startIdx = 0;
+  for (var i = sent.length - 1; i >= startIdx; i--) {
     if (!sent[i].b64) continue;
+    if (expected && String(sent[i].handle || '').toLowerCase() !== expected) continue;
     try {
       var blob = window.__pb.utf8(window.__pb.b64dec(sent[i].b64));
       if (blob.indexOf("client_message_id") >= 0 && blob.indexOf("aweType") >= 0) {
-        return { b64: sent[i].b64, sock: sent[i].sock };
+        return { b64: sent[i].b64, sock: sent[i].sock, handle: sent[i].handle || null };
       }
     } catch (e) {}
   }
   // A reload between the text send and the share forge wipes window.__sent;
-  // reuse the SEND_MESSAGE frame stashed for this account.
+  // reuse the SEND_MESSAGE frame ONLY if it belongs to this same recipient handle.
   try {
     var b = sessionStorage.getItem("__tmplB64");
-    if (b) return { b64: b, sock: -1, stale: true };
+    var bh = String(sessionStorage.getItem("__tmplHandle") || "").toLowerCase();
+    if (b && (!expected || bh === expected)) {
+      return { b64: b, sock: -1, stale: true, handle: bh || null };
+    }
   } catch (e) {}
   return null;
 })();
-"""
+""" % expected_arg
+
+
+FIND_TEMPLATE_JS = _find_template_js(None)
 
 
 # Replay the captured HTTP send with the payload swapped to a share card. The
 # page's own request rides POST /v1/message/send, so a forged socket frame is
 # never seen by the server. Body layout (ground truth): f8(imreq).f100(msgbody)
 # .f4 = JSON payload, .f6 = content type, .f8 = client_message_id, .f5 = headers.
-# Falls back to the frame stashed in sessionStorage if the page reloaded since
-# the text send. Returns {ok,status,body} or {ok:false,error}.
-def _forge_http_async_js(share_json: str) -> str:
+# Strictly scoped to `expected_friend` so frames never bleed across recipients.
+def _forge_http_async_js(share_json: str, expected_friend: str | None = None) -> str:
     import json as _json
-    return """
+    expected_arg = _json.dumps(clean_handle(expected_friend).lower() if expected_friend else None)
+    return (
+        """
 var cb = arguments[arguments.length - 1];
 (function () {
+  var expected = __EXPECTED__;
   var pb = window.__pb, get = pb.get;
   if (!pb) return cb({ ok: false, error: 'no __pb (hook not installed)' });
   var cap = window.__httpSend;
+  if (cap && expected && String(cap.handle || '').toLowerCase() !== expected) {
+    cap = null;
+  }
   if (!cap || !cap.b64) {
     try {
       var b = sessionStorage.getItem('__httpSendB64');
       var u = sessionStorage.getItem('__httpSendUrl');
-      if (b && u) cap = { b64: b, url: u, headers: {}, method: 'POST' };
+      var ch = String(sessionStorage.getItem('__httpSendHandle') || '').toLowerCase();
+      if (b && u && (!expected || ch === expected)) {
+        cap = { b64: b, url: u, headers: {}, method: 'POST', handle: ch || null };
+      }
     } catch (e) {}
   }
-  if (!cap || !cap.b64) return cb({ ok: false, error: 'no captured HTTP send' });
+  if (!cap || !cap.b64) return cb({ ok: false, error: 'no captured HTTP send for target recipient' });
 
   var body;
   try { body = pb.read(pb.b64dec(cap.b64)); } catch (e) { return cb({ ok: false, error: 'read body: ' + e }); }
@@ -442,30 +548,38 @@ var cb = arguments[arguments.length - 1];
     .then(function (r) { return r.text().then(function (t) { cb({ ok: true, status: r.status, body: t.slice(0, 800) }); }); })
     .catch(function (e) { cb({ ok: false, error: String(e) }); });
 })();
-""".replace("__SHAREJSON__", _json.dumps(share_json))
+"""
+        .replace("__EXPECTED__", expected_arg)
+        .replace("__SHAREJSON__", _json.dumps(share_json))
+    )
 
 
 def send_share_card(browser, friend: str, item_id: str, template: dict = None, share_json: str = None) -> dict:
     """Send one video-share card to `friend`.
 
-    `template` (from find_template) and `share_json` may be precomputed so a
-    caller sending several cards reuses the same borrowed frame. Returns
-    {sent, error}.
+    Verifies the active chat header matches `@friend` before forging and before
+    replaying, and refuses to reuse any WS/HTTP frame captured for another chat.
     """
+    target = clean_handle(friend).lower()
     try:
+        assert_active_chat_handle(browser, friend)
         if share_json is None:
             detail = fetch_item_detail(browser, item_id)
             if not detail.get("ok"):
                 return {"sent": False, "error": f"item_detail failed: {detail.get('error')}"}
             share_json = build_share_json(item_id, detail["data"])
 
-        # 1. Socket forge - proven transport. The page emits a SEND_MESSAGE frame
-        # for the text send; borrow it, swap in the share payload, re-sign, send
-        # on the live im-ws socket. Confirmed by the server echo in __recv.
+        # 1. Socket forge - proven transport, strictly scoped to @friend.
         socket_err = None
         if template is None:
-            template = browser.execute_script(FIND_TEMPLATE_JS)
+            template = browser.execute_script(_find_template_js(target))
         if template:
+            tmpl_handle = str(template.get("handle") or "").strip().lstrip("@").lower()
+            if tmpl_handle and tmpl_handle != target:
+                socket_err = f"stale template belongs to @{tmpl_handle}, not @{target}"
+                template = None
+        if template:
+            assert_active_chat_handle(browser, friend)
             res = browser.execute_script(_forge_js(template["b64"], share_json, template.get("sock", -1))) or {}
             if res.get("error"):
                 socket_err = res["error"]
@@ -491,15 +605,14 @@ def send_share_card(browser, friend: str, item_id: str, template: dict = None, s
                                 break
                     time.sleep(0.5)
                 socket_err = "no server ack for share card (timeout)"
-        else:
+        elif socket_err is None:
             socket_err = "no SEND_MESSAGE template frame"
 
-        # 2. Fallback: replay the page's own HTTP send with the payload swapped.
-        # Some runs send the text over POST /v1/message/send with no socket frame,
-        # so the socket forge finds no template; this covers that case.
+        # 2. Fallback: replay the page's own HTTP send (strictly scoped to @friend).
+        assert_active_chat_handle(browser, friend)
         logger.info("[%s] socket forge unavailable (%s); trying HTTP replay.", friend, socket_err)
         browser.set_script_timeout(25)
-        hres = browser.execute_async_script(_forge_http_async_js(share_json)) or {}
+        hres = browser.execute_async_script(_forge_http_async_js(share_json, expected_friend=target)) or {}
         if hres.get("ok"):
             body = hres.get("body") or ""
             import re as _re
@@ -512,21 +625,20 @@ def send_share_card(browser, friend: str, item_id: str, template: dict = None, s
                 return {"sent": True, "error": None}
             return {"sent": False, "error": f"socket({socket_err}); HTTP {hres.get('status')}: {body[:200]}"}
         return {"sent": False, "error": f"socket({socket_err}); HTTP replay ({hres.get('error')})"}
+    except RecipientMismatchError as e:
+        logger.error("Recipient mismatch while sending share card to @%s: %s", friend, e)
+        return {"sent": False, "error": str(e)}
     except Exception as e:
         logger.error("Share card to @%s failed: %s", friend, e)
         return {"sent": False, "error": str(e)}
 
 
-def find_template(browser, timeout: float = 8.0) -> dict | None:
-    """Return a borrowable SEND_MESSAGE frame, waiting up to `timeout` for one.
-
-    The frame reaches the socket a beat after the page sends our text message,
-    so a single immediate read races and can miss it (seen as "no share
-    template frame" for a later account in the same run).
-    """
+def find_template(browser, timeout: float = 8.0, expected_friend: str | None = None) -> dict | None:
+    """Return a borrowable SEND_MESSAGE frame for `expected_friend`, waiting up to `timeout`."""
+    script = _find_template_js(expected_friend) if expected_friend else FIND_TEMPLATE_JS
     end = time.time() + timeout
     while time.time() < end:
-        template = browser.execute_script(FIND_TEMPLATE_JS)
+        template = browser.execute_script(script)
         if template:
             if template.get("stale"):
                 logger.info("Reusing stashed SEND_MESSAGE frame (post-reload).")
@@ -579,28 +691,336 @@ MEDIA_FILE_GUARD_JS = r"""
 })();
 """
 
-# Open @friend's conversation from the inbox list (nickname element), no public
-# profile route. __NAME__ is replaced with the JSON-quoted handle.
-# Match both directions: the thread's nickname may be a display name that the
-# handle contains, or vice versa.
+# Read ONLY the right-pane active chat header's exact @username handle.
+# Never reads left sidebar items or chat message bubbles.
+READ_ACTIVE_CHAT_HANDLE_JS = r"""
+return (function () {
+  var SIDEBAR_EXCL = '[data-e2e="dm-new-conversation-item"], [data-e2e="chat-item"], div[class*="ConversationList"], div[class*="ChatList"]';
+  var BUBBLE_EXCL = '[data-e2e="dm-new-chat-item"], [data-e2e="dm-new-chatbox"], [data-e2e="top-header"]';
+  function cleanHandle(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    var s = raw.trim().replace(/^@+/, '').trim();
+    if (/^[A-Za-z0-9._]{2,40}$/.test(s)) return s.toLowerCase();
+    return null;
+  }
+  function handleFromHref(href) {
+    if (!href) return null;
+    var m = String(href).match(/\/@([A-Za-z0-9._]{2,40})(?:[/?#]|$)/);
+    return m ? m[1].toLowerCase() : null;
+  }
+  function isVisible(el) {
+    if (!el) return false;
+    try {
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+    } catch (e) { return false; }
+  }
+  function fiberPeerHandle(el) {
+    try {
+      var keys = Object.keys(el);
+      var fKey = null;
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0 || keys[i].indexOf('__reactInternalInstance$') === 0 || keys[i].indexOf('__reactProps$') === 0) {
+          fKey = keys[i]; break;
+        }
+      }
+      if (!fKey) return null;
+      var cur = el[fKey], steps = 0;
+      var seen = [];
+      function scanObj(o, d) {
+        if (!o || typeof o !== 'object' || d > 3 || seen.indexOf(o) >= 0) return null;
+        seen.push(o);
+        if (typeof o.uniqueId === 'string') return cleanHandle(o.uniqueId);
+        if (typeof o.unique_id === 'string') return cleanHandle(o.unique_id);
+        var pref = ['toUser', 'peerUser', 'peer', 'targetUser', 'user', 'participant', 'conversation'];
+        for (var p = 0; p < pref.length; p++) {
+          if (o[pref[p]] && typeof o[pref[p]] === 'object') {
+            var h = scanObj(o[pref[p]], d + 1);
+            if (h) return h;
+          }
+        }
+        return null;
+      }
+      while (cur && steps < 6) {
+        var props = cur.memoizedProps || cur;
+        var h = scanObj(props, 0);
+        if (h) return h;
+        cur = cur.return;
+        steps++;
+      }
+    } catch (e) {}
+    return null;
+  }
+  function extractFromRoot(root) {
+    if (!root || !isVisible(root)) return null;
+    if (root.closest && root.closest(SIDEBAR_EXCL)) return null;
+    var links = root.querySelectorAll('a[href*="/@"]');
+    for (var i = 0; i < links.length; i++) {
+      if (!isVisible(links[i])) continue;
+      if (links[i].closest && (links[i].closest(SIDEBAR_EXCL) || links[i].closest(BUBBLE_EXCL))) continue;
+      var h = handleFromHref(links[i].getAttribute('href') || links[i].href);
+      if (h) return h;
+    }
+    var texts = root.querySelectorAll('p, span, a, div, h1, h2, h3');
+    for (var j = 0; j < texts.length; j++) {
+      var el = texts[j];
+      if (!isVisible(el)) continue;
+      if (el.closest && (el.closest(SIDEBAR_EXCL) || el.closest(BUBBLE_EXCL))) continue;
+      var txt = (el.innerText || el.textContent || '').trim();
+      var m = txt.match(/^@([A-Za-z0-9._]{2,40})$/);
+      if (m) return m[1].toLowerCase();
+    }
+    return fiberPeerHandle(root);
+  }
+
+  var headerSels = [
+    '[data-e2e="dm-new-chat-header"]',
+    '[data-e2e="chat-header"]',
+    '[data-e2e*="chat-header"]',
+    'div[class*="ChatHeader"]',
+    'div[class*="ConversationHeader"]',
+    'div[class*="HeaderWrapper"]'
+  ];
+  for (var s = 0; s < headerSels.length; s++) {
+    var hdrs = document.querySelectorAll(headerSels[s]);
+    for (var hi = 0; hi < hdrs.length; hi++) {
+      var h = extractFromRoot(hdrs[hi]);
+      if (h) return h;
+    }
+  }
+
+  // Geometric right-pane header band fallback (top right pane, excluding sidebar & chat bubbles)
+  try {
+    var box = document.querySelector('[data-e2e="dm-new-chatbox"]') || document.querySelector('[data-e2e="dm-new-chat-item"]');
+    var paneLeft = Math.floor((window.innerWidth || 1280) * 0.28);
+    if (box) {
+      var br = box.getBoundingClientRect();
+      if (br.width > 0 && br.left > 180) paneLeft = Math.max(paneLeft, br.left - 60);
+    }
+    var links2 = document.querySelectorAll('a[href*="/@"]');
+    for (var li = 0; li < links2.length; li++) {
+      var a = links2[li];
+      if (!isVisible(a) || (a.closest && (a.closest(SIDEBAR_EXCL) || a.closest(BUBBLE_EXCL)))) continue;
+      var ar = a.getBoundingClientRect();
+      if (ar.left >= paneLeft && ar.top >= 35 && ar.top <= 230) {
+        var lh = handleFromHref(a.getAttribute('href') || a.href);
+        if (lh) return lh;
+      }
+    }
+    var nodes2 = document.querySelectorAll('p, span, a');
+    for (var ni = 0; ni < nodes2.length; ni++) {
+      var nd = nodes2[ni];
+      if (!isVisible(nd) || (nd.closest && (nd.closest(SIDEBAR_EXCL) || nd.closest(BUBBLE_EXCL)))) continue;
+      var nr = nd.getBoundingClientRect();
+      if (nr.left >= paneLeft && nr.top >= 35 && nr.top <= 230) {
+        var nm = (nd.innerText || '').trim().match(/^@([A-Za-z0-9._]{2,40})$/);
+        if (nm) return nm[1].toLowerCase();
+      }
+    }
+  } catch (e) {}
+  return null;
+})();
+"""
+
+
+def get_active_chat_handle(browser) -> str | None:
+    """Return the normalized @username shown in the right-pane chat header, or None."""
+    try:
+        raw = browser.execute_script(READ_ACTIVE_CHAT_HANDLE_JS)
+    except Exception:
+        return None
+    if not isinstance(raw, str):
+        return None
+    cleaned = clean_handle(raw).lower()
+    return cleaned or None
+
+
+def assert_active_chat_handle(browser, expected_friend: str) -> str:
+    """Verify the open chat header exactly matches `expected_friend` (fail-closed)."""
+    expected = clean_handle(expected_friend).lower()
+    actual = get_active_chat_handle(browser)
+    if not actual or actual != expected:
+        seen = f"@{actual}" if actual else "<unverified>"
+        raise RecipientMismatchError(
+            f"Active chat recipient mismatch: expected @{expected}, header shows {seen}."
+        )
+    return actual
+
+
+# Inspect visible inbox rows in the left conversation list (without clicking).
+INSPECT_INBOX_ROWS_JS = r"""
+return (function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('[data-e2e="dm-new-conversation-item"]'));
+  if (!rows.length) rows = Array.prototype.slice.call(document.querySelectorAll('[data-e2e="chat-item"]'));
+  if (!rows.length) rows = Array.prototype.slice.call(document.querySelectorAll('div[class*="ConversationItem"]'));
+  if (!rows.length) {
+    var nicks = document.querySelectorAll('p[class*="PInfoNickname"]');
+    for (var ni = 0; ni < nicks.length; ni++) {
+      var p = nicks[ni].closest('div[role="listitem"], li, div');
+      if (p && rows.indexOf(p) < 0) rows.push(p);
+    }
+  }
+  function isVisible(el) {
+    if (!el) return false;
+    try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && el.offsetParent !== null; }
+    catch (e) { return false; }
+  }
+  function cleanH(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+    var s = raw.trim().replace(/^@+/, '').trim();
+    return /^[A-Za-z0-9._]{2,40}$/.test(s) ? s.toLowerCase() : null;
+  }
+  function extractFiberInfo(el) {
+    var out = { handle: null, unread: false };
+    try {
+      var keys = Object.keys(el), fKey = null;
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0 || keys[i].indexOf('__reactInternalInstance$') === 0 || keys[i].indexOf('__reactProps$') === 0) {
+          fKey = keys[i]; break;
+        }
+      }
+      if (!fKey) return out;
+      var cur = el[fKey], steps = 0, seen = [];
+      function scan(o, d) {
+        if (!o || typeof o !== 'object' || d > 3 || seen.indexOf(o) >= 0) return;
+        seen.push(o);
+        if (!out.handle) {
+          if (typeof o.uniqueId === 'string') out.handle = cleanH(o.uniqueId);
+          else if (typeof o.unique_id === 'string') out.handle = cleanH(o.unique_id);
+        }
+        if (typeof o.unreadCount === 'number' && o.unreadCount > 0) out.unread = true;
+        if (typeof o.unread_count === 'number' && o.unread_count > 0) out.unread = true;
+        if (o.hasUnread === true) out.unread = true;
+        var ks = ['user', 'peer', 'peerUser', 'toUser', 'conversation', 'item', 'data', 'thread'];
+        for (var j = 0; j < ks.length; j++) {
+          if (o[ks[j]] && typeof o[ks[j]] === 'object') scan(o[ks[j]], d + 1);
+        }
+      }
+      while (cur && steps < 5) {
+        scan(cur.memoizedProps || cur, 0);
+        cur = cur.return;
+        steps++;
+      }
+    } catch (e) {}
+    return out;
+  }
+  function isUnreadRow(row, fiberUnread) {
+    if (fiberUnread) return true;
+    try {
+      if (row.querySelector('[data-e2e*="unread" i], [class*="Unread" i], [class*="unread"], [class*="RedDot" i], [class*="BadgeCount" i]')) {
+        return true;
+      }
+      var aria = (row.getAttribute('aria-label') || '') + ' ' + (row.querySelector('[aria-label]') ? row.querySelector('[aria-label]').getAttribute('aria-label') || '' : '');
+      if (/\bunread\b|\bbelum dibaca\b/i.test(aria)) return true;
+      var spans = row.querySelectorAll('span, div');
+      for (var i = 0; i < spans.length; i++) {
+        var sp = spans[i];
+        if (!isVisible(sp)) continue;
+        var cls = String(sp.className || '');
+        var t = (sp.innerText || '').trim();
+        if (/^\d{1,3}\+?$/.test(t) && /badge|unread|dot|count|num/i.test(cls)) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  var byNick = window.__dmUsersByNick || {};
+  var out = [];
+  for (var idx = 0; idx < rows.length; idx++) {
+    var r = rows[idx];
+    if (!isVisible(r)) continue;
+    var nickEl = r.querySelector('p[class*="PInfoNickname"], [data-e2e="dm-new-conversation-nickname"]');
+    var nick = nickEl ? (nickEl.innerText || '').trim() : '';
+    var rawText = (r.innerText || '').trim();
+    if (!nick && rawText) {
+      nick = rawText.split(/\r?\n/)[0].trim().slice(0, 60);
+    }
+    var h = null;
+    var a = r.querySelector('a[href*="/@"]');
+    if (a) {
+      var hm = String(a.getAttribute('href') || a.href || '').match(/\/@([A-Za-z0-9._]{2,40})/);
+      if (hm) h = hm[1].toLowerCase();
+    }
+    if (!h) {
+      var am = rawText.match(/@([A-Za-z0-9._]{2,40})/);
+      if (am) h = am[1].toLowerCase();
+    }
+    var fib = extractFiberInfo(r);
+    if (!h && fib.handle) h = fib.handle;
+    if (!h && nick) {
+      var cands = byNick[nick.toLowerCase()];
+      if (Array.isArray(cands) && cands.length === 1) h = cands[0];
+    }
+    var unread = isUnreadRow(r, fib.unread);
+    var previewLine = rawText.replace(/\s+/g, ' ').slice(0, 60);
+    out.push({
+      idx: idx,
+      nickname: nick,
+      handle: h,
+      unread: unread,
+      rowKey: nick.toLowerCase() + '|' + (h || '') + '|' + previewLine.slice(0, 28)
+    });
+  }
+  return out;
+})();
+"""
+
+
+CLICK_INBOX_ROW_JS = r"""
+return (function (targetIdx) {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('[data-e2e="dm-new-conversation-item"]'));
+  if (!rows.length) rows = Array.prototype.slice.call(document.querySelectorAll('[data-e2e="chat-item"]'));
+  if (!rows.length) rows = Array.prototype.slice.call(document.querySelectorAll('div[class*="ConversationItem"]'));
+  if (!rows.length) {
+    var nicks = document.querySelectorAll('p[class*="PInfoNickname"]');
+    for (var ni = 0; ni < nicks.length; ni++) {
+      var p = nicks[ni].closest('div[role="listitem"], li, div');
+      if (p && rows.indexOf(p) < 0) rows.push(p);
+    }
+  }
+  var r = rows[targetIdx];
+  if (!r) return false;
+  window.__botAllowSidebarClick = true;
+  try {
+    r.scrollIntoView({ block: 'center' });
+    r.click();
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    window.__botAllowSidebarClick = false;
+  }
+})(arguments[0]);
+"""
+
+
+# Legacy helper retained strictly for backwards compatibility: matches exact
+# @handle only (never substring display names like single-letter "M").
 OPEN_THREAD_JS = r"""
 return (function () {
   var name = __NAME__;
-  var t = name.toLowerCase();
+  var t = String(name || '').replace(/^@+/, '').trim().toLowerCase();
+  if (!t) return null;
   function match(txt) {
     if (!txt) return false;
     txt = txt.trim().toLowerCase();
     if (!txt) return false;
-    return txt === t || txt.indexOf('@' + t) >= 0 || t.indexOf(txt) >= 0;
+    return txt === t || txt === ('@' + t) || txt.indexOf('@' + t) >= 0;
   }
-  var cands = ['p[class*="PInfoNickname"]', '[data-e2e="dm-new-conversation-nickname"]', '[data-e2e="dm-new-conversation-item"]'];
+  var cands = ['[data-e2e="dm-new-conversation-item"]', '[data-e2e="chat-item"]', '[data-e2e="dm-new-conversation-nickname"]', 'p[class*="PInfoNickname"]'];
   for (var c = 0; c < cands.length; c++) {
     var nodes = document.querySelectorAll(cands[c]);
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       if (n.offsetParent === null) continue;
+      var hrefEl = n.querySelector ? n.querySelector('a[href*="/@"]') : null;
+      var hrefMatch = hrefEl && String(hrefEl.getAttribute('href') || '').toLowerCase().indexOf('/@' + t) >= 0;
       var txt = n.innerText || '';
-      if (match(txt) && txt.trim().length < 60) { n.click(); return { sel: cands[c], txt: txt.trim().slice(0, 40) }; }
+      if (hrefMatch || (match(txt) && txt.trim().length < 60)) {
+        window.__botAllowSidebarClick = true;
+        try { n.click(); } finally { window.__botAllowSidebarClick = false; }
+        return { sel: cands[c], txt: txt.trim().slice(0, 40) };
+      }
     }
   }
   return null;
@@ -765,16 +1185,16 @@ def _media_net_ok(state: dict) -> bool:
 
 
 def send_photo_card(browser, friend: str, photo_path: str,
-                    open_retries: int = 2, per_try_wait: float = 3.0) -> dict:
+                    open_retries: int = 2, per_try_wait: float = 3.0, stop_event=None) -> dict:
     """Send one photo to @friend via the inbox media button.
 
-    Retries by reloading the inbox when the media button does not render.
-    Requires the WS hook (install_ws_hook) so the send can be confirmed via the
-    picture_card frame, and the file guard (install_media_guard) installed
-    before navigation. Returns {sent, error}.
+    Verifies the active chat header matches `@friend` before opening the media
+    picker and before every modal Send click so photos can never be sent to an
+    interrupted or wrong conversation. Returns {sent, error}.
     """
-    import json as _json, os as _os
+    import os as _os
     from selenium.webdriver.common.by import By
+    from .actions import open_inbox_chat, dismiss_modals
 
     # ChromeDriver rejects a relative path for a file input ("path is not
     # absolute"), so resolve against the working directory first.
@@ -782,15 +1202,22 @@ def send_photo_card(browser, friend: str, photo_path: str,
     if not _os.path.exists(photo_path):
         return {"sent": False, "error": f"photo not found: {photo_path}"}
 
+    target = clean_handle(friend).lower()
     try:
         opened = False
         for attempt in range(1, open_retries + 1):
-            if attempt > 1 or "/messages" not in browser.current_url:
+            if stop_event is not None and stop_event.is_set():
+                return {"sent": False, "error": "Cancelled"}
+            if attempt > 1 or "/messages" not in str(getattr(browser, "current_url", "") or ""):
                 browser.get(MESSAGES_URL)
                 time.sleep(4)
-            browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))
-            time.sleep(2)
+                open_inbox_chat(browser, friend, stop_event=stop_event)
+            elif get_active_chat_handle(browser) != target:
+                open_inbox_chat(browser, friend, stop_event=stop_event)
+            assert_active_chat_handle(browser, friend)
+            time.sleep(1.5)
             if _wait_media_button(browser, per_try_wait):
+                assert_active_chat_handle(browser, friend)
                 opened = True
                 logger.info("[%s] media button present (attempt %d).", friend, attempt)
                 break
@@ -800,6 +1227,7 @@ def send_photo_card(browser, friend: str, photo_path: str,
         if not opened:
             return {"sent": False, "error": "media button never rendered (TikTok Web desktop does not support photo upload in this session)"}
 
+        assert_active_chat_handle(browser, friend)
         items_before = _chat_item_count(browser)
         before_recv = browser.execute_script("return (window.__recv || []).length;") or 0
         # Fresh network markers for this send.
@@ -809,6 +1237,9 @@ def send_photo_card(browser, friend: str, photo_path: str,
         # The guard parks TikTok's file input in the DOM; wait for it.
         inp = None
         for _ in range(20):
+            if stop_event is not None and stop_event.is_set():
+                dismiss_modals(browser)
+                return {"sent": False, "error": "Cancelled"}
             els = browser.find_elements(By.ID, "im-file-input-select")
             if els:
                 inp = els[0]
@@ -822,6 +1253,9 @@ def send_photo_card(browser, friend: str, photo_path: str,
         # The media modal must open (Send button appears) before we can send.
         modal_seen = False
         for _ in range(20):
+            if stop_event is not None and stop_event.is_set():
+                dismiss_modals(browser)
+                return {"sent": False, "error": "Cancelled"}
             if browser.execute_script(SEND_BTN_PRESENT_JS):
                 modal_seen = True
                 break
@@ -829,13 +1263,14 @@ def send_photo_card(browser, friend: str, photo_path: str,
         if not modal_seen:
             return {"sent": False, "error": "media preview modal did not open after choosing a file"}
 
-        # Click Send, then confirm by DOM. A successful send closes the modal and
-        # adds a chat bubble; if the modal is still open the click missed, so try
-        # again (up to a few times) before giving up.
+        # Click Send, then confirm by DOM. Always verify header handle before Send.
         import base64 as _b64
         deadline = time.time() + 20
         clicked_once = False
         while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                dismiss_modals(browser)
+                return {"sent": False, "error": "Cancelled"}
             # Network is the truth: the page uploaded the image and the send
             # came back 2xx. A bubble alone can be optimistic and never sync.
             if _media_net_ok(_media_net_state(browser)):
@@ -872,6 +1307,12 @@ def send_photo_card(browser, friend: str, photo_path: str,
                     return {"sent": True, "error": None}
 
             if still_modal:
+                try:
+                    assert_active_chat_handle(browser, friend)
+                except RecipientMismatchError as rme:
+                    logger.error("[%s] %s Dismissing media modal without sending.", friend, rme)
+                    dismiss_modals(browser)
+                    return {"sent": False, "error": str(rme)}
                 # Modal still up: the send did not register. Re-click it.
                 clicked = (browser.execute_script(CLICK_SEND_JS) or {}).get("clicked")
                 if not clicked:  # real-click fallback on the modal's Send button
@@ -900,6 +1341,10 @@ def send_photo_card(browser, friend: str, photo_path: str,
             return {"sent": False, "error": f"media not supported (bubble={bubble})"}
         return {"sent": False,
                 "error": f"photo send unconfirmed (no media network send; net={net}, bubble={bubble})"}
+    except RecipientMismatchError as e:
+        dismiss_modals(browser)
+        logger.error("Photo card aborted for @%s: %s", friend, e)
+        return {"sent": False, "error": str(e)}
     except Exception as e:
         logger.error("Photo card to @%s failed: %s", friend, e)
         return {"sent": False, "error": str(e)}

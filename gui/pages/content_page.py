@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QSize, Qt, QTime, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTime, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -27,6 +28,7 @@ from qfluentwidgets import (
     FlowLayout,
     FluentIcon as FIF,
     HeaderCardWidget,
+    HorizontalSeparator,
     ImageLabel,
     InfoBar,
     InfoBarPosition,
@@ -45,6 +47,7 @@ from qfluentwidgets import (
     TimePicker,
     TitleLabel,
     TransparentPushButton,
+    TransparentToolButton,
     isDarkTheme,
     qconfig,
 )
@@ -134,7 +137,9 @@ except ImportError:  # pragma: no cover
 from gui.widgets.chip_list import ChipFlowWidget
 from gui.widgets.device_login_dialog import DeviceLoginDialog
 from gui.widgets.fluent_spin_box import FluentSpinBox
+from gui.widgets.split_row import ResponsiveSplitRow
 from gui.widgets.status_pill import StatusPill
+from gui.version import APP_VERSION
 from gui.workers import WorkerController
 
 
@@ -210,38 +215,213 @@ def _parse_repo_input(raw: str, default_owner: str = "") -> dict[str, Any]:
     return repo_chk
 
 
-def _fetch_user_repos_task(token: str) -> list[dict[str, Any]]:
-    gh = GitHub(token.strip())
-    list_fn = getattr(gh, "list_user_repos", None)
-    if callable(list_fn):
-        return list(list_fn(limit=100) or [])
-    data = gh._req(
-        "GET",
-        "/user/repos?sort=updated&affiliation=owner,collaborator,organization_member&per_page=100",
-    )
-    if not isinstance(data, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        out.append(
-            {
-                "full_name": str(item.get("full_name") or ""),
-                "name": str(item.get("name") or ""),
-                "owner": str(((item.get("owner") or {}).get("login")) or ""),
-                "private": bool(item.get("private", False)),
-                "default_branch": str(item.get("default_branch") or "main"),
-                "html_url": str(item.get("html_url") or ""),
-            }
-        )
-    return out
-
-
 def _validate_pat_task(token: str) -> dict[str, Any]:
     gh = GitHub(token.strip())
     me = gh.whoami()
     return {"token": token.strip(), "user": me}
+
+
+def _discover_bot_repos_task(token: str) -> dict[str, Any]:
+    gh = GitHub(token.strip())
+    return gh.discover_bot_repos(limit=100, workflow_file=WORKFLOW_FILE)
+
+
+def _toggle_bot_repo_workflow_task(token: str, full_name: str, pause: bool) -> dict[str, Any]:
+    gh = GitHub(token.strip())
+    if pause:
+        res = gh.pause_workflow(full_name, WORKFLOW_FILE, cancel_running=True)
+        return {
+            "full_name": full_name,
+            "active": False,
+            "workflow_state": "disabled_manually",
+            "cancelled_run_ids": list(res.get("cancelled_run_ids") or []),
+        }
+    gh.enable_workflow(full_name, WORKFLOW_FILE)
+    return {
+        "full_name": full_name,
+        "active": True,
+        "workflow_state": "active",
+        "cancelled_run_ids": [],
+    }
+
+
+def _pause_multiple_bot_repos_task(token: str, repo_names: list[str]) -> dict[str, Any]:
+    gh = GitHub(token.strip())
+    paused: list[str] = []
+    for full_name in repo_names:
+        clean = str(full_name or "").strip()
+        if not clean:
+            continue
+        gh.pause_workflow(clean, WORKFLOW_FILE, cancel_running=True)
+        paused.append(clean)
+    return {"paused": paused}
+
+
+class _SelectionDot(QWidget):
+    """Compact circular radio indicator showing which repository row is active."""
+
+    def __init__(self, selected: bool = False, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._selected = bool(selected)
+        self.setFixedSize(16, 16)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = bool(selected)
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        dark = isDarkTheme()
+        if self._selected:
+            accent = QColor("#4cc2ff" if dark else "#005fb8")
+            painter.setPen(QPen(accent, 1.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(2, 2, 12, 12)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(accent)
+            painter.drawEllipse(5, 5, 6, 6)
+        else:
+            ring = QColor(255, 255, 255, 76) if dark else QColor(0, 0, 0, 76)
+            painter.setPen(QPen(ring, 1.4))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(2, 2, 12, 12)
+
+
+class _StatusDot(QWidget):
+    """6px semantic dot used inline with calm status text instead of pill badges."""
+
+    def __init__(self, active: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._active = bool(active)
+        self.setFixedSize(8, 8)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        dark = isDarkTheme()
+        if self._active:
+            color = QColor("#6ccb5f" if dark else "#0f7b0f")
+        else:
+            color = QColor("#f59e0b" if dark else "#9d5d00")
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawEllipse(1, 1, 6, 6)
+
+
+class _BotRepoRow(QFrame):
+    """Flat, clickable repository row with split-aligned uniform actions."""
+
+    clicked = Signal()
+
+    def __init__(
+        self,
+        repo_item: dict[str, Any],
+        is_selected: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("botRepoRow")
+        self.repo_item = dict(repo_item)
+        full_name = str(repo_item.get("full_name") or "")
+        is_active = bool(repo_item.get("active"))
+        is_priv = bool(repo_item.get("private"))
+        html_url = str(repo_item.get("html_url") or f"https://github.com/{full_name}")
+
+        self.setCursor(Qt.PointingHandCursor)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(10)
+
+        self.radioDot = _SelectionDot(is_selected, self)
+        lay.addWidget(self.radioDot, 0, Qt.AlignVCenter)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(2)
+
+        self.nameLabel = StrongBodyLabel(full_name, self) if is_selected else BodyLabel(full_name, self)
+        self.nameLabel.setStyleSheet("background: transparent;")
+        self.nameLabel.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        text_col.addWidget(self.nameLabel)
+
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(5)
+        self.statusDot = _StatusDot(is_active, self)
+        state_lbl = tr("cloud.repo_state_active") if is_active else tr("cloud.repo_state_paused")
+        vis_lbl = tr("cloud.repo_private_tag") if is_priv else tr("cloud.repo_public_tag")
+        meta_text = f"{state_lbl}  \u00b7  {vis_lbl}"
+        if is_selected:
+            meta_text = f"{meta_text}  \u00b7  {tr('cloud.repo_selected_tag')}"
+        self.metaLabel = CaptionLabel(meta_text, self)
+        self.metaLabel.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        meta_row.addWidget(self.statusDot, 0, Qt.AlignVCenter)
+        meta_row.addWidget(self.metaLabel, 0, Qt.AlignVCenter)
+        meta_row.addStretch(1)
+        text_col.addLayout(meta_row)
+
+        lay.addLayout(text_col, 1)
+
+        btns_row = QHBoxLayout()
+        btns_row.setContentsMargins(0, 0, 0, 0)
+        btns_row.setSpacing(6)
+
+        toggle_txt = tr("cloud.pause_short") if is_active else tr("cloud.resume_short")
+        self.toggleBtn = PushButton(
+            FIF.PAUSE if is_active else FIF.PLAY,
+            escape_qt_mnemonic(toggle_txt),
+            self,
+        )
+        self.toggleBtn.setFixedHeight(32)
+        self.toggleBtn.setMinimumWidth(92)
+        self.toggleBtn.setCursor(Qt.ArrowCursor)
+
+        self.openBtn = TransparentToolButton(FIF.LINK, self)
+        self.openBtn.setFixedSize(32, 32)
+        self.openBtn.setToolTip(f"{tr('cloud.open_repo_tooltip')}\n{html_url}")
+        self.openBtn.setCursor(Qt.ArrowCursor)
+        self.openBtn.clicked.connect(lambda _=False, u=html_url: QDesktopServices.openUrl(QUrl(u)))
+
+        btns_row.addWidget(self.toggleBtn, 0, Qt.AlignVCenter)
+        btns_row.addWidget(self.openBtn, 0, Qt.AlignVCenter)
+        lay.addLayout(btns_row)
+
+        self.apply_theme(is_selected)
+
+    def apply_theme(self, is_selected: bool) -> None:
+        dark = isDarkTheme()
+        if is_selected:
+            bg = "rgba(76, 194, 255, 0.08)" if dark else "rgba(0, 95, 184, 0.06)"
+            border = "rgba(76, 194, 255, 0.30)" if dark else "rgba(0, 95, 184, 0.24)"
+            hover_bg = "rgba(76, 194, 255, 0.12)" if dark else "rgba(0, 95, 184, 0.10)"
+            meta_fg = "#b8c7d4" if dark else "#455463"
+        else:
+            bg = "transparent"
+            border = "rgba(255, 255, 255, 0.07)" if dark else "rgba(0, 0, 0, 0.07)"
+            hover_bg = "rgba(255, 255, 255, 0.04)" if dark else "rgba(0, 0, 0, 0.035)"
+            meta_fg = "#a3a3a3" if dark else "#616161"
+        self.setStyleSheet(
+            f"QFrame#botRepoRow {{"
+            f" background-color: {bg};"
+            f" border: 1px solid {border};"
+            f" border-radius: 6px;"
+            f"}}"
+            f"QFrame#botRepoRow:hover {{"
+            f" background-color: {hover_bg};"
+            f"}}"
+        )
+        self.metaLabel.setStyleSheet(f"color: {meta_fg}; background: transparent;")
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 def _build_cloud_secrets(state: AppState, secret_store: SecretStore) -> dict[str, str]:
@@ -337,6 +517,7 @@ def _deploy_github_task(
     desired_secrets: dict[str, str],
     log_cb: Callable[[str], None] | None = None,
     sync_only: bool = False,
+    pause_repos: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     def _log(msg: str) -> None:
         if log_cb:
@@ -358,6 +539,16 @@ def _deploy_github_task(
     owner_part = parsed["owner"] or login
     repo_part = parsed["name"]
     full_name = f"{owner_part}/{repo_part}"
+
+    for old_repo in pause_repos or ():
+        cleaned_old = str(old_repo or "").strip()
+        if not cleaned_old or cleaned_old.lower() == full_name.lower():
+            continue
+        _log(f"Pausing extra bot schedule in {cleaned_old}...")
+        try:
+            gh.pause_workflow(cleaned_old, WORKFLOW_FILE, cancel_running=True)
+        except GitHubError as exc:
+            _log(f"Note pausing {cleaned_old}: {exc}")
 
     if is_private:
         create_kwargs: dict[str, Any] = {
@@ -430,6 +621,7 @@ def _deploy_github_task(
         "html_url": html_url,
         "written": sync_res["written"],
         "deleted": sync_res["deleted"],
+        "sync_only": bool(sync_only),
     }
 
 
@@ -438,6 +630,7 @@ class ContentPage(SmoothScrollArea):
 
     state_changed = Signal()
     log_emitted = Signal(str)
+    cloud_repos_updated = Signal(object)
 
     def __init__(
         self,
@@ -457,7 +650,10 @@ class ContentPage(SmoothScrollArea):
         self._loading = False
         self._smoke_test = smoke_test
         self._windows_tasks_count: int | None = None
-        self._fetched_repos: dict[str, dict[str, Any]] = {}
+        self._discovered_all_repos: dict[str, dict[str, Any]] = {}
+        self._discovered_bot_repos: list[dict[str, Any]] = []
+        self._bot_scan_done_for_token: str = ""
+        self._bot_repo_row_widgets: list[QWidget] = []
         self._cloud_advanced_expanded = False
         self._pat_expanded = False
         self._raw_cron_expanded = False
@@ -726,18 +922,13 @@ class ContentPage(SmoothScrollArea):
         l_lay.addLayout(local_opts_grid)
         mode_body.addWidget(self.localSection)
 
-        # 4b. GitHub Cloud section (structured into 3 clear WinUI 3 sub-groups)
+        # 4b. GitHub Cloud section (single flat card surface with 1px hairlines)
         self.cloudSection = SimpleCardWidget(self.modeCard)
         c_lay = QVBoxLayout(self.cloudSection)
-        c_lay.setContentsMargins(14, 14, 14, 14)
-        c_lay.setSpacing(12)
+        c_lay.setContentsMargins(18, 16, 18, 18)
+        c_lay.setSpacing(14)
 
-        # Top header bar: vertically centered 32px title+badge group + buttons group (wraps cleanly if narrow)
-        c_head_row = FlowLayout(isTight=True)
-        c_head_row.setContentsMargins(0, 0, 0, 0)
-        c_head_row.setHorizontalSpacing(10)
-        c_head_row.setVerticalSpacing(6)
-
+        # Split-aligned header bar: title + status pill left, account actions flush right
         c_title_grp = QWidget(self.cloudSection)
         c_title_grp.setFixedHeight(32)
         c_title_lay = QHBoxLayout(c_title_grp)
@@ -769,23 +960,25 @@ class ContentPage(SmoothScrollArea):
         c_btns_lay.addWidget(self.ghSwitchBtn, 0, Qt.AlignVCenter)
         c_btns_lay.addWidget(self.ghSignoutBtn, 0, Qt.AlignVCenter)
 
-        c_head_row.addWidget(c_title_grp)
-        c_head_row.addWidget(c_btns_grp)
-        c_lay.addLayout(c_head_row)
+        self.cloudHeaderRow = ResponsiveSplitRow(
+            c_title_grp, c_btns_grp, h_spacing=12, v_spacing=8, parent=self.cloudSection
+        )
+        c_lay.addWidget(self.cloudHeaderRow)
+        c_lay.addWidget(HorizontalSeparator(self.cloudSection))
 
-        # Group 1: GitHub Account & Target Repository
-        self.cloudRepoBox = QFrame(self.cloudSection)
+        # Group 1: Target Repository (borderless flat container)
+        self.cloudRepoBox = QWidget(self.cloudSection)
         self.cloudRepoBox.setObjectName("cloudRepoBox")
         repo_box_lay = QVBoxLayout(self.cloudRepoBox)
-        repo_box_lay.setContentsMargins(12, 10, 12, 10)
-        repo_box_lay.setSpacing(8)
+        repo_box_lay.setContentsMargins(0, 0, 0, 0)
+        repo_box_lay.setSpacing(10)
 
         self.cloudRepoSectionLabel = StrongBodyLabel(
             tr("cloud.section_account_repo"), self.cloudRepoBox
         )
         repo_box_lay.addWidget(self.cloudRepoSectionLabel)
 
-        # Repo name grid (primary input)
+        # Repo name field with calm helper caption underneath
         repo_grid = QGridLayout()
         repo_grid.setContentsMargins(0, 0, 0, 0)
         repo_grid.setHorizontalSpacing(8)
@@ -795,18 +988,18 @@ class ContentPage(SmoothScrollArea):
         repo_top.setSpacing(8)
         self.repoNameLabel = BodyLabel(tr("cloud.repo_name"), self.cloudRepoBox)
         self.repoValidBadge = StatusPill("", "warning", self.cloudRepoBox)
-        self.repoValidCaption = CaptionLabel("", self.cloudRepoBox)
-        self.repoValidCaption.setStyleSheet("color: #6ccb5f;")
-        repo_top.addWidget(self.repoNameLabel)
-        repo_top.addWidget(self.repoValidBadge)
-        repo_top.addWidget(self.repoValidCaption)
+        repo_top.addWidget(self.repoNameLabel, 0, Qt.AlignVCenter)
+        repo_top.addWidget(self.repoValidBadge, 0, Qt.AlignVCenter)
         repo_top.addStretch(1)
         self.repoNameEdit = LineEdit(self.cloudRepoBox)
         self.repoNameEdit.setMinimumWidth(0)
         self.repoNameEdit.setPlaceholderText(tr("cloud.repo_name_hint"))
         self.repoNameEdit.textChanged.connect(self._on_repo_name_changed)
+        self.repoValidCaption = CaptionLabel("", self.cloudRepoBox)
+        self.repoValidCaption.setWordWrap(True)
         repo_grid.addLayout(repo_top, 0, 0)
         repo_grid.addWidget(self.repoNameEdit, 1, 0)
+        repo_grid.addWidget(self.repoValidCaption, 2, 0)
         repo_box_lay.addLayout(repo_grid)
 
         # Private repo switch
@@ -816,11 +1009,65 @@ class ContentPage(SmoothScrollArea):
         self.privateRepoLabel.setWordWrap(True)
         self.privateRepoSwitch = SwitchButton(self.cloudRepoBox)
         self.privateRepoSwitch.checkedChanged.connect(self._on_private_repo_changed)
-        priv_row.addWidget(self.privateRepoLabel, 1)
-        priv_row.addWidget(self.privateRepoSwitch)
+        priv_row.addWidget(self.privateRepoLabel, 1, Qt.AlignVCenter)
+        priv_row.addWidget(self.privateRepoSwitch, 0, Qt.AlignVCenter)
         repo_box_lay.addLayout(priv_row)
 
-        # Progressive Disclosure Drawer: Existing Repo, Sync-Only & PAT
+        # Detected Bot Repositories panel (borderless flat list separated by hairline)
+        self.botReposPanel = QWidget(self.cloudRepoBox)
+        self.botReposPanel.setObjectName("botReposPanel")
+        bot_panel_lay = QVBoxLayout(self.botReposPanel)
+        bot_panel_lay.setContentsMargins(0, 2, 0, 0)
+        bot_panel_lay.setSpacing(8)
+        bot_panel_lay.addWidget(HorizontalSeparator(self.botReposPanel))
+
+        bot_hdr = QHBoxLayout()
+        bot_hdr.setSpacing(8)
+        self.botReposHeading = StrongBodyLabel(tr("cloud.bot_repos_title"), self.botReposPanel)
+        self.botReposSummaryBadge = StatusPill("", "info", self.botReposPanel)
+        self.botReposSummaryBadge.hide()
+        self.scanBotReposBtn = TransparentToolButton(FIF.SYNC, self.botReposPanel)
+        self.scanBotReposBtn.setFixedSize(32, 32)
+        self.scanBotReposBtn.setToolTip(tr("cloud.scan_bot_repos_tooltip"))
+        self.scanBotReposBtn.clicked.connect(self.scan_bot_repos)
+        bot_hdr.addWidget(self.botReposHeading, 0, Qt.AlignVCenter)
+        bot_hdr.addWidget(self.botReposSummaryBadge, 0, Qt.AlignVCenter)
+        bot_hdr.addStretch(1)
+        bot_hdr.addWidget(self.scanBotReposBtn, 0, Qt.AlignVCenter)
+        bot_panel_lay.addLayout(bot_hdr)
+
+        self.duplicateBotBanner = QFrame(self.botReposPanel)
+        self.duplicateBotBanner.setObjectName("duplicateBotBanner")
+        dup_lay = QHBoxLayout(self.duplicateBotBanner)
+        dup_lay.setContentsMargins(10, 7, 10, 7)
+        dup_lay.setSpacing(10)
+        self.duplicateBotLabel = CaptionLabel("", self.duplicateBotBanner)
+        self.duplicateBotLabel.setWordWrap(True)
+        self.pauseOtherBotsBtn = PushButton(
+            FIF.PAUSE, escape_qt_mnemonic(tr("cloud.pause_others_btn")), self.duplicateBotBanner
+        )
+        self.pauseOtherBotsBtn.setFixedHeight(30)
+        self.pauseOtherBotsBtn.clicked.connect(self._pause_other_bot_repos)
+        dup_lay.addWidget(self.duplicateBotLabel, 1, Qt.AlignVCenter)
+        dup_lay.addWidget(self.pauseOtherBotsBtn, 0, Qt.AlignVCenter)
+        self.duplicateBotBanner.hide()
+        bot_panel_lay.addWidget(self.duplicateBotBanner)
+
+        self.botReposEmptyLabel = CaptionLabel(tr("cloud.bot_repos_none"), self.botReposPanel)
+        self.botReposEmptyLabel.setWordWrap(True)
+        self.botReposEmptyLabel.hide()
+        bot_panel_lay.addWidget(self.botReposEmptyLabel)
+
+        self.botReposRowsBox = QWidget(self.botReposPanel)
+        self.botReposRowsLayout = QVBoxLayout(self.botReposRowsBox)
+        self.botReposRowsLayout.setContentsMargins(0, 0, 0, 0)
+        self.botReposRowsLayout.setSpacing(6)
+        bot_panel_lay.addWidget(self.botReposRowsBox)
+
+        self.botReposPanel.hide()
+        repo_box_lay.addWidget(self.botReposPanel)
+
+        # Progressive Disclosure Drawer: Sync-Only & PAT
         adv_repo_toggle_row = QHBoxLayout()
         adv_repo_toggle_row.setContentsMargins(0, 0, 0, 0)
         adv_repo_toggle_row.setSpacing(6)
@@ -839,21 +1086,6 @@ class ContentPage(SmoothScrollArea):
         adv_lay = QVBoxLayout(self.cloudAdvancedContainer)
         adv_lay.setContentsMargins(0, 4, 0, 0)
         adv_lay.setSpacing(8)
-
-        # Existing repo picker row
-        existing_repo_row = QHBoxLayout()
-        existing_repo_row.setSpacing(8)
-        self.existingRepoCombo = ComboBox(self.cloudAdvancedContainer)
-        self.existingRepoCombo.setMinimumWidth(0)
-        self.existingRepoCombo.addItem(tr("cloud.select_existing_repo"), userData=None)
-        self.existingRepoCombo.currentIndexChanged.connect(self._on_existing_repo_selected)
-        self.fetchReposBtn = PushButton(
-            FIF.SYNC, escape_qt_mnemonic(tr("cloud.fetch_repos")), self.cloudAdvancedContainer
-        )
-        self.fetchReposBtn.clicked.connect(self._fetch_my_repos)
-        existing_repo_row.addWidget(self.existingRepoCombo, 1)
-        existing_repo_row.addWidget(self.fetchReposBtn)
-        adv_lay.addLayout(existing_repo_row)
 
         # Sync-only checkbox (for existing repositories)
         sync_only_box = QVBoxLayout()
@@ -905,13 +1137,14 @@ class ContentPage(SmoothScrollArea):
         self.cloudAdvancedContainer.hide()
         repo_box_lay.addWidget(self.cloudAdvancedContainer)
         c_lay.addWidget(self.cloudRepoBox)
+        c_lay.addWidget(HorizontalSeparator(self.cloudSection))
 
-        # Group 2: Daily Cloud Schedule (visual time chips + quick presets + calm delay note + raw cron)
-        self.cloudScheduleBox = QFrame(self.cloudSection)
+        # Group 2: Daily Cloud Schedule (borderless flat container)
+        self.cloudScheduleBox = QWidget(self.cloudSection)
         self.cloudScheduleBox.setObjectName("cloudScheduleBox")
         sched_lay = QVBoxLayout(self.cloudScheduleBox)
-        sched_lay.setContentsMargins(12, 10, 12, 10)
-        sched_lay.setSpacing(8)
+        sched_lay.setContentsMargins(0, 0, 0, 0)
+        sched_lay.setSpacing(10)
 
         tz_short = self._active_tz_info()["short"]
         self.cloudTimeLabel = StrongBodyLabel(
@@ -981,15 +1214,9 @@ class ContentPage(SmoothScrollArea):
         self.cronSummaryLabel.setWordWrap(True)
         sched_lay.addWidget(self.cronSummaryLabel)
 
-        self.cloudDelayBox = QFrame(self.cloudScheduleBox)
-        self.cloudDelayBox.setObjectName("cloudDelayBox")
-        delay_lay = QHBoxLayout(self.cloudDelayBox)
-        delay_lay.setContentsMargins(10, 7, 10, 7)
-        delay_lay.setSpacing(8)
-        self.cloudDelayNote = CaptionLabel(tr("schedule.cloud_delay_note"), self.cloudDelayBox)
+        self.cloudDelayNote = CaptionLabel(tr("schedule.cloud_delay_note"), self.cloudScheduleBox)
         self.cloudDelayNote.setWordWrap(True)
-        delay_lay.addWidget(self.cloudDelayNote, 1)
-        sched_lay.addWidget(self.cloudDelayBox)
+        sched_lay.addWidget(self.cloudDelayNote)
 
         raw_cron_toggle_row = QHBoxLayout()
         raw_cron_toggle_row.setContentsMargins(0, 0, 0, 0)
@@ -1019,18 +1246,20 @@ class ContentPage(SmoothScrollArea):
         sched_lay.addWidget(self.rawCronContainer)
 
         c_lay.addWidget(self.cloudScheduleBox)
+        c_lay.addWidget(HorizontalSeparator(self.cloudSection))
 
-        # Group 3: Deploy Action Footer
+        # Group 3: Deploy Action Footer (status left, primary CTA flush right)
         deploy_row = QHBoxLayout()
-        deploy_row.setSpacing(10)
+        deploy_row.setSpacing(12)
+        self.deployStatusLabel = CaptionLabel("", self.cloudSection)
+        self.deployStatusLabel.setWordWrap(True)
+        self.deployStatusLabel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.deployBtn = PrimaryPushButton(
             FIF.CLOUD, escape_qt_mnemonic(tr("schedule.deploy_btn")), self.cloudSection
         )
         self.deployBtn.clicked.connect(self._deploy_to_github)
-        self.deployStatusLabel = CaptionLabel("", self.cloudSection)
-        self.deployStatusLabel.setWordWrap(True)
-        deploy_row.addWidget(self.deployBtn)
-        deploy_row.addWidget(self.deployStatusLabel, 1)
+        deploy_row.addWidget(self.deployStatusLabel, 1, Qt.AlignVCenter)
+        deploy_row.addWidget(self.deployBtn, 0, Qt.AlignVCenter)
         c_lay.addLayout(deploy_row)
 
         self._apply_cloud_subbox_styles()
@@ -1515,36 +1744,36 @@ class ContentPage(SmoothScrollArea):
     # -- GitHub Auth & Deploy --------------------------------------------
     def _apply_cloud_subbox_styles(self, _theme=None) -> None:
         if isDarkTheme():
-            sub_bg = "rgba(255, 255, 255, 0.025)"
-            sub_border = "rgba(255, 255, 255, 0.07)"
-            note_bg = "rgba(255, 255, 255, 0.03)"
-            note_border = "rgba(255, 255, 255, 0.08)"
-            note_accent = "rgba(96, 205, 255, 0.55)"
+            muted_fg = "#9a9a9a"
+            warn_bg = "rgba(252, 225, 0, 0.07)"
+            warn_border = "rgba(252, 225, 0, 0.24)"
+            warn_fg = "#fce100"
             valid_fg = "#6ccb5f"
         else:
-            sub_bg = "rgba(0, 0, 0, 0.02)"
-            sub_border = "rgba(0, 0, 0, 0.07)"
-            note_bg = "rgba(0, 0, 0, 0.025)"
-            note_border = "rgba(0, 0, 0, 0.08)"
-            note_accent = "rgba(0, 95, 184, 0.50)"
+            muted_fg = "#616161"
+            warn_bg = "rgba(157, 93, 0, 0.06)"
+            warn_border = "rgba(157, 93, 0, 0.24)"
+            warn_fg = "#9d5d00"
             valid_fg = "#0f7b0f"
 
-        box_css = (
-            " background-color: " + sub_bg + ";"
-            " border: 1px solid " + sub_border + ";"
-            " border-radius: 6px;"
-        )
-        self.cloudRepoBox.setStyleSheet(f"QFrame#cloudRepoBox {{{box_css}}}")
-        self.cloudScheduleBox.setStyleSheet(f"QFrame#cloudScheduleBox {{{box_css}}}")
-        self.cloudDelayBox.setStyleSheet(
-            f"QFrame#cloudDelayBox {{"
-            f" background-color: {note_bg};"
-            f" border: 1px solid {note_border};"
-            f" border-left: 3px solid {note_accent};"
-            f" border-radius: 4px;"
+        self.duplicateBotBanner.setStyleSheet(
+            f"QFrame#duplicateBotBanner {{"
+            f" background-color: {warn_bg};"
+            f" border: 1px solid {warn_border};"
+            f" border-radius: 6px;"
             f"}}"
         )
-        self.repoValidCaption.setStyleSheet(f"color: {valid_fg};")
+        self.duplicateBotLabel.setStyleSheet(f"color: {warn_fg}; background: transparent;")
+        self.cloudDelayNote.setStyleSheet(f"color: {muted_fg}; background: transparent;")
+        self.repoValidCaption.setStyleSheet(f"color: {valid_fg}; background: transparent;")
+        cur_parsed = _parse_repo_input(self.repoNameEdit.text(), default_owner=self._state.github_login)
+        cur_full = str(cur_parsed.get("full_name") or "").strip().lower()
+        for row in self._bot_repo_row_widgets:
+            if isinstance(row, _BotRepoRow):
+                fn = str(row.repo_item.get("full_name") or "").strip().lower()
+                row.apply_theme(bool(cur_full and cur_full == fn))
+                row.radioDot.update()
+                row.statusDot.update()
 
     def _set_cloud_advanced_expanded(self, expanded: bool) -> None:
         self._cloud_advanced_expanded = bool(expanded)
@@ -1582,6 +1811,7 @@ class ContentPage(SmoothScrollArea):
         self.ghSwitchBtn.setVisible(has_tok)
         self.ghSignoutBtn.setVisible(has_tok)
         self.ghSignoutBtn.setEnabled(has_tok)
+        self.botReposPanel.setVisible(has_tok)
 
     def _set_gh_auth_buttons_enabled(self, enabled: bool) -> None:
         self.ghSigninBtn.setEnabled(enabled)
@@ -1610,6 +1840,7 @@ class ContentPage(SmoothScrollArea):
         if dlg.exec() and dlg.result_token:
             self._secrets.set_github_token(dlg.result_token)
             self._state.github_login = str(dlg.result_user.get("login") or "").strip()
+            self._bot_scan_done_for_token = ""
             self._set_pat_expanded(False)
             self._refresh_github_badge()
             self.state_changed.emit()
@@ -1620,6 +1851,7 @@ class ContentPage(SmoothScrollArea):
                 position=InfoBarPosition.TOP_RIGHT,
                 parent=self.window(),
             )
+            self.maybe_auto_scan_bot_repos()
 
     def _on_device_start_err(self, err: str) -> None:
         self._set_gh_auth_buttons_enabled(True)
@@ -1659,6 +1891,7 @@ class ContentPage(SmoothScrollArea):
 
         self._secrets.set_github_token(res["token"])
         self._state.github_login = str(user.get("login") or "").strip()
+        self._bot_scan_done_for_token = ""
         self.patEdit.clear()
         self._set_pat_expanded(False)
         self._refresh_github_badge()
@@ -1670,6 +1903,7 @@ class ContentPage(SmoothScrollArea):
             position=InfoBarPosition.TOP_RIGHT,
             parent=self.window(),
         )
+        self.maybe_auto_scan_bot_repos()
 
     def _on_pat_err(self, err: str) -> None:
         self.savePatBtn.setEnabled(True)
@@ -1684,6 +1918,11 @@ class ContentPage(SmoothScrollArea):
     def _sign_out_github(self) -> None:
         self._secrets.delete_github_token()
         self._state.github_login = ""
+        self._bot_scan_done_for_token = ""
+        self._discovered_bot_repos = []
+        self._discovered_all_repos = {}
+        self._render_bot_repos_panel()
+        self.cloud_repos_updated.emit([])
         self._refresh_github_badge()
         self.state_changed.emit()
 
@@ -1697,14 +1936,37 @@ class ContentPage(SmoothScrollArea):
             self._state.github_repo_name = text.strip()
             self._schedule_save()
         self._update_repo_badge()
+        if self._discovered_bot_repos:
+            self._render_bot_repos_panel()
 
     def _update_repo_badge(self) -> None:
         chk = _parse_repo_input(self.repoNameEdit.text(), default_owner=self._state.github_login)
         if chk["valid"]:
-            self.repoValidBadge.setState("success", tr("content.repo_valid"))
-            self.repoValidBadge.hide()
-            self.repoValidCaption.setText(f"✓ {tr('content.repo_valid')}")
-            self.repoValidCaption.show()
+            target_full = str(chk.get("full_name") or "").strip().lower()
+            bot_match = next(
+                (r for r in self._discovered_bot_repos if str(r.get("full_name") or "").lower() == target_full),
+                None,
+            )
+            if bot_match is not None:
+                state_lbl = tr("cloud.repo_state_active") if bot_match.get("active") else tr("cloud.repo_state_paused")
+                self.repoValidBadge.setState("success", tr("content.repo_valid"))
+                self.repoValidBadge.hide()
+                self.repoValidCaption.setText(f"✓ {tr('cloud.repo_status_existing_bot', state=state_lbl)}")
+                self.repoValidCaption.show()
+            elif target_full and target_full in self._discovered_all_repos:
+                self.repoValidCaption.hide()
+                self.repoValidBadge.setState("warning", tr("cloud.repo_status_non_bot"))
+                self.repoValidBadge.show()
+            elif self._bot_scan_done_for_token and target_full and "/" in target_full:
+                self.repoValidBadge.setState("success", tr("content.repo_valid"))
+                self.repoValidBadge.hide()
+                self.repoValidCaption.setText(f"✓ {tr('cloud.repo_status_new')}")
+                self.repoValidCaption.show()
+            else:
+                self.repoValidBadge.setState("success", tr("content.repo_valid"))
+                self.repoValidBadge.hide()
+                self.repoValidCaption.setText(f"✓ {tr('content.repo_valid')}")
+                self.repoValidCaption.show()
             self.syncOnlyCheck.setEnabled(True)
         else:
             self.repoValidCaption.hide()
@@ -1712,74 +1974,216 @@ class ContentPage(SmoothScrollArea):
             self.repoValidBadge.show()
             self.syncOnlyCheck.setEnabled(False)
 
-    def _fetch_my_repos(self) -> None:
-        if self._workers.is_running("fetch_user_repos"):
+    # -- Bot Repo Discovery & Cloud Schedule Control ---------------------
+    def maybe_auto_scan_bot_repos(self) -> None:
+        if self._smoke_test:
+            return
+        token = self._secrets.get_github_token().strip()
+        if not token or self._bot_scan_done_for_token == token:
+            return
+        self.scan_bot_repos()
+
+    def scan_bot_repos(self) -> None:
+        if self._workers.is_running("discover_bot_repos"):
             return
         token = self._secrets.get_github_token().strip()
         if not token:
-            InfoBar.warning(
-                tr("common.warning"),
-                tr("schedule.not_signed_in"),
-                duration=3500,
-                position=InfoBarPosition.TOP_RIGHT,
-                parent=self.window(),
-            )
             return
-        self.fetchReposBtn.setEnabled(False)
+        self.scanBotReposBtn.setEnabled(False)
+        self.botReposSummaryBadge.setState("info", tr("cloud.bot_repos_scanning"))
+        self.botReposSummaryBadge.show()
         self._workers.start_task(
-            _fetch_user_repos_task,
+            _discover_bot_repos_task,
             token,
-            task_key="fetch_user_repos",
-            on_finished=self._on_repos_fetched,
-            on_error=self._on_repos_fetch_error,
+            task_key="discover_bot_repos",
+            on_finished=self._on_bot_repos_discovered,
+            on_error=self._on_bot_repos_scan_error,
         )
 
-    def _on_repos_fetched(self, repos: list[dict[str, Any]]) -> None:
-        self.fetchReposBtn.setEnabled(True)
-        self._fetched_repos = {}
-        current_txt = self.repoNameEdit.text().strip().lower()
-        match_idx = 0
+    def _on_bot_repos_discovered(self, payload: Any) -> None:
+        self.scanBotReposBtn.setEnabled(True)
+        self._bot_scan_done_for_token = self._secrets.get_github_token().strip()
+        if not isinstance(payload, dict):
+            payload = {}
+        all_repos = list(payload.get("all_repos") or [])
+        self._discovered_all_repos = {
+            str(r.get("full_name") or "").strip().lower(): r
+            for r in all_repos
+            if str(r.get("full_name") or "").strip()
+        }
+        self._discovered_bot_repos = [
+            dict(r) for r in (payload.get("bot_repos") or []) if isinstance(r, dict) and r.get("full_name")
+        ]
+        self._render_bot_repos_panel()
+        self._update_repo_badge()
+        self.cloud_repos_updated.emit(list(self._discovered_bot_repos))
 
-        self.existingRepoCombo.blockSignals(True)
-        self.existingRepoCombo.clear()
-        self.existingRepoCombo.addItem(tr("cloud.select_existing_repo"), userData=None)
-        for item in repos or []:
-            full_name = str(item.get("full_name") or "").strip()
-            if not full_name:
-                continue
-            self._fetched_repos[full_name.lower()] = item
-            vis = tr("cloud.repo_private_tag") if item.get("private") else tr("cloud.repo_public_tag")
-            self.existingRepoCombo.addItem(f"{full_name} — {vis}", userData=item)
-            if current_txt and (
-                current_txt == full_name.lower()
-                or current_txt == str(item.get("name") or "").strip().lower()
-            ):
-                match_idx = self.existingRepoCombo.count() - 1
-        self.existingRepoCombo.setCurrentIndex(match_idx)
-        self.existingRepoCombo.blockSignals(False)
+    def _on_bot_repos_scan_error(self, _err: str) -> None:
+        self.scanBotReposBtn.setEnabled(True)
+        self._render_bot_repos_panel()
 
-    def _on_repos_fetch_error(self, err: str) -> None:
-        self.fetchReposBtn.setEnabled(True)
-        InfoBar.error(
-            tr("common.error"),
-            err,
-            duration=4500,
+    def set_repo_workflow_state(self, full_name: str, wf_state: str) -> None:
+        norm = str(full_name or "").strip().lower()
+        clean_state = str(wf_state or "").strip().lower()
+        changed = False
+        for r in self._discovered_bot_repos:
+            if str(r.get("full_name") or "").strip().lower() == norm:
+                r["workflow_state"] = clean_state
+                r["active"] = clean_state == "active"
+                changed = True
+        if changed:
+            self._render_bot_repos_panel()
+            self._update_repo_badge()
+
+    def _select_bot_repo(self, repo_item: dict[str, Any]) -> None:
+        full_name = str(repo_item.get("full_name") or "").strip()
+        is_priv = bool(repo_item.get("private", False))
+        if full_name:
+            self.repoNameEdit.setText(full_name)
+        self.privateRepoSwitch.setChecked(is_priv)
+        self._render_bot_repos_panel()
+
+    def _toggle_bot_repo_workflow(self, full_name: str, pause: bool) -> None:
+        token = self._secrets.get_github_token().strip()
+        if not token or not full_name:
+            return
+        self.scanBotReposBtn.setEnabled(False)
+        self._workers.start_task(
+            _toggle_bot_repo_workflow_task,
+            token,
+            full_name,
+            pause,
+            task_key=f"toggle_bot_repo_{full_name}",
+            on_finished=self._on_bot_repo_toggled,
+            on_error=self._on_bot_repo_toggle_error,
+        )
+
+    def _on_bot_repo_toggled(self, payload: dict[str, Any]) -> None:
+        self.scanBotReposBtn.setEnabled(True)
+        full_name = str(payload.get("full_name") or "").strip()
+        wf_state = str(payload.get("workflow_state") or ("disabled_manually" if not payload.get("active") else "active"))
+        self.set_repo_workflow_state(full_name, wf_state)
+        self.cloud_repos_updated.emit(list(self._discovered_bot_repos))
+        msg_key = "cloud.schedule_resumed_ok" if payload.get("active") else "cloud.schedule_paused_ok"
+        InfoBar.success(
+            tr("common.success"),
+            tr(msg_key, repo=full_name),
+            duration=4000,
             position=InfoBarPosition.TOP_RIGHT,
             parent=self.window(),
         )
 
-    def _on_existing_repo_selected(self, _idx: int) -> None:
-        if self._loading:
+    def _on_bot_repo_toggle_error(self, err: str) -> None:
+        self.scanBotReposBtn.setEnabled(True)
+        InfoBar.error(
+            tr("common.error"),
+            err,
+            duration=5500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
+    def _render_bot_repos_panel(self) -> None:
+        while self._bot_repo_row_widgets:
+            w = self._bot_repo_row_widgets.pop()
+            self.botReposRowsLayout.removeWidget(w)
+            w.deleteLater()
+
+        repos = list(self._discovered_bot_repos or [])
+        active_repos = [r for r in repos if r.get("active")]
+        has_dup = len(active_repos) >= 2
+
+        self.botReposSummaryBadge.hide()
+
+        if not repos:
+            if self._bot_scan_done_for_token:
+                self.botReposEmptyLabel.setText(tr("cloud.bot_repos_none"))
+                self.botReposEmptyLabel.show()
+            else:
+                self.botReposEmptyLabel.hide()
+            self.duplicateBotBanner.hide()
             return
-        data = self.existingRepoCombo.currentData()
-        if not isinstance(data, dict):
+
+        self.botReposEmptyLabel.hide()
+
+        if has_dup:
+            names = ", ".join(str(r.get("full_name") or "") for r in active_repos)
+            self.duplicateBotLabel.setText(
+                tr("cloud.duplicate_warning", count=len(active_repos), repos=names)
+            )
+            self.pauseOtherBotsBtn.setVisible(True)
+            self.duplicateBotBanner.show()
+        else:
+            self.duplicateBotBanner.hide()
+
+        cur_parsed = _parse_repo_input(self.repoNameEdit.text(), default_owner=self._state.github_login)
+        cur_full = str(cur_parsed.get("full_name") or "").strip().lower()
+
+        for item in repos:
+            full_name = str(item.get("full_name") or "")
+            is_active = bool(item.get("active"))
+            is_cur = bool(cur_full and cur_full == full_name.lower())
+
+            row = _BotRepoRow(item, is_selected=is_cur, parent=self.botReposRowsBox)
+            row.clicked.connect(lambda it=dict(item): self._select_bot_repo(it))
+            row.toggleBtn.clicked.connect(
+                lambda _=False, fn=full_name, p=is_active: self._toggle_bot_repo_workflow(fn, p)
+            )
+
+            self.botReposRowsLayout.addWidget(row)
+            self._bot_repo_row_widgets.append(row)
+
+    def _pause_other_bot_repos(self) -> None:
+        token = self._secrets.get_github_token().strip()
+        if not token:
             return
-        full_name = str(data.get("full_name") or "").strip()
-        is_priv = bool(data.get("private", False))
-        if full_name:
-            self.repoNameEdit.setText(full_name)
-        self.privateRepoSwitch.setChecked(is_priv)
-        self.syncOnlyCheck.setEnabled(True)
+        active_repos = [r for r in self._discovered_bot_repos if r.get("active")]
+        if len(active_repos) < 2:
+            return
+        cur_parsed = _parse_repo_input(self.repoNameEdit.text(), default_owner=self._state.github_login)
+        cur_full = str(cur_parsed.get("full_name") or "").strip().lower()
+        active_names = [str(r.get("full_name") or "").strip() for r in active_repos if r.get("full_name")]
+        keep = next((n for n in active_names if n.lower() == cur_full), active_names[0] if active_names else "")
+        to_pause = [n for n in active_names if n.lower() != keep.lower()]
+        if not to_pause:
+            return
+        self.pauseOtherBotsBtn.setEnabled(False)
+        self.scanBotReposBtn.setEnabled(False)
+        self._workers.start_task(
+            _pause_multiple_bot_repos_task,
+            token,
+            to_pause,
+            task_key="pause_other_bot_repos",
+            on_finished=self._on_other_bots_paused,
+            on_error=self._on_other_bots_pause_error,
+        )
+
+    def _on_other_bots_paused(self, payload: Any) -> None:
+        self.pauseOtherBotsBtn.setEnabled(True)
+        self.scanBotReposBtn.setEnabled(True)
+        paused = list((payload or {}).get("paused") or [])
+        for fn in paused:
+            self.set_repo_workflow_state(fn, "disabled_manually")
+        self.cloud_repos_updated.emit(list(self._discovered_bot_repos))
+        if paused:
+            InfoBar.success(
+                tr("common.success"),
+                tr("cloud.paused_others_ok", count=len(paused)),
+                duration=4000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+
+    def _on_other_bots_pause_error(self, err: str) -> None:
+        self.pauseOtherBotsBtn.setEnabled(True)
+        self.scanBotReposBtn.setEnabled(True)
+        InfoBar.error(
+            tr("common.error"),
+            err,
+            duration=5500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
 
     def _reload_cloud_times_list(self) -> None:
         self.cloudTimesList.clear()
@@ -1990,9 +2394,67 @@ class ContentPage(SmoothScrollArea):
             else repo_chk["name"]
         )
         sync_only = bool(self.syncOnlyCheck.isEnabled() and self.syncOnlyCheck.isChecked())
+        target_full_low = str(repo_chk.get("full_name") or "").strip().lower()
+
+        if (
+            not sync_only
+            and target_full_low
+            and target_full_low in self._discovered_all_repos
+            and not any(
+                str(r.get("full_name") or "").strip().lower() == target_full_low
+                for r in self._discovered_bot_repos
+            )
+        ):
+            non_bot_box = MessageBox(
+                tr("cloud.non_bot_confirm_title"),
+                tr("cloud.non_bot_confirm_body", repo=repo_chk["full_name"] or raw_repo_arg),
+                self.window(),
+            )
+            non_bot_box.yesButton.setText(tr("common.continue"))
+            non_bot_box.cancelButton.setText(tr("common.cancel"))
+            if not non_bot_box.exec():
+                return
+
+        pause_repos: list[str] = []
+        other_active = [
+            str(r.get("full_name") or "")
+            for r in self._discovered_bot_repos
+            if r.get("active")
+            and str(r.get("full_name") or "").strip().lower() != target_full_low
+        ]
+        if other_active:
+            dup_choice = {"mode": "pause"}
+            dup_box = MessageBox(
+                tr("cloud.dup_deploy_title"),
+                tr(
+                    "cloud.dup_deploy_body",
+                    repos="\n".join(f"• {name}" for name in other_active),
+                    target=repo_chk["full_name"] or raw_repo_arg,
+                ),
+                self.window(),
+            )
+            dup_box.yesButton.setText(tr("cloud.dup_deploy_pause_btn"))
+            dup_box.cancelButton.setText(tr("common.cancel"))
+            keep_btn = PushButton(escape_qt_mnemonic(tr("cloud.dup_deploy_keep_btn")), dup_box)
+            keep_btn.clicked.connect(lambda: (dup_choice.__setitem__("mode", "keep"), dup_box.accept()))
+            dup_box.buttonLayout.insertWidget(1, keep_btn)
+            if not dup_box.exec():
+                return
+            if dup_choice["mode"] == "pause":
+                pause_repos = other_active
 
         self.deployBtn.setEnabled(False)
         self.deployStatusLabel.setText(tr("common.loading"))
+        deploy_kwargs: dict[str, Any] = {
+            "sync_only": sync_only,
+            "task_key": "deploy_github",
+            "pass_log_cb": True,
+            "on_log": self._on_deploy_log,
+            "on_finished": self._on_deploy_finished,
+            "on_error": self._on_deploy_error,
+        }
+        if pause_repos:
+            deploy_kwargs["pause_repos"] = tuple(pause_repos)
         self._workers.start_task(
             _deploy_github_task,
             token,
@@ -2001,12 +2463,7 @@ class ContentPage(SmoothScrollArea):
             self._state.github_source_repo,
             cron_expr,
             desired_secrets,
-            sync_only=sync_only,
-            task_key="deploy_github",
-            pass_log_cb=True,
-            on_log=self._on_deploy_log,
-            on_finished=self._on_deploy_finished,
-            on_error=self._on_deploy_error,
+            **deploy_kwargs,
         )
 
     def _on_deploy_log(self, msg: str) -> None:
@@ -2018,6 +2475,8 @@ class ContentPage(SmoothScrollArea):
         full_name = res.get("full_name", "")
         if res.get("login"):
             self._state.github_login = res["login"]
+        if not res.get("sync_only"):
+            self._state.last_deployed_version = APP_VERSION
         self._refresh_github_badge()
         self.state_changed.emit()
         self.deployStatusLabel.setText(f"{full_name} ({len(res.get('written', []))} secrets synced)")
@@ -2028,6 +2487,8 @@ class ContentPage(SmoothScrollArea):
             position=InfoBarPosition.TOP_RIGHT,
             parent=self.window(),
         )
+        self._bot_scan_done_for_token = ""
+        self.maybe_auto_scan_bot_repos()
 
     def _on_deploy_error(self, err: str) -> None:
         self.deployBtn.setEnabled(True)
@@ -2080,10 +2541,10 @@ class ContentPage(SmoothScrollArea):
         self.patLabel.setText(tr("cloud.signin_pat"))
         self.patEdit.setPlaceholderText(tr("schedule.pat_placeholder"))
         self.savePatBtn.setText(escape_qt_mnemonic(tr("schedule.save_pat")))
-        self.fetchReposBtn.setText(escape_qt_mnemonic(tr("cloud.fetch_repos")))
-        if self.existingRepoCombo.count() > 0 and self.existingRepoCombo.itemData(0) is None:
-            self.existingRepoCombo.setItemText(0, tr("cloud.select_existing_repo"))
         self.privateRepoLabel.setText(tr("cloud.private_repo"))
+        self.botReposHeading.setText(tr("cloud.bot_repos_title"))
+        self.scanBotReposBtn.setToolTip(tr("cloud.scan_bot_repos_tooltip"))
+        self.pauseOtherBotsBtn.setText(escape_qt_mnemonic(tr("cloud.pause_others_btn")))
         self.repoNameLabel.setText(tr("cloud.repo_name"))
         self.repoNameEdit.setPlaceholderText(tr("cloud.repo_name_hint"))
         self.syncOnlyCheck.setText(escape_qt_mnemonic(tr("cloud.sync_only")))
@@ -2109,6 +2570,7 @@ class ContentPage(SmoothScrollArea):
         self._reload_cloud_times_list()
         self._update_cron_summary()
         self._refresh_github_badge()
+        self._render_bot_repos_panel()
 
 
 __all__ = ["ContentPage"]
