@@ -2810,6 +2810,22 @@ class TestUpdaterService:
         assert not bad_dest.exists()
 
         # Self-update helper script writes clean rollback batch script without spawning real cmd in test
+        from gui.services.updater import _sanitize_relaunch_env
+
+        sanitized = _sanitize_relaunch_env(
+            {
+                "PATH": "C:\\Windows",
+                "_MEIPASS2": "C:\\Temp\\_MEI123",
+                "_PYI_ARCHIVE_FILE": "C:\\old.exe",
+                "QT_PLUGIN_PATH": "C:\\Temp\\_MEI123\\PySide6\\plugins",
+                "SYSTEMROOT": "C:\\Windows",
+            }
+        )
+        assert "_MEIPASS2" not in sanitized
+        assert "_PYI_ARCHIVE_FILE" not in sanitized
+        assert "QT_PLUGIN_PATH" not in sanitized
+        assert sanitized["SYSTEMROOT"] == "C:\\Windows"
+
         fake_target = tmp_path / "TikTokStreakSetup.exe"
         fake_target.write_bytes(b"MZ_OLD")
         with patch("subprocess.Popen") as mock_popen:
@@ -2819,11 +2835,48 @@ class TestUpdaterService:
                 pid=99999,
                 work_dir=tmp_path,
                 relaunch=True,
+                parent_pid=88888,
             )
         assert cmd_file.is_file()
         cmd_text = cmd_file.read_text(encoding="ascii")
-        assert "99999" in cmd_text and ".bak" in cmd_text and "start \"\"" in cmd_text
+        assert "99999" in cmd_text and "88888" in cmd_text
+        assert ".bak" in cmd_text and "ping -n 2 127.0.0.1" in cmd_text
+        assert ":retry_swap" in cmd_text and 'start "" /D ' in cmd_text
+        assert "timeout /t" not in cmd_text
         if sys.platform == "win32":
             mock_popen.assert_called_once()
+            popen_kw = mock_popen.call_args.kwargs
+            flags = int(popen_kw.get("creationflags") or 0)
+            assert (flags & 0x08000000) == 0x08000000  # CREATE_NO_WINDOW
+            assert (flags & 0x00000008) == 0  # must NOT set DETACHED_PROCESS
+            assert popen_kw.get("stdin") == subprocess.DEVNULL
+            assert popen_kw.get("stdout") == subprocess.DEVNULL
+            assert popen_kw.get("stderr") == subprocess.DEVNULL
+
+    def test_check_interval_and_markdown_to_update_html(self):
+        from gui.services.updater import CHECK_INTERVAL_SECONDS, markdown_to_update_html
+
+        assert CHECK_INTERVAL_SECONDS == 60
+
+        md = (
+            "### What's New in v1.3.1 (Hotfix)\n\n"
+            "#### Critical Fix — `scene=business`\n"
+            "- **Fixed `RecipientMismatchError`:** Handles `<p data-e2e=\"chat-uniqueid\">@username</p>` safely.\n"
+            "- See [Release Notes](https://github.com/alexanderfrit/tiktok-streak/releases) and "
+            "[Bad Link](javascript:alert(1)).\n\n"
+            "1. Step *one*\n"
+            "2. Step two\n"
+        )
+        light_html = markdown_to_update_html(md, dark=False)
+        dark_html = markdown_to_update_html(md, dark=True)
+
+        assert "<h3" in light_html and "<h4" in light_html
+        assert "<ul><li><b>Fixed " in light_html
+        assert "<ol><li>Step <i>one</i></li><li>Step two</li></ol>" in light_html
+        assert "&lt;p data-e2e=&quot;chat-uniqueid&quot;&gt;@username&lt;/p&gt;" in light_html
+        assert '<p data-e2e=' not in light_html
+        assert 'href="https://github.com/alexanderfrit/tiktok-streak/releases"' in light_html
+        assert "javascript:alert" not in light_html
+        assert "#1f1f1f" in light_html and "#f3f3f3" in dark_html
 
 

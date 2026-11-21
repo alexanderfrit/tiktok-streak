@@ -24,7 +24,6 @@ from qfluentwidgets import (
     StrongBodyLabel,
     SubtitleLabel,
     TitleLabel,
-    TransparentPushButton,
 )
 
 from gui.services.i18n import tr
@@ -34,7 +33,6 @@ from gui.services.updater import is_newer_version
 from gui.services.validators import validate_repo_name, validate_video_url
 from gui.version import APP_VERSION
 from gui.widgets.security_dialog import SecurityPrivacyDialog
-from gui.widgets.split_row import ResponsiveSplitRow
 from gui.widgets.status_pill import StatusPill
 
 
@@ -97,8 +95,6 @@ class HomePage(SmoothScrollArea):
     """Overview page showing setup status, summary metrics, and guided checklist."""
 
     navigate_requested = Signal(str)
-    update_requested = Signal()
-    skip_update_requested = Signal(str)
 
     def __init__(
         self,
@@ -110,8 +106,6 @@ class HomePage(SmoothScrollArea):
         self.setObjectName("home_interface")
         self._state = state
         self._secrets = secret_store
-        self._update_info: dict[str, Any] | None = None
-        self._update_banner_dismissed = False
 
         self.view = QWidget(self)
         self.vBoxLayout = QVBoxLayout(self.view)
@@ -139,55 +133,6 @@ class HomePage(SmoothScrollArea):
         header_row.addLayout(title_col, 1)
         header_row.addWidget(self.overallBadge, 0, Qt.AlignTop)
         self.vBoxLayout.addLayout(header_row)
-
-        # Software update available banner (hidden unless a newer release exists)
-        self.updateBannerCard = SimpleCardWidget(self.view)
-        upd_lay = QVBoxLayout(self.updateBannerCard)
-        upd_lay.setContentsMargins(16, 12, 16, 12)
-        upd_lay.setSpacing(0)
-
-        upd_text_box = QWidget(self.updateBannerCard)
-        upd_text = QVBoxLayout(upd_text_box)
-        upd_text.setContentsMargins(0, 0, 0, 0)
-        upd_text.setSpacing(2)
-        self.updateBannerTitle = StrongBodyLabel("", upd_text_box)
-        self.updateBannerTitle.setWordWrap(True)
-        self.updateBannerDesc = CaptionLabel(tr("update.banner_desc"), upd_text_box)
-        self.updateBannerDesc.setWordWrap(True)
-        upd_text.addWidget(self.updateBannerTitle)
-        upd_text.addWidget(self.updateBannerDesc)
-
-        upd_btns_box = QWidget(self.updateBannerCard)
-        upd_btns = QHBoxLayout(upd_btns_box)
-        upd_btns.setContentsMargins(0, 0, 0, 0)
-        upd_btns.setSpacing(6)
-        self.updateSkipBtn = TransparentPushButton(
-            escape_qt_mnemonic(tr("update.btn_skip")), upd_btns_box
-        )
-        self.updateLaterBtn = PushButton(
-            escape_qt_mnemonic(tr("update.btn_later")), upd_btns_box
-        )
-        self.updateNowBtn = PrimaryPushButton(
-            FIF.UPDATE, escape_qt_mnemonic(tr("update.btn_now")), upd_btns_box
-        )
-        self.updateNowBtn.clicked.connect(lambda: self.update_requested.emit())
-        self.updateLaterBtn.clicked.connect(self._dismiss_update_banner)
-        self.updateSkipBtn.clicked.connect(self._skip_current_update)
-        upd_btns.addWidget(self.updateSkipBtn, 0, Qt.AlignVCenter)
-        upd_btns.addWidget(self.updateLaterBtn, 0, Qt.AlignVCenter)
-        upd_btns.addWidget(self.updateNowBtn, 0, Qt.AlignVCenter)
-
-        self.updateSplitRow = ResponsiveSplitRow(
-            upd_text_box,
-            upd_btns_box,
-            h_spacing=14,
-            v_spacing=8,
-            left_min_width=220,
-            parent=self.updateBannerCard,
-        )
-        upd_lay.addWidget(self.updateSplitRow)
-        self.updateBannerCard.hide()
-        self.vBoxLayout.addWidget(self.updateBannerCard)
 
         # Cloud bot drift reminder banner (hidden unless deployed bot version lags behind app version)
         self.cloudSyncBannerCard = SimpleCardWidget(self.view)
@@ -307,39 +252,7 @@ class HomePage(SmoothScrollArea):
         dlg = SecurityPrivacyDialog(self.window(), config_dir=self._secrets.config_dir)
         dlg.exec()
 
-    def set_available_update(self, info: dict[str, Any] | None) -> None:
-        self._update_info = dict(info) if info else None
-        self._update_banner_dismissed = False
-        self._sync_update_and_cloud_banners()
-
-    def _dismiss_update_banner(self) -> None:
-        self._update_banner_dismissed = True
-        self.updateBannerCard.hide()
-
-    def _skip_current_update(self) -> None:
-        latest = str((self._update_info or {}).get("latest_version") or "").strip().lstrip("vV")
-        self._update_banner_dismissed = True
-        self.updateBannerCard.hide()
-        if latest:
-            self.skip_update_requested.emit(latest)
-
-    def _sync_update_and_cloud_banners(self) -> None:
-        info = self._update_info or {}
-        latest = str(info.get("latest_version") or "").strip().lstrip("vV")
-        skipped = str(getattr(self._state, "skipped_update_version", "") or "").strip().lstrip("vV")
-        show_upd = (
-            bool(info.get("has_update"))
-            and bool(latest)
-            and latest != skipped
-            and not self._update_banner_dismissed
-        )
-        if show_upd:
-            self.updateBannerTitle.setText(tr("update.banner_title", version=latest))
-            self.updateBannerDesc.setText(tr("update.banner_desc"))
-            self.updateBannerCard.show()
-        else:
-            self.updateBannerCard.hide()
-
+    def _sync_cloud_banner(self) -> None:
         deployed_ver = str(getattr(self._state, "last_deployed_version", "") or "").strip().lstrip("vV")
         has_gh = bool(self._secrets.get_github_token())
         show_drift = (
@@ -520,15 +433,12 @@ class HomePage(SmoothScrollArea):
             self.overallBadge.setState(InfoLevel.WARNING, tr("home.needs_attention"))
             self.overallDesc.setText(tr("dashboard.status_incomplete"))
         self.overallBadge.adjustSize()
-        self._sync_update_and_cloud_banners()
+        self._sync_cloud_banner()
 
     def retranslate(self) -> None:
         self.welcomeTitle.setText(tr("dashboard.welcome"))
         self.welcomeSubtitle.setText(tr("app.subtitle"))
         self.checklistHeading.setText(tr("home.checklist_heading"))
-        self.updateNowBtn.setText(escape_qt_mnemonic(tr("update.btn_now")))
-        self.updateLaterBtn.setText(escape_qt_mnemonic(tr("update.btn_later")))
-        self.updateSkipBtn.setText(escape_qt_mnemonic(tr("update.btn_skip")))
         self.cloudSyncGoBtn.setText(escape_qt_mnemonic(tr("update.cloud_sync_btn")))
         self.privacyTitle.setText(tr("security.banner_title"))
         self.privacyDesc.setText(tr("security.banner_desc"))

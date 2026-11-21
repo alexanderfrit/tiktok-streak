@@ -2337,11 +2337,11 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     assert cp.duplicateBotBanner.isHidden() is True
     assert len([r for r in cp._discovered_bot_repos if r.get("active")]) == 1
 
-    # Ensure redesigned HomePage banners, ContentPage & RunPage cloud surfaces respect <= 840px in both EN and ID
+    # Ensure redesigned HomePage banner, ContentPage & RunPage cloud surfaces respect <= 840px in both EN and ID
+    assert not hasattr(hp, "updateBannerCard")
     for lang in ("en", "id"):
         set_language(lang)
         qapp.processEvents()
-        assert hp.updateBannerCard.minimumSizeHint().width() <= 840, f"updateBannerCard too wide in {lang}: {hp.updateBannerCard.minimumSizeHint().width()}"
         assert hp.cloudSyncBannerCard.minimumSizeHint().width() <= 840, f"cloudSyncBannerCard too wide in {lang}: {hp.cloudSyncBannerCard.minimumSizeHint().width()}"
         assert cp.view.minimumSizeHint().width() <= 840, f"ContentPage too wide in {lang}: {cp.view.minimumSizeHint().width()}"
         assert rp.cloudCard.minimumSizeHint().width() <= 840, f"RunPage cloudCard too wide in {lang}: {rp.cloudCard.minimumSizeHint().width()}"
@@ -2349,12 +2349,17 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     set_language("en")
     qapp.processEvents()
 
-    # 5) SettingsPage About & Updates + HomePage Update Banner + UpdateDialog + Skip Version
+    # 5) SettingsPage About & Updates + Sidebar Update Item (above Settings) + Background Download + Skip Version
     assert APP_VERSION in sp.versionCard.titleLabel.text()
     assert sp.autoUpdateSwitch.isChecked() is True
     sp.autoUpdateSwitch.setChecked(False)
     qapp.processEvents()
     assert win.state.auto_check_updates is False
+
+    upd_nav = win._nav_items["update"]
+    stg_nav = win._nav_items["settings"]
+    assert upd_nav.isHidden() is True
+    assert win._update_nav_badge is not None and win._update_nav_badge.isHidden() is True
 
     fake_upd = {
         "ok": True,
@@ -2371,16 +2376,96 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     }
     win._on_update_check_finished(fake_upd, manual=False)
     qapp.processEvents()
-    assert hp.updateBannerCard.isHidden() is False
-    assert "9.9.9" in hp.updateBannerTitle.text()
+    assert upd_nav.isHidden() is False
+    assert "9.9.9" in upd_nav.text()
+    assert win._update_nav_badge.isHidden() is False
+    bottom_lay = win.navigationInterface.panel.bottomLayout
+    assert 0 <= bottom_lay.indexOf(upd_nav) < bottom_lay.indexOf(stg_nav)
     assert "9.9.9" in sp.versionCard.contentLabel.text()
 
-    dlg = UpdateDialog(parent=win, update_info=fake_upd, worker_controller=win.workers)
+    rich_upd = dict(fake_upd)
+    rich_upd["release_notes"] = (
+        "### What's New\n\n"
+        "#### Recipient Safety\n"
+        "- **Fixed `header`:** Reads `<p data-e2e=\"chat-uniqueid\">@friend_one</p>` cleanly."
+    )
+    dlg = UpdateDialog(
+        parent=win,
+        update_info=rich_upd,
+        worker_controller=win.workers,
+        start_download_cb=lambda: None,
+        cancel_download_cb=win.cancel_app_update_download,
+        download_state="downloading",
+        downloaded_bytes=524288,
+        total_bytes=1048576,
+    )
     assert "9.9.9" in dlg.titleLabel.text()
-    assert "Critical recipient safety release" in dlg.notesEdit.toPlainText()
+    assert "1.0 MB" in dlg.subtitleLabel.text()
+    plain = dlg.notesEdit.toPlainText()
+    assert "What's New" in plain and "Recipient Safety" in plain
+    assert '<p data-e2e="chat-uniqueid">@friend_one</p>' in plain
+    assert "###" not in plain and "**" not in plain
+    assert "Background" in dlg.yesButton.text()
+    assert "Cancel" in dlg.cancelButton.text()
+    assert dlg.skipBtn.isHidden() is True
     dlg.close()
 
-    hp.updateSkipBtn.click()
+    # Background download keeps running when user uses MainWindow tabs, and sidebar tracks progress
+    started_dl: list[str] = []
+    monkeypatch.setattr(win.workers, "start_task", lambda *a, **kw: started_dl.append(str(kw.get("task_key"))))
+    win.start_app_update_download()
+    assert started_dl == ["app_update_download"]
+    assert win._update_download_state == "downloading"
+    assert win._update_cancel_event is not None and not win._update_cancel_event.is_set()
+    win._on_update_download_progress({"downloaded": 524288, "total": 1048576})
+    qapp.processEvents()
+    assert win._update_nav_badge.text() == "50%"
+    win.navigate_to("accounts")
+    qapp.processEvents()
+    assert win._update_download_state == "downloading"
+    assert not win._update_cancel_event.is_set()
+    win.cancel_app_update_download()
+    qapp.processEvents()
+    assert win._update_download_state == "idle"
+    assert "9.9.9" in upd_nav.text()
+
+    # Startup auto-check cadence (60s guard) & single auto-modal prompt per launch
+    orig_smoke = win.smoke_test
+    try:
+        win.smoke_test = False
+        now = 1_800_000_000.0
+        win.state.auto_check_updates = True
+        win.state.last_update_check_ts = 0
+        assert win._should_auto_check_updates(now_ts=now) is True
+        win.state.last_update_check_ts = int(now - 30)
+        assert win._should_auto_check_updates(now_ts=now) is False
+        win.state.last_update_check_ts = int(now - 61)
+        assert win._should_auto_check_updates(now_ts=now) is True
+        win.state.last_update_check_ts = int(now + 120)
+        assert win._should_auto_check_updates(now_ts=now) is True
+        win.state.auto_check_updates = False
+        assert win._should_auto_check_updates(now_ts=now) is False
+
+        exec_calls: list[int] = []
+        monkeypatch.setattr(UpdateDialog, "exec", lambda self: exec_calls.append(1) or 0)
+        win._startup_update_prompted = False
+        win.state.skipped_update_version = ""
+        win._on_update_check_finished(fake_upd, manual=False)
+        assert len(exec_calls) == 1
+        assert upd_nav.isHidden() is False
+        # Repeat non-manual check within the same launch must not re-pop modal
+        win._on_update_check_finished(fake_upd, manual=False)
+        assert len(exec_calls) == 1
+        # Manual check always opens dialog
+        win._on_update_check_finished(fake_upd, manual=True)
+        assert len(exec_calls) == 2
+    finally:
+        win.smoke_test = orig_smoke
+        win.state.skipped_update_version = ""
+        win.state.auto_check_updates = False
+
+    win._skip_update_version("9.9.9")
     qapp.processEvents()
     assert win.state.skipped_update_version == "9.9.9"
-    assert hp.updateBannerCard.isHidden() is True
+    assert upd_nav.isHidden() is True
+    assert win._update_nav_badge.isHidden() is True

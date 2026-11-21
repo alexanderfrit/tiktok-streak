@@ -1,4 +1,4 @@
-# TikTok Streak Auto — Complete Technical & User Documentation (v1.3.1)
+# TikTok Streak Auto — Complete Technical & User Documentation (v1.3.2)
 
 Canonical URL: https://alexanderfrit.github.io/tiktok-streak/
 Repository: https://github.com/alexanderfrit/tiktok-streak
