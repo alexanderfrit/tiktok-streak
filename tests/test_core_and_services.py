@@ -2597,6 +2597,84 @@ class TestRecipientSafetyAndIsolation:
         assert any("__headfulGuard" in s for s in headful_sources)
         assert "captcha" in HEADFUL_GUARD_JS.lower()
         assert "__botAllowSidebarClick" in HEADFUL_GUARD_JS
+        assert "dm-new-conversation-list" in HEADFUL_GUARD_JS
+
+    def test_read_active_chat_handle_js_scene_business_dom_and_exclusion_isolation(self):
+        from urllib.parse import quote
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from src.share import INSPECT_INBOX_ROWS_JS, READ_ACTIVE_CHAT_HANDLE_JS
+
+        html_doc = """<!DOCTYPE html>
+<html><body style="margin:0;">
+<div style="display:flex;width:1280px;height:720px;">
+  <div data-e2e="dm-new-conversation-list" style="width:280px;">
+    <div data-conv-id="0:1:100:200" data-e2e="dm-new-conversation-item" aria-selected="true" style="height:60px;">
+      <p class="PInfoNickname">cel</p>
+      <a href="/@wrong_sidebar">@wrong_sidebar</a>
+    </div>
+    <div data-conv-id="0:1:100:300" data-e2e="dm-new-conversation-item" aria-selected="false" style="height:60px;">
+      <p class="PInfoNickname">Ribca</p>
+      <div data-e2e="dm-new-conversation-unread">1</div>
+    </div>
+  </div>
+  <div data-e2e="dm-new-chatbox" style="flex:1;">
+    <div class="css-1pr30s--DivChatHeader" style="height:56px;">
+      <a href="/@celuley">
+        <p data-e2e="dm-new-chat-nickname">cel</p>
+        <p data-e2e="chat-uniqueid">@celuley</p>
+      </a>
+    </div>
+    <div data-e2e="dm-new-message-list" style="height:500px;">
+      <div data-e2e="dm-new-chat-item">
+        <a href="/@other_bubble">other</a>
+      </div>
+    </div>
+    <div data-e2e="dm-new-chat-bottom" style="height:60px;">
+      <div data-e2e="dm-new-input-editor"></div>
+    </div>
+  </div>
+</div>
+</body></html>"""
+
+        opts = Options()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--window-size=1280,720")
+        opts.add_argument("--no-sandbox")
+        driver = webdriver.Chrome(options=opts)
+        try:
+            driver.get("data:text/html;charset=utf-8," + quote(html_doc))
+            assert driver.execute_script(READ_ACTIVE_CHAT_HANDLE_JS) == "celuley"
+            rows = driver.execute_script(INSPECT_INBOX_ROWS_JS)
+            assert len(rows) == 2
+            assert rows[0]["selected"] is True
+            assert rows[0]["rowKey"] == "0:1:100:200"
+            assert rows[1]["unread"] is True
+
+            # Removing the right-pane header must NOT leak sidebar or message-bubble handles
+            driver.execute_script("document.querySelector('div[class*=\"DivChatHeader\"]').remove();")
+            assert driver.execute_script(READ_ACTIVE_CHAT_HANDLE_JS) is None
+        finally:
+            driver.quit()
+
+    def test_open_inbox_chat_tier2_probe_skips_selector_timeout_dump_and_dumps_on_failure(self):
+        from src.actions import INBOX_SEARCH_CANDIDATES, open_inbox_chat
+        from src.exceptions import DMBlockedError
+
+        assert all("search-user-input" not in sel for _by, sel in INBOX_SEARCH_CANDIDATES)
+        mock_b = MagicMock()
+        mock_b.current_url = "https://www.tiktok.com/messages?lang=en"
+        mock_b.find_elements.return_value = []
+        mock_b.execute_script.side_effect = lambda script, *args: [] if "dm-new-conversation-item" in script else None
+
+        with patch("src.actions.dump_debug_diagnostics") as mock_dump, \
+             patch("time.sleep", return_value=None):
+            with pytest.raises(DMBlockedError):
+                open_inbox_chat(mock_b, "celuley")
+
+        reasons = [c.args[1] for c in mock_dump.call_args_list if len(c.args) > 1]
+        assert "selector_timeout" not in reasons
+        assert "open_chat_failed_celuley" in reasons
 
 
 class TestGitHubWorkflowControlAndDiscovery:

@@ -695,8 +695,8 @@ MEDIA_FILE_GUARD_JS = r"""
 # Never reads left sidebar items or chat message bubbles.
 READ_ACTIVE_CHAT_HANDLE_JS = r"""
 return (function () {
-  var SIDEBAR_EXCL = '[data-e2e="dm-new-conversation-item"], [data-e2e="chat-item"], div[class*="ConversationList"], div[class*="ChatList"]';
-  var BUBBLE_EXCL = '[data-e2e="dm-new-chat-item"], [data-e2e="dm-new-chatbox"], [data-e2e="top-header"]';
+  var SIDEBAR_EXCL = '[data-e2e="dm-new-conversation-list"], [data-e2e="dm-new-conversation-item"], [data-e2e="chat-item"], div[class*="ConversationList"], div[class*="ChatList"]';
+  var BUBBLE_EXCL = '[data-e2e="dm-new-message-list"], [data-e2e="dm-new-chat-item"], [data-e2e="dm-new-chat-bottom"], [data-e2e="dm-new-input-editor"], [data-e2e="message-input-area"], [data-e2e="top-header"]';
   function cleanHandle(raw) {
     if (!raw || typeof raw !== 'string') return null;
     var s = raw.trim().replace(/^@+/, '').trim();
@@ -711,9 +711,14 @@ return (function () {
   function isVisible(el) {
     if (!el) return false;
     try {
+      var st = window.getComputedStyle(el);
+      if (st && (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0')) return false;
       var r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0 && el.offsetParent !== null;
+      return r.width > 0 && r.height > 0;
     } catch (e) { return false; }
+  }
+  function isExcluded(el) {
+    return Boolean(el && el.closest && (el.closest(SIDEBAR_EXCL) || el.closest(BUBBLE_EXCL)));
   }
   function fiberPeerHandle(el) {
     try {
@@ -753,19 +758,18 @@ return (function () {
   }
   function extractFromRoot(root) {
     if (!root || !isVisible(root)) return null;
-    if (root.closest && root.closest(SIDEBAR_EXCL)) return null;
+    if (isExcluded(root)) return null;
     var links = root.querySelectorAll('a[href*="/@"]');
     for (var i = 0; i < links.length; i++) {
-      if (!isVisible(links[i])) continue;
-      if (links[i].closest && (links[i].closest(SIDEBAR_EXCL) || links[i].closest(BUBBLE_EXCL))) continue;
+      if (!isVisible(links[i]) || isExcluded(links[i])) continue;
       var h = handleFromHref(links[i].getAttribute('href') || links[i].href);
       if (h) return h;
     }
-    var texts = root.querySelectorAll('p, span, a, div, h1, h2, h3');
+    var texts = root.querySelectorAll('[data-e2e="chat-uniqueid"], p, span, a, div, h1, h2, h3');
     for (var j = 0; j < texts.length; j++) {
       var el = texts[j];
-      if (!isVisible(el)) continue;
-      if (el.closest && (el.closest(SIDEBAR_EXCL) || el.closest(BUBBLE_EXCL))) continue;
+      if (!isVisible(el) || isExcluded(el)) continue;
+      if (el.tagName === 'DIV' && el.children && el.children.length > 0) continue;
       var txt = (el.innerText || el.textContent || '').trim();
       var m = txt.match(/^@([A-Za-z0-9._]{2,40})$/);
       if (m) return m[1].toLowerCase();
@@ -773,11 +777,27 @@ return (function () {
     return fiberPeerHandle(root);
   }
 
+  // Priority 0: Explicit chat header uniqueId badge (<p data-e2e="chat-uniqueid">@handle</p>)
+  var uidNodes = document.querySelectorAll('[data-e2e="chat-uniqueid"]');
+  for (var ui = 0; ui < uidNodes.length; ui++) {
+    var uidEl = uidNodes[ui];
+    if (!isVisible(uidEl) || isExcluded(uidEl)) continue;
+    var uidTxt = (uidEl.innerText || uidEl.textContent || '').trim();
+    var um = uidTxt.match(/^@?([A-Za-z0-9._]{2,40})$/);
+    if (um) return um[1].toLowerCase();
+    var parentA = uidEl.closest('a[href*="/@"]');
+    if (parentA) {
+      var ph = handleFromHref(parentA.getAttribute('href') || parentA.href);
+      if (ph) return ph;
+    }
+  }
+
   var headerSels = [
+    'div[class*="DivChatHeader"]',
+    'div[class*="ChatHeader"]',
     '[data-e2e="dm-new-chat-header"]',
     '[data-e2e="chat-header"]',
     '[data-e2e*="chat-header"]',
-    'div[class*="ChatHeader"]',
     'div[class*="ConversationHeader"]',
     'div[class*="HeaderWrapper"]'
   ];
@@ -791,29 +811,35 @@ return (function () {
 
   // Geometric right-pane header band fallback (top right pane, excluding sidebar & chat bubbles)
   try {
-    var box = document.querySelector('[data-e2e="dm-new-chatbox"]') || document.querySelector('[data-e2e="dm-new-chat-item"]');
-    var paneLeft = Math.floor((window.innerWidth || 1280) * 0.28);
+    var paneLeft = Math.floor((window.innerWidth || 1280) * 0.18);
+    var convList = document.querySelector('[data-e2e="dm-new-conversation-list"], div[class*="ConversationList"], div[class*="ChatList"]');
+    if (convList) {
+      var cr = convList.getBoundingClientRect();
+      if (cr.width > 0 && cr.right > 0) paneLeft = Math.max(paneLeft, cr.right - 4);
+    }
+    var box = document.querySelector('[data-e2e="dm-new-chatbox"]') || document.querySelector('[data-e2e="dm-new-message-list"]');
     if (box) {
       var br = box.getBoundingClientRect();
-      if (br.width > 0 && br.left > 180) paneLeft = Math.max(paneLeft, br.left - 60);
+      if (br.width > 0 && br.left > 0) paneLeft = Math.max(paneLeft, br.left - 4);
     }
     var links2 = document.querySelectorAll('a[href*="/@"]');
     for (var li = 0; li < links2.length; li++) {
       var a = links2[li];
-      if (!isVisible(a) || (a.closest && (a.closest(SIDEBAR_EXCL) || a.closest(BUBBLE_EXCL)))) continue;
+      if (!isVisible(a) || isExcluded(a)) continue;
       var ar = a.getBoundingClientRect();
-      if (ar.left >= paneLeft && ar.top >= 35 && ar.top <= 230) {
+      if (ar.left >= paneLeft && ar.top >= 0 && ar.top <= 220) {
         var lh = handleFromHref(a.getAttribute('href') || a.href);
         if (lh) return lh;
       }
     }
-    var nodes2 = document.querySelectorAll('p, span, a');
+    var nodes2 = document.querySelectorAll('p, span, a, div');
     for (var ni = 0; ni < nodes2.length; ni++) {
       var nd = nodes2[ni];
-      if (!isVisible(nd) || (nd.closest && (nd.closest(SIDEBAR_EXCL) || nd.closest(BUBBLE_EXCL)))) continue;
+      if (!isVisible(nd) || isExcluded(nd)) continue;
+      if (nd.tagName === 'DIV' && nd.children && nd.children.length > 0) continue;
       var nr = nd.getBoundingClientRect();
-      if (nr.left >= paneLeft && nr.top >= 35 && nr.top <= 230) {
-        var nm = (nd.innerText || '').trim().match(/^@([A-Za-z0-9._]{2,40})$/);
+      if (nr.left >= paneLeft && nr.top >= 0 && nr.top <= 220) {
+        var nm = (nd.innerText || nd.textContent || '').trim().match(/^@([A-Za-z0-9._]{2,40})$/);
         if (nm) return nm[1].toLowerCase();
       }
     }
@@ -953,12 +979,14 @@ return (function () {
     }
     var unread = isUnreadRow(r, fib.unread);
     var previewLine = rawText.replace(/\s+/g, ' ').slice(0, 60);
+    var convId = (r.getAttribute('data-conv-id') || '').trim();
     out.push({
       idx: idx,
       nickname: nick,
       handle: h,
       unread: unread,
-      rowKey: nick.toLowerCase() + '|' + (h || '') + '|' + previewLine.slice(0, 28)
+      selected: r.getAttribute('aria-selected') === 'true',
+      rowKey: convId || (nick.toLowerCase() + '|' + (h || '') + '|' + previewLine.slice(0, 28))
     });
   }
   return out;
