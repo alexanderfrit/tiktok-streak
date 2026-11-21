@@ -370,6 +370,12 @@ class _BotRepoRow(QFrame):
         btns_row.setContentsMargins(0, 0, 0, 0)
         btns_row.setSpacing(6)
 
+        fm = self.fontMetrics()
+        max_lbl_w = max(
+            fm.horizontalAdvance(tr("cloud.pause_short")),
+            fm.horizontalAdvance(tr("cloud.resume_short")),
+        )
+        uniform_w = max(108, max_lbl_w + 52)
         toggle_txt = tr("cloud.pause_short") if is_active else tr("cloud.resume_short")
         self.toggleBtn = PushButton(
             FIF.PAUSE if is_active else FIF.PLAY,
@@ -377,7 +383,7 @@ class _BotRepoRow(QFrame):
             self,
         )
         self.toggleBtn.setFixedHeight(32)
-        self.toggleBtn.setMinimumWidth(92)
+        self.toggleBtn.setFixedWidth(uniform_w)
         self.toggleBtn.setCursor(Qt.ArrowCursor)
 
         self.openBtn = TransparentToolButton(FIF.LINK, self)
@@ -658,6 +664,10 @@ class ContentPage(SmoothScrollArea):
         self._pat_expanded = False
         self._raw_cron_expanded = False
         self._custom_cron_dirty = False
+        self._video_verify_state: str = "unverified"
+        self._verified_video_url: str = ""
+        self._verified_video_author: str = ""
+        self._video_verify_error: str = ""
 
         self._save_debounce = QTimer(self)
         self._save_debounce.setSingleShot(True)
@@ -1381,8 +1391,13 @@ class ContentPage(SmoothScrollArea):
         self._sync_video_controls()
 
     def _on_video_url_changed(self, text: str) -> None:
+        clean = text.strip()
+        if clean != self._verified_video_url:
+            self._video_verify_state = "unverified"
+            self._verified_video_author = ""
+            self._video_verify_error = ""
         if not self._loading:
-            self._state.video_url = text.strip()
+            self._state.video_url = clean
             self._schedule_save()
         self._sync_video_controls()
 
@@ -1402,13 +1417,34 @@ class ContentPage(SmoothScrollArea):
             self.videoHintLabel.setText(tr("content.video_disabled"))
             return
 
-        res = validate_video_url(self.videoUrlEdit.text(), resolve_short=False)
-        if res["valid"]:
-            self.videoBadge.setState("success", tr("content.video_valid", aweme_id=res["aweme_id"]))
-            self.videoHintLabel.setText("")
-        else:
+        cur_url = self.videoUrlEdit.text().strip()
+        res = validate_video_url(cur_url, resolve_short=False)
+        if not res["valid"]:
             self.videoBadge.setState("warning", tr("common.warning"))
             self.videoHintLabel.setText(res.get("error") or "")
+            return
+
+        if cur_url == self._verified_video_url:
+            if self._video_verify_state == "available":
+                badge_txt = (
+                    tr("content.video_verified_author", author=self._verified_video_author)
+                    if self._verified_video_author
+                    else tr("content.video_valid", aweme_id=res["aweme_id"])
+                )
+                self.videoBadge.setState("success", badge_txt)
+                self.videoHintLabel.setText("")
+                return
+            if self._video_verify_state in ("unavailable", "private", "share_disabled"):
+                self.videoBadge.setState("error", tr("content.video_unavailable"))
+                self.videoHintLabel.setText(self._video_verify_error)
+                return
+            if self._video_verify_state == "offline_warning":
+                self.videoBadge.setState("warning", tr("content.video_verify_offline"))
+                self.videoHintLabel.setText(self._video_verify_error)
+                return
+
+        self.videoBadge.setState("neutral", tr("content.video_unverified"))
+        self.videoHintLabel.setText("")
 
     def _resolve_short_link(self) -> None:
         raw = self.videoUrlEdit.text().strip()
@@ -1420,6 +1456,7 @@ class ContentPage(SmoothScrollArea):
             validate_video_url,
             raw,
             resolve_short=True,
+            verify_availability=True,
             task_key="resolve_short_link",
             on_finished=self._on_short_resolved,
             on_error=self._on_short_error,
@@ -1428,23 +1465,78 @@ class ContentPage(SmoothScrollArea):
     def _on_short_resolved(self, res: dict[str, Any]) -> None:
         self.resolveShortBtn.setEnabled(self.videoSwitch.isChecked())
         self.resolveShortBtn.setText(escape_qt_mnemonic(tr("content.video_resolve")))
-        if res.get("valid"):
-            self.videoUrlEdit.setText(res["normalized_url"])
+        avail = str(res.get("availability") or "")
+        cur_url = self.videoUrlEdit.text().strip()
+
+        if avail == "available" and res.get("valid") and res.get("verified"):
+            clean_url = str(res.get("normalized_url") or cur_url).strip()
+            author = str(res.get("author") or "").strip()
+            self._video_verify_state = "available"
+            self._verified_video_url = clean_url
+            self._verified_video_author = author
+            self._video_verify_error = ""
+            if clean_url and self.videoUrlEdit.text().strip() != clean_url:
+                self.videoUrlEdit.setText(clean_url)
+            else:
+                self._sync_video_controls()
+            msg = (
+                tr("content.video_verified_author", author=author)
+                if author
+                else tr("content.video_valid", aweme_id=res.get("aweme_id") or "")
+            )
             InfoBar.success(
                 tr("common.success"),
-                tr("content.video_valid", aweme_id=res["aweme_id"]),
+                msg,
                 duration=3000,
                 position=InfoBarPosition.TOP_RIGHT,
                 parent=self.window(),
             )
-        else:
+            return
+
+        if avail in ("unavailable", "private", "share_disabled"):
+            err_msg = str(res.get("error") or tr("content.video_unavailable"))
+            self._video_verify_state = avail
+            self._verified_video_url = cur_url
+            self._verified_video_author = str(res.get("author") or "").strip()
+            self._video_verify_error = err_msg
+            self._sync_video_controls()
+            InfoBar.error(
+                tr("content.video_unavailable"),
+                err_msg,
+                duration=5000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self.window(),
+            )
+            return
+
+        if avail == "unverified" and res.get("valid"):
+            warn_msg = str(res.get("error") or tr("content.video_verify_offline"))
+            self._video_verify_state = "offline_warning"
+            self._verified_video_url = cur_url
+            self._verified_video_author = ""
+            self._video_verify_error = warn_msg
+            self._sync_video_controls()
             InfoBar.warning(
-                tr("common.warning"),
-                str(res.get("error") or ""),
+                tr("content.video_verify_offline"),
+                warn_msg,
                 duration=4500,
                 position=InfoBarPosition.TOP_RIGHT,
                 parent=self.window(),
             )
+            return
+
+        self._video_verify_state = "unverified"
+        self._verified_video_url = ""
+        self._verified_video_author = ""
+        self._video_verify_error = ""
+        self._sync_video_controls()
+        InfoBar.warning(
+            tr("common.warning"),
+            str(res.get("error") or ""),
+            duration=4500,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
 
     def _on_short_error(self, err: str) -> None:
         self.resolveShortBtn.setEnabled(self.videoSwitch.isChecked())

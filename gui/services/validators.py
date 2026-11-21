@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import csv
 import io
+import json
 import os
 import re
 import tempfile
@@ -214,8 +215,174 @@ def _resolve_short_tiktok_url(url: str, timeout: float = 10.0) -> str:
         return final_url
 
 
-def validate_video_url(url: str, resolve_short: bool = False) -> dict:
-    """Validate a TikTok video URL (optionally resolving vt/vm short links)."""
+_REHYDRATION_SCRIPT_RE = re.compile(
+    r'<script[^>]+id=["\']__UNIVERSAL_DATA_FOR_REHYDRATION__["\'][^>]*>(.*?)</script>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _clean_tiktok_video_url(url: str, aweme_id: str, author: str | None = None) -> str:
+    """Return a clean canonical TikTok video/photo URL without tracking query params."""
+    raw = str(url or "").strip()
+    kind = "photo" if "/photo/" in raw.lower() else "video"
+    clean_author = str(author or "").strip().lstrip("@")
+    if clean_author:
+        return f"https://www.tiktok.com/@{clean_author}/{kind}/{aweme_id}"
+    if "/video/" in raw or "/photo/" in raw:
+        clean = raw.split("#", 1)[0].split("?", 1)[0]
+        if not clean.lower().startswith(("http://", "https://")):
+            clean = "https://" + clean.lstrip("/")
+        return clean
+    return raw
+
+
+def _check_tiktok_video_availability(
+    url: str,
+    aweme_id: str,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """Probe TikTok SSR rehydration JSON to check if a video exists, is public, and shareable."""
+    raw = str(url or "").strip()
+    if raw.isdigit() or ("tiktok.com" not in raw.lower()):
+        target = f"https://www.tiktok.com/@_/video/{aweme_id}"
+    else:
+        target = raw.split("#", 1)[0]
+        if not target.lower().startswith(("http://", "https://")):
+            target = "https://" + target.lstrip("/")
+
+    req = urllib.request.Request(
+        target,
+        headers={"User-Agent": "curl/8.4.0", "Accept": "*/*"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            final_url = str(getattr(resp, "geturl", lambda: target)() or target)
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 410):
+            return {
+                "checked": True,
+                "available": False,
+                "availability": "unavailable",
+                "author": None,
+                "final_url": target,
+                "reason": f"This TikTok video is unavailable (HTTP {exc.code}).",
+            }
+        return {
+            "checked": False,
+            "available": None,
+            "availability": "unverified",
+            "author": None,
+            "final_url": target,
+            "reason": f"Could not verify online (TikTok HTTP {exc.code}).",
+        }
+    except Exception as exc:
+        return {
+            "checked": False,
+            "available": None,
+            "availability": "unverified",
+            "author": None,
+            "final_url": target,
+            "reason": f"Could not verify online: {exc}",
+        }
+
+    m = _REHYDRATION_SCRIPT_RE.search(body)
+    if not m:
+        return {
+            "checked": False,
+            "available": None,
+            "availability": "unverified",
+            "author": None,
+            "final_url": final_url,
+            "reason": "Could not verify online (TikTok returned no video metadata payload).",
+        }
+    try:
+        data = json.loads(m.group(1))
+    except Exception as exc:
+        return {
+            "checked": False,
+            "available": None,
+            "availability": "unverified",
+            "author": None,
+            "final_url": final_url,
+            "reason": f"Could not parse TikTok video metadata: {exc}",
+        }
+
+    scope = data.get("__DEFAULT_SCOPE__") if isinstance(data, dict) else None
+    vd = scope.get("webapp.video-detail") if isinstance(scope, dict) else None
+    if not isinstance(vd, dict) or not vd:
+        return {
+            "checked": False,
+            "available": None,
+            "availability": "unverified",
+            "author": None,
+            "final_url": final_url,
+            "reason": "Could not verify online (missing video detail section in TikTok response).",
+        }
+
+    status_code = vd.get("statusCode")
+    status_msg = str(vd.get("statusMsg") or "").strip()
+    item = ((vd.get("itemInfo") or {}).get("itemStruct")) or {}
+    author_uid = str(((item.get("author") or {}).get("uniqueId")) or "").strip() or None
+
+    if status_code == 0 and isinstance(item, dict) and item:
+        if item.get("privateItem") is True:
+            return {
+                "checked": True,
+                "available": False,
+                "availability": "private",
+                "author": author_uid,
+                "final_url": final_url,
+                "reason": "This TikTok video is private and cannot be shared.",
+            }
+        if item.get("shareEnabled") is False:
+            return {
+                "checked": True,
+                "available": False,
+                "availability": "share_disabled",
+                "author": author_uid,
+                "final_url": final_url,
+                "reason": "Sharing is disabled on this TikTok video.",
+            }
+        resolved_id = str(item.get("id") or aweme_id).strip() or aweme_id
+        return {
+            "checked": True,
+            "available": True,
+            "availability": "available",
+            "author": author_uid,
+            "item_id": resolved_id,
+            "final_url": final_url,
+            "reason": None,
+        }
+
+    if status_code is not None and status_code != 0:
+        detail = f" ({status_msg})" if status_msg else f" (code {status_code})"
+        return {
+            "checked": True,
+            "available": False,
+            "availability": "unavailable",
+            "author": author_uid,
+            "final_url": final_url,
+            "reason": f"This TikTok video is currently unavailable on TikTok{detail}.",
+        }
+
+    return {
+        "checked": False,
+        "available": None,
+        "availability": "unverified",
+        "author": author_uid,
+        "final_url": final_url,
+        "reason": "Could not confirm TikTok video status from response.",
+    }
+
+
+def validate_video_url(
+    url: str,
+    resolve_short: bool = False,
+    verify_availability: bool = False,
+) -> dict:
+    """Validate a TikTok video URL, optionally resolving short links and verifying live availability."""
     raw = str(url or "").strip()
     if not raw:
         return {
@@ -224,69 +391,124 @@ def validate_video_url(url: str, resolve_short: bool = False) -> dict:
             "aweme_id": None,
             "normalized_url": "",
             "is_short_link": False,
+            "verified": False,
+            "availability": "invalid",
+            "author": None,
             "error": "Video URL is empty.",
         }
 
     is_short = bool(_SHORT_HOST_RE.match(raw))
     aweme_id = parse_aweme_id(raw)
-    if aweme_id:
+    target_url = raw
+
+    if not aweme_id:
+        if is_short:
+            if not resolve_short:
+                return {
+                    "valid": False,
+                    "ok": False,
+                    "aweme_id": None,
+                    "normalized_url": raw,
+                    "is_short_link": True,
+                    "verified": False,
+                    "availability": "invalid",
+                    "author": None,
+                    "error": "Short TikTok links (vt.tiktok.com / vm.tiktok.com) must be resolved to a full /video/<id> URL.",
+                }
+            try:
+                resolved = _resolve_short_tiktok_url(raw)
+            except Exception as exc:
+                return {
+                    "valid": False,
+                    "ok": False,
+                    "aweme_id": None,
+                    "normalized_url": raw,
+                    "is_short_link": True,
+                    "verified": False,
+                    "availability": "unverified",
+                    "author": None,
+                    "error": f"Failed to resolve short TikTok link: {exc}",
+                }
+            aweme_id = parse_aweme_id(resolved)
+            if not aweme_id:
+                return {
+                    "valid": False,
+                    "ok": False,
+                    "aweme_id": None,
+                    "normalized_url": resolved,
+                    "is_short_link": True,
+                    "verified": False,
+                    "availability": "invalid",
+                    "author": None,
+                    "error": "Could not extract a TikTok video ID from the resolved URL.",
+                }
+            target_url = resolved
+        else:
+            return {
+                "valid": False,
+                "ok": False,
+                "aweme_id": None,
+                "normalized_url": raw,
+                "is_short_link": False,
+                "verified": False,
+                "availability": "invalid",
+                "author": None,
+                "error": "Invalid TikTok video URL (expected tiktok.com/@user/video/<id> or numeric video ID).",
+            }
+
+    clean_norm = _clean_tiktok_video_url(target_url, aweme_id) if (is_short or verify_availability) else target_url
+    if not verify_availability:
         return {
             "valid": True,
             "ok": True,
             "aweme_id": aweme_id,
-            "normalized_url": raw,
+            "normalized_url": clean_norm,
             "is_short_link": is_short,
+            "verified": False,
+            "availability": "unverified",
+            "author": None,
             "error": None,
         }
 
-    if is_short:
-        if not resolve_short:
-            return {
-                "valid": False,
-                "ok": False,
-                "aweme_id": None,
-                "normalized_url": raw,
-                "is_short_link": True,
-                "error": "Short TikTok links (vt.tiktok.com / vm.tiktok.com) must be resolved to a full /video/<id> URL.",
-            }
-        try:
-            resolved = _resolve_short_tiktok_url(raw)
-        except Exception as exc:
-            return {
-                "valid": False,
-                "ok": False,
-                "aweme_id": None,
-                "normalized_url": raw,
-                "is_short_link": True,
-                "error": f"Failed to resolve short TikTok link: {exc}",
-            }
-        resolved_id = parse_aweme_id(resolved)
-        if resolved_id:
-            clean_url = resolved.split("?", 1)[0] if "/video/" in resolved or "/photo/" in resolved else resolved
-            return {
-                "valid": True,
-                "ok": True,
-                "aweme_id": resolved_id,
-                "normalized_url": clean_url,
-                "is_short_link": True,
-                "error": None,
-            }
+    probe = _check_tiktok_video_availability(target_url, aweme_id)
+    avail = probe.get("availability") or "unverified"
+    author = probe.get("author")
+    eff_id = str(probe.get("item_id") or aweme_id)
+    if probe.get("available") is True:
+        canonical = _clean_tiktok_video_url(probe.get("final_url") or target_url, eff_id, author=author)
+        return {
+            "valid": True,
+            "ok": True,
+            "aweme_id": eff_id,
+            "normalized_url": canonical,
+            "is_short_link": is_short,
+            "verified": True,
+            "availability": "available",
+            "author": author,
+            "error": None,
+        }
+    if probe.get("available") is False:
         return {
             "valid": False,
             "ok": False,
-            "aweme_id": None,
-            "normalized_url": resolved,
-            "is_short_link": True,
-            "error": "Could not extract a TikTok video ID from the resolved URL.",
+            "aweme_id": eff_id,
+            "normalized_url": clean_norm,
+            "is_short_link": is_short,
+            "verified": True,
+            "availability": avail,
+            "author": author,
+            "error": probe.get("reason") or "This TikTok video is unavailable.",
         }
-
     return {
-        "valid": False,
-        "ok": False,
-        "aweme_id": None,
-        "normalized_url": raw,
-        "is_short_link": False,
-        "error": "Invalid TikTok video URL (expected tiktok.com/@user/video/<id> or numeric video ID).",
+        "valid": True,
+        "ok": True,
+        "aweme_id": eff_id,
+        "normalized_url": clean_norm,
+        "is_short_link": is_short,
+        "verified": False,
+        "availability": "unverified",
+        "author": author,
+        "error": probe.get("reason") or "Could not verify video availability online.",
     }
 
 

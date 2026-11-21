@@ -1,13 +1,13 @@
 # TikTok Streak Auto (`TikTok Streak Setup`)
 
-> Open-source desktop app (`v1.3.2`, MIT License) and serverless GitHub Actions runner that keeps TikTok DM streaks alive and levels up TikTok Streak Pets daily (+7 growth points/day: 1 text message, 2 video share cards, and 1 photo per friend) without renting a server or VPS.
+> Open-source desktop app (`v1.3.3`, MIT License) and serverless GitHub Actions runner that keeps TikTok DM streaks alive and levels up TikTok Streak Pets daily (+7 growth points/day: 1 text message, 2 video share cards, and 1 photo per friend) without renting a server or VPS.
 
 - Canonical Homepage: https://alexanderfrit.github.io/tiktok-streak/
 - Source Repository: https://github.com/alexanderfrit/tiktok-streak
 - Latest Windows Installer (`TikTokStreakSetup.exe`): https://github.com/alexanderfrit/tiktok-streak/releases/latest
 - Complete RAG Documentation: https://alexanderfrit.github.io/tiktok-streak/llms-full.txt
 - Author / Maintainer: alexanderfrit (https://github.com/alexanderfrit)
-- Last Updated: 2026-11-21 (`v1.3.2`)
+- Last Updated: 2026-11-21 (`v1.3.3`)
 
 ## Core Technical Facts
 
@@ -22,7 +22,7 @@
 ## Key Documentation Sections
 
 - [Quick Answer & Comparison Matrix](https://alexanderfrit.github.io/tiktok-streak/#comparison)
-- [Windows `.exe` Download (`v1.3.2`)](https://alexanderfrit.github.io/tiktok-streak/#download)
+- [Windows `.exe` Download (`v1.3.3`)](https://alexanderfrit.github.io/tiktok-streak/#download)
 - [Streak Pet Growth Sequence](https://alexanderfrit.github.io/tiktok-streak/#pet-growth)
 - [4-Step Setup Guide & Timezone Cron Calculator](https://alexanderfrit.github.io/tiktok-streak/#setup-guide)
 - [Security, Encryption & Network Audit](https://alexanderfrit.github.io/tiktok-streak/#security)
