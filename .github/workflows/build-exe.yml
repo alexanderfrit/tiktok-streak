@@ -30,6 +30,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-gui.txt pyinstaller
 
+      - name: Sync APP_VERSION on tag builds
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tagVer = "${{ github.ref_name }}".TrimStart('v')
+          $content = Get-Content -Raw -Encoding UTF8 "gui/version.py"
+          $updated = [regex]::Replace($content, 'APP_VERSION\s*=\s*"[^"]+"', "APP_VERSION = `"$tagVer`"")
+          Set-Content -Path "gui/version.py" -Value $updated -Encoding UTF8 -NoNewline
+          python -c "from gui.version import APP_VERSION; assert APP_VERSION == '$tagVer', APP_VERSION; print('Synced APP_VERSION =', APP_VERSION)"
+
       - name: Build the app
         run: >
           pyinstaller --noconfirm --clean --windowed --onefile --noupx
@@ -78,4 +88,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          name: Tiktok Streak Setup
           files: dist/TikTokStreakSetup.exe

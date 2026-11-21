@@ -68,9 +68,148 @@ def init_browser(headless: bool = None, capture: bool = False) -> tuple:
     except Exception as e:
         logger.debug("CDP stealth patch skipped: %s", e)
 
+    if not headless:
+        install_headful_guard(browser)
+
     wait = WebDriverWait(browser, 20)
     logger.info("Browser initialized successfully.")
     return browser, wait
+
+
+HEADFUL_GUARD_JS = r"""
+(function () {
+  if (window.__headfulGuard) return;
+  window.__headfulGuard = true;
+  window.__botAllowSidebarClick = false;
+  window.__guardBannerText = "TikTok Streak Bot running — Do NOT click inbox chats";
+
+  var SIDEBAR_SEL = [
+    '[data-e2e="dm-new-conversation-item"]',
+    '[data-e2e="chat-item"]',
+    '[data-e2e="dm-new-conversation-nickname"]',
+    'p[class*="PInfoNickname"]',
+    'div[class*="ConversationItem"]',
+    'div[class*="ConversationList"]',
+    'div[class*="ChatList"]'
+  ].join(', ');
+
+  var MODAL_EXEMPT_SEL = [
+    '[role="dialog"]',
+    '[class*="captcha" i]',
+    '[id*="captcha" i]',
+    '[class*="TUXModal"]',
+    '[data-e2e*="modal"]'
+  ].join(', ');
+
+  function ensureBanner() {
+    try {
+      var existing = document.getElementById('__tiktok_streak_guard_banner');
+      if (existing) return existing;
+      var root = document.body || document.documentElement;
+      if (!root) return null;
+      var b = document.createElement('div');
+      b.id = '__tiktok_streak_guard_banner';
+      b.style.cssText = [
+        'position:fixed',
+        'top:8px',
+        'left:50%',
+        'transform:translateX(-50%)',
+        'z-index:2147483647',
+        'pointer-events:none',
+        'background:rgba(24,24,27,0.92)',
+        'color:#fafafa',
+        'border:1px solid rgba(254,44,85,0.7)',
+        'border-radius:8px',
+        'padding:6px 14px',
+        'font-family:Segoe UI,system-ui,sans-serif',
+        'font-size:12px',
+        'font-weight:600',
+        'box-shadow:0 4px 16px rgba(0,0,0,0.35)',
+        'transition:background-color 150ms ease,border-color 150ms ease'
+      ].join(';');
+      b.textContent = window.__guardBannerText;
+      root.appendChild(b);
+      return b;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function flashBanner() {
+    var b = ensureBanner();
+    if (!b) return;
+    var prevText = window.__guardBannerText;
+    b.textContent = "Sidebar clicks locked while bot is sending — please wait";
+    b.style.background = 'rgba(185, 28, 28, 0.96)';
+    b.style.borderColor = '#fca5a5';
+    clearTimeout(window.__guardFlashTimer);
+    window.__guardFlashTimer = setTimeout(function () {
+      try {
+        var cur = document.getElementById('__tiktok_streak_guard_banner');
+        if (cur) {
+          cur.textContent = prevText;
+          cur.style.background = 'rgba(24,24,27,0.92)';
+          cur.style.borderColor = 'rgba(254,44,85,0.7)';
+        }
+      } catch (e) {}
+    }, 1600);
+  }
+
+  window.__setHeadfulGuardStatus = function (msg) {
+    window.__guardBannerText = String(msg || "TikTok Streak Bot running");
+    var b = ensureBanner();
+    if (b) b.textContent = window.__guardBannerText;
+  };
+
+  function blockSidebar(ev) {
+    if (window.__botAllowSidebarClick === true) return;
+    var tgt = ev && ev.target;
+    if (!tgt || typeof tgt.closest !== 'function') return;
+    try {
+      if (tgt.closest(MODAL_EXEMPT_SEL)) return;
+      if (tgt.closest(SIDEBAR_SEL)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof ev.stopImmediatePropagation === 'function') {
+          ev.stopImmediatePropagation();
+        }
+        flashBanner();
+      }
+    } catch (e) {}
+  }
+
+  var events = ['pointerdown', 'mousedown', 'mouseup', 'click', 'auxclick'];
+  for (var i = 0; i < events.length; i++) {
+    document.addEventListener(events[i], blockSidebar, true);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', ensureBanner);
+  } else {
+    ensureBanner();
+  }
+})();
+"""
+
+
+def install_headful_guard(browser) -> None:
+    """Lock accidental inbox sidebar clicks during visible-browser runs (CAPTCHA dialogs stay clickable)."""
+    try:
+        browser.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": HEADFUL_GUARD_JS})
+    except Exception as e:
+        logger.debug("Headful guard CDP registration skipped: %s", e)
+
+
+def set_headful_guard_status(browser, text: str) -> None:
+    """Best-effort update of the non-blocking top status banner in visible-browser mode."""
+    try:
+        browser.execute_script(
+            "if (typeof window.__setHeadfulGuardStatus === 'function') "
+            "window.__setHeadfulGuardStatus(arguments[0]);",
+            str(text or ""),
+        )
+    except Exception:
+        pass
 
 
 def _clean_cookie_part(val: object) -> str:
@@ -164,14 +303,21 @@ def authenticate_session(browser, session_id: str, account_name: str = "Account"
             "  localStorage.clear();"
             "  sessionStorage.clear();"
             "  sessionStorage.removeItem('__tmplB64');"
+            "  sessionStorage.removeItem('__tmplHandle');"
             "  sessionStorage.removeItem('__httpSendB64');"
             "  sessionStorage.removeItem('__httpSendUrl');"
+            "  sessionStorage.removeItem('__httpSendHandle');"
             "} catch(e) {}"
             "try {"
             "  window.__sent = [];"
             "  window.__recv = [];"
             "  window.__httpSend = null;"
             "  window.__mediaSend = null;"
+            "  window.__activeTargetHandle = null;"
+            "  window.__friendSentStart = 0;"
+            "  window.__dmUsersByHandle = {};"
+            "  window.__dmUsersByNick = {};"
+            "  window.__verifiedThreads = {};"
             "} catch(e) {}"
         )
     except Exception:

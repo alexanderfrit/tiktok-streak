@@ -1,10 +1,19 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 import logging, random, time
-from .browser import dump_debug_diagnostics, MESSAGES_URL
+from .browser import dump_debug_diagnostics, MESSAGES_URL, set_headful_guard_status
+from .config import clean_handle
 from .exceptions import (
     DMBlockedError,
     RateLimitError,
+    RecipientMismatchError,
+)
+from .share import (
+    CLICK_INBOX_ROW_JS,
+    INSPECT_INBOX_ROWS_JS,
+    assert_active_chat_handle,
+    get_active_chat_handle,
+    reset_friend_send_capture,
 )
 
 logger = logging.getLogger("tiktok-streak")
@@ -143,92 +152,292 @@ def _thread_list_present(browser) -> bool:
         return False
 
 
-def open_inbox_chat(browser, friend: str, stop_event=None) -> None:
-    # Inbox-only: the bot must never touch a public profile route. Find the
-    # thread in the existing conversation list (bidirectional nickname match,
-    # same as the media path), or use the inbox search box, or fail clearly.
-    import json as _json
-    from .share import OPEN_THREAD_JS
+def _row_scan_priority(nickname: str, target: str) -> int:
+    """Rank uninspected READ rows by safe display-name plausibility.
+
+    Single/two-character display names (e.g. 'M') are NEVER boosted ahead of
+    real multi-character token matches to prevent short-nickname collisions.
+    """
+    import re as _re
+    nick = (nickname or "").strip().lower()
+    tgt = clean_handle(target).lower()
+    if not nick or not tgt:
+        return 99
+    if nick == tgt or nick == f"@{tgt}":
+        return 0
+    if len(nick) >= 3 and (tgt.startswith(nick) or nick.startswith(tgt[:3])):
+        return 1
+    tokens = [tok for tok in _re.split(r"[^a-z0-9_.]+", nick) if len(tok) >= 3]
+    for tok in tokens:
+        if tgt.startswith(tok) or tok in tgt or (len(tgt) >= 4 and tgt[:4] in tok):
+            return 2
+    return 3
+
+
+def _wait_for_active_handle(
+    browser,
+    expected_target: str,
+    timeout: float = 3.5,
+    stop_event=None,
+) -> tuple[bool, str | None]:
+    """Poll right-pane chat header until `expected_target` appears or timeout."""
+    deadline = time.time() + timeout
+    last_seen: str | None = None
+    while time.time() < deadline:
+        if _is_cancelled(stop_event):
+            return False, last_seen
+        last_seen = get_active_chat_handle(browser)
+        if last_seen == expected_target:
+            return True, last_seen
+        _sleep_interruptible(0.25, stop_event)
+    last_seen = get_active_chat_handle(browser)
+    return last_seen == expected_target, last_seen
+
+
+def _inspect_rows(browser) -> list[dict]:
+    try:
+        raw = browser.execute_script(INSPECT_INBOX_ROWS_JS)
+        return [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def _click_row(browser, idx: int) -> bool:
+    try:
+        return bool(browser.execute_script(CLICK_INBOX_ROW_JS, int(idx)))
+    except Exception:
+        return False
+
+
+def _cache_verified_thread(browser, handle: str | None, nickname: str) -> None:
+    if not handle:
+        return
+    try:
+        browser.execute_script(
+            "window.__verifiedThreads = window.__verifiedThreads || {};"
+            "window.__verifiedThreads[arguments[0]] = arguments[1];",
+            clean_handle(handle).lower(),
+            str(nickname or ""),
+        )
+    except Exception:
+        pass
+
+
+def open_inbox_chat(browser, friend: str, stop_event=None) -> str:
+    """Open @friend's DM thread strictly within /messages and verify right-pane @username.
+
+    Resolution tiers:
+      0. Already open in right-pane header == @friend.
+      1. Exact handle / fiber / network-harvested / cached match in visible inbox rows.
+      2. Inbox search box (if visible) + strict right-pane header verification.
+      3. Bounded read-only scan of READ inbox rows (explicitly skipping unread rows).
+    Raises DMBlockedError if the verified handle cannot be opened.
+    """
+    target = clean_handle(friend).lower()
+    if not target:
+        raise DMBlockedError("Empty friend handle.")
 
     if _is_cancelled(stop_event):
-        return
+        return ""
 
-    if "/messages" not in browser.current_url:
+    set_headful_guard_status(browser, f"TikTok Streak Bot: opening @{target}...")
+
+    if "/messages" not in str(getattr(browser, "current_url", "") or ""):
         browser.get(MESSAGES_URL)
         _sleep_interruptible(random.uniform(3.0, 4.5), stop_event)
         if _is_cancelled(stop_event):
-            return
+            return ""
     dismiss_modals(browser)
     if _is_cancelled(stop_event):
-        return
+        return ""
 
-    # 1. Existing conversation thread in the left pane. The thread shows the
-    # display name, which the handle may not contain either
-    # way in a naive substring test - OPEN_THREAD_JS matches both directions.
-    # The list streams in after navigation, so poll until it renders: a cold
-    # headless load of a long thread list can take longer than the initial wait,
-    # and a single look-up would report a real contact as missing.
+    # Tier 0: Already open on exact target handle
+    if get_active_chat_handle(browser) == target:
+        logger.info("@%s is already open and verified in chat header.", target)
+        return target
+
+    # Wait for inbox list to stream in
     deadline = time.time() + 15.0
+    rows: list[dict] = []
     while time.time() < deadline:
         if _is_cancelled(stop_event):
-            return
-        try:
-            hit = browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))
-            if hit:
-                logger.info("Opened @%s from the inbox list (matched %r).", friend, hit.get("txt"))
-                _sleep_interruptible(random.uniform(1.5, 2.5), stop_event)
-                return
-        except Exception as e:
-            logger.debug("Inbox list match for @%s failed: %s", friend, e)
-        if _thread_list_present(browser):
-            # List is up and the friend is not in it; fall through to search.
+            return ""
+        rows = _inspect_rows(browser)
+        if rows or _thread_list_present(browser):
             break
         _sleep_interruptible(0.5, stop_event)
 
     if _is_cancelled(stop_event):
-        return
+        return ""
 
-    # 2. Inbox search box (no public profile navigation).
+    # Read known nickname mappings from network harvester / previous row scans
+    known_nick = ""
     try:
-        search = find_element_by_candidates(browser, INBOX_SEARCH_CANDIDATES, "inbox search box", timeout=4.0)
-        if _is_cancelled(stop_event):
-            return
-        safe_click(browser, search)
-        search.clear()
-        if stop_event is not None:
-            type_human_like(search, friend, stop_event=stop_event)
-        else:
-            type_human_like(search, friend)
-        if _is_cancelled(stop_event):
-            return
-        _sleep_interruptible(random.uniform(1.5, 2.5), stop_event)
-        # Search results render asynchronously too; give them the same grace.
-        search_deadline = time.time() + 6.0
-        hit = None
-        while time.time() < search_deadline and not hit:
-            if _is_cancelled(stop_event):
-                return
-            hit = browser.execute_script(OPEN_THREAD_JS.replace("__NAME__", _json.dumps(friend)))
-            if not hit:
-                _sleep_interruptible(0.5, stop_event)
-        if hit:
-            logger.info("Found @%s via inbox search (matched %r).", friend, hit.get("txt"))
-            _sleep_interruptible(random.uniform(1.5, 2.5), stop_event)
-            return
-    except Exception as e:
-        logger.debug("Inbox search for @%s failed: %s", friend, e)
+        nick_lookup = browser.execute_script(
+            "var vt = window.__verifiedThreads || {};"
+            "var hm = window.__dmUsersByHandle || {};"
+            "return vt[arguments[0]] || hm[arguments[0]] || '';",
+            target,
+        )
+        if isinstance(nick_lookup, str):
+            known_nick = nick_lookup.strip().lower()
+    except Exception:
+        known_nick = ""
+
+    # Tier 1: Exact handle metadata / React Fiber / unique harvested nickname (works even if unread)
+    exact_candidates: list[dict] = []
+    for r in rows:
+        if str(r.get("handle") or "").lower() == target:
+            exact_candidates.append(r)
+    if not exact_candidates and known_nick:
+        nick_matches = [r for r in rows if (r.get("nickname") or "").strip().lower() == known_nick]
+        if len(nick_matches) == 1:
+            exact_candidates = nick_matches
+
+    for cand in exact_candidates:
+        if _click_row(browser, cand["idx"]):
+            ok, actual = _wait_for_active_handle(browser, target, timeout=4.0, stop_event=stop_event)
+            _cache_verified_thread(browser, actual, cand.get("nickname", ""))
+            if ok:
+                logger.info("Opened @%s via Tier-1 exact metadata (%r).", target, cand.get("nickname"))
+                _sleep_interruptible(random.uniform(0.8, 1.5), stop_event)
+                return target
 
     if _is_cancelled(stop_event):
-        return
+        return ""
+
+    # Tier 2: Inbox search box (only if rendered by TikTok Web)
+    search_box = None
+    try:
+        search_box = find_element_by_candidates(browser, INBOX_SEARCH_CANDIDATES, "inbox search box", timeout=2.5)
+    except Exception:
+        search_box = None
+
+    if search_box is not None and not _is_cancelled(stop_event):
+        try:
+            safe_click(browser, search_box)
+            search_box.clear()
+            type_human_like(search_box, target, stop_event=stop_event)
+            if _is_cancelled(stop_event):
+                return ""
+            _sleep_interruptible(random.uniform(1.2, 2.0), stop_event)
+            s_deadline = time.time() + 5.0
+            matched_in_search = False
+            while time.time() < s_deadline and not _is_cancelled(stop_event):
+                s_rows = _inspect_rows(browser)
+                exact_s = [r for r in s_rows if str(r.get("handle") or "").lower() == target]
+                pick = exact_s[0] if exact_s else (s_rows[0] if len(s_rows) == 1 else None)
+                if pick and _click_row(browser, pick["idx"]):
+                    ok, actual = _wait_for_active_handle(browser, target, timeout=3.5, stop_event=stop_event)
+                    _cache_verified_thread(browser, actual, pick.get("nickname", ""))
+                    if ok:
+                        logger.info("Opened @%s via Tier-2 inbox search.", target)
+                        matched_in_search = True
+                        break
+                _sleep_interruptible(0.5, stop_event)
+            if matched_in_search:
+                _sleep_interruptible(random.uniform(0.8, 1.4), stop_event)
+                return target
+        except Exception as e:
+            logger.debug("Tier-2 inbox search for @%s failed: %s", target, e)
+        finally:
+            try:
+                search_box.send_keys(Keys.CONTROL, "a")
+                search_box.send_keys(Keys.BACK_SPACE)
+                search_box.send_keys(Keys.ESCAPE)
+                _sleep_interruptible(0.5, stop_event)
+            except Exception:
+                pass
+
+    if _is_cancelled(stop_event):
+        return ""
+
+    # Tier 3: Bounded read-only scan of READ threads (never opens unread chats)
+    seen_row_keys: set[str] = set()
+    scanned = 0
+    max_scan = 35
+    total_unread_skipped = 0
+
+    for _scroll_pass in range(3):
+        if _is_cancelled(stop_event) or scanned >= max_scan:
+            break
+        rows = _inspect_rows(browser)
+        unread_rows = [r for r in rows if r.get("unread")]
+        if _scroll_pass == 0:
+            total_unread_skipped = len(unread_rows)
+
+        candidates = []
+        for r in rows:
+            if r.get("unread"):
+                continue
+            rk = str(r.get("rowKey") or r.get("idx"))
+            if rk in seen_row_keys:
+                continue
+            rh = str(r.get("handle") or "").lower()
+            if rh and rh != target:
+                seen_row_keys.add(rk)
+                continue
+            candidates.append(r)
+
+        candidates.sort(key=lambda item: (_row_scan_priority(str(item.get("nickname") or ""), target), int(item.get("idx", 0))))
+
+        for cand in candidates:
+            if _is_cancelled(stop_event) or scanned >= max_scan:
+                break
+            rk = str(cand.get("rowKey") or cand.get("idx"))
+            seen_row_keys.add(rk)
+            scanned += 1
+            prev_handle = get_active_chat_handle(browser)
+            if not _click_row(browser, cand["idx"]):
+                continue
+            # Wait briefly for right-pane header to reflect clicked conversation
+            actual = None
+            h_deadline = time.time() + 2.0
+            while time.time() < h_deadline:
+                if _is_cancelled(stop_event):
+                    return ""
+                actual = get_active_chat_handle(browser)
+                if actual == target:
+                    _cache_verified_thread(browser, actual, cand.get("nickname", ""))
+                    logger.info(
+                        "Opened @%s via Tier-3 verified read-row scan (%r).",
+                        target,
+                        cand.get("nickname"),
+                    )
+                    _sleep_interruptible(random.uniform(0.8, 1.4), stop_event)
+                    return target
+                if actual and actual != prev_handle:
+                    break
+                _sleep_interruptible(0.25, stop_event)
+            _cache_verified_thread(browser, actual, cand.get("nickname", ""))
+
+        # Scroll conversation container to load older read threads if available
+        try:
+            scrolled = browser.execute_script(
+                "var item = document.querySelector('[data-e2e=\"dm-new-conversation-item\"], [data-e2e=\"chat-item\"], div[class*=\"ConversationItem\"]');"
+                "if (!item || !item.parentElement) return false;"
+                "var p = item.parentElement;"
+                "while (p && p !== document.body && p.scrollHeight <= p.clientHeight + 10) p = p.parentElement;"
+                "if (!p || p === document.body) return false;"
+                "var prev = p.scrollTop; p.scrollTop = Math.min(p.scrollHeight, prev + Math.max(300, p.clientHeight));"
+                "return p.scrollTop > prev;"
+            )
+            if not scrolled:
+                break
+            _sleep_interruptible(0.6, stop_event)
+        except Exception:
+            break
 
     raise DMBlockedError(
-        f"Could not open @{friend} from the inbox (no existing thread, search found no match). "
-        f"DMs may be restricted or a mutual follow is required."
+        f"Could not open verified chat for @{target} in /messages "
+        f"(scanned {scanned} read thread(s), skipped {total_unread_skipped} unread thread(s); "
+        "target may have a different Display Name and be unread, or DMs require mutual follow)."
     )
 
 
 def send_streak_message(browser, friend: str, message_text: str, stop_event=None) -> dict:
     status = {"friend": friend, "sent": False, "error": None}
+    target = clean_handle(friend).lower()
     try:
         if _is_cancelled(stop_event):
             status["error"] = "Cancelled"
@@ -243,18 +452,24 @@ def send_streak_message(browser, friend: str, message_text: str, stop_event=None
             status["error"] = "Cancelled"
             return status
 
+        set_headful_guard_status(browser, f"TikTok Streak Bot: sending to @{target}...")
+        reset_friend_send_capture(browser, friend)
+        assert_active_chat_handle(browser, friend)
+
         logger.info("Locating chat input for @%s...", friend)
         msg_input = find_element_by_candidates(browser, MESSAGE_INPUT_CANDIDATES, "chat input field", timeout=10.0)
         if _is_cancelled(stop_event):
             status["error"] = "Cancelled"
             return status
 
+        assert_active_chat_handle(browser, friend)
         safe_click(browser, msg_input)
         _sleep_interruptible(0.4, stop_event)
         if _is_cancelled(stop_event):
             status["error"] = "Cancelled"
             return status
 
+        assert_active_chat_handle(browser, friend)
         logger.info("Typing message to @%s...", friend)
         if stop_event is not None:
             type_human_like(msg_input, message_text, stop_event=stop_event)
@@ -269,6 +484,8 @@ def send_streak_message(browser, friend: str, message_text: str, stop_event=None
             status["error"] = "Cancelled"
             return status
 
+        # Final fail-closed recipient check immediately before hitting Enter.
+        assert_active_chat_handle(browser, friend)
         msg_input.send_keys(Keys.RETURN)
 
         _sleep_interruptible(random.uniform(1.5, 2.5), stop_event)
@@ -286,6 +503,10 @@ def send_streak_message(browser, friend: str, message_text: str, stop_event=None
 
         logger.info("Streak message successfully sent to @%s.", friend)
         status["sent"] = True
+    except RecipientMismatchError as e:
+        dump_debug_diagnostics(browser, f"recipient_mismatch_{target or 'unknown'}")
+        status["error"] = str(e)
+        logger.error("Aborted streak message to @%s before sending: %s", friend, e)
     except RateLimitError as e:
         logger.error("Rate limit encountered while messaging @%s: %s", friend, e)
         raise

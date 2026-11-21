@@ -39,6 +39,7 @@ from gui.services.storage import (
     import_local_workspace,
 )
 from gui.services.theme import escape_qt_mnemonic, get_windows_personalization
+from gui.version import APP_VERSION
 try:
     from gui.services.validators import TIMEZONE_CHOICES, get_timezone_info
 except ImportError:  # pragma: no cover
@@ -86,6 +87,7 @@ class SettingsPage(SmoothScrollArea):
     theme_changed = Signal(str)
     accent_changed = Signal(str)
     workspace_reloaded = Signal(object)
+    check_updates_requested = Signal()
 
     def __init__(
         self,
@@ -324,6 +326,34 @@ class SettingsPage(SmoothScrollArea):
         self.workspaceGroup.addSettingCard(self.cliExportCard)
         self.workspaceGroup.addSettingCard(self.resetCard)
         self.vBoxLayout.addWidget(self.workspaceGroup)
+
+        # 4. About & Updates
+        self.updatesGroup = SettingCardGroup(tr("settings.updates_group"), self.view)
+
+        self.versionCard = SettingCard(
+            FIF.UPDATE,
+            tr("settings.app_version_title", version=APP_VERSION),
+            tr("settings.app_version_uptodate"),
+            self.updatesGroup,
+        )
+        self.checkUpdateBtn = PushButton(
+            FIF.SYNC, escape_qt_mnemonic(tr("settings.check_updates_btn")), self.versionCard
+        )
+        self.checkUpdateBtn.clicked.connect(lambda: self.check_updates_requested.emit())
+        self.versionCard.hBoxLayout.addWidget(self.checkUpdateBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.versionCard.hBoxLayout.addSpacing(16)
+
+        self.autoUpdateCard = SettingCard(
+            FIF.DOWNLOAD, tr("settings.auto_check_updates"), None, self.updatesGroup
+        )
+        self.autoUpdateSwitch = SwitchButton(self.autoUpdateCard)
+        self.autoUpdateSwitch.checkedChanged.connect(self._on_auto_update_changed)
+        self.autoUpdateCard.hBoxLayout.addWidget(self.autoUpdateSwitch, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.autoUpdateCard.hBoxLayout.addSpacing(16)
+
+        self.updatesGroup.addSettingCard(self.versionCard)
+        self.updatesGroup.addSettingCard(self.autoUpdateCard)
+        self.vBoxLayout.addWidget(self.updatesGroup)
         self.vBoxLayout.addStretch(1)
 
     def _default_workspace_dir(self) -> str:
@@ -386,8 +416,29 @@ class SettingsPage(SmoothScrollArea):
             self.ghSignoutBtn.setEnabled(has_gh)
 
             self._sync_line_edit(self.workspaceDirEdit, self._default_workspace_dir(), force=force_inputs)
+            self.autoUpdateSwitch.setChecked(bool(getattr(st, "auto_check_updates", True)))
         finally:
             self._loading = False
+
+    def _on_auto_update_changed(self, checked: bool) -> None:
+        if self._loading:
+            return
+        self._state.auto_check_updates = bool(checked)
+        self.state_changed.emit()
+
+    def set_update_check_status(self, checking: bool, info: dict[str, Any] | None = None) -> None:
+        self.checkUpdateBtn.setEnabled(not checking)
+        if checking:
+            self.versionCard.setContent(tr("settings.checking_updates"))
+            return
+        if info and info.get("has_update") and info.get("latest_version"):
+            self.versionCard.setContent(
+                tr("settings.app_version_available", version=str(info["latest_version"]).lstrip("vV"))
+            )
+        elif info and info.get("error"):
+            self.versionCard.setContent(friendly_error(info["error"]))
+        else:
+            self.versionCard.setContent(tr("settings.app_version_uptodate"))
 
     def _on_debounced_save(self) -> None:
         self._saving_from_self = True
@@ -726,6 +777,10 @@ class SettingsPage(SmoothScrollArea):
         self.resetCard.setTitle(tr("settings.reset_all"))
         self.resetCard.setContent(tr("settings.clear_secrets"))
         self.resetAllBtn.setText(escape_qt_mnemonic(tr("settings.reset_all")))
+        self.updatesGroup.titleLabel.setText(tr("settings.updates_group"))
+        self.versionCard.setTitle(tr("settings.app_version_title", version=APP_VERSION))
+        self.checkUpdateBtn.setText(escape_qt_mnemonic(tr("settings.check_updates_btn")))
+        self.autoUpdateCard.setTitle(tr("settings.auto_check_updates"))
         if hasattr(self.cliExportCard, "_adjustViewSize"):
             self.cliExportCard._adjustViewSize()
         self.refresh_from_state()

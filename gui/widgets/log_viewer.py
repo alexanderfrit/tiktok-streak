@@ -21,6 +21,7 @@ from qfluentwidgets import (
 from gui.services.i18n import tr
 from gui.services.storage import redact_secrets
 from gui.services.theme import escape_qt_mnemonic, tabular_mono_font
+from gui.version import APP_VERSION
 
 
 class LogViewer(CardWidget):
@@ -113,7 +114,7 @@ class LogViewer(CardWidget):
     def build_diagnostic_report(self) -> str:
         header_lines = [
             "=== TikTok Streak Diagnostic Report ===",
-            f"OS: {platform.platform()} | Python: {sys.version.split()[0]} | Frozen: {getattr(sys, 'frozen', False)}",
+            f"App: v{APP_VERSION} | OS: {platform.platform()} | Python: {sys.version.split()[0]} | Frozen: {getattr(sys, 'frozen', False)}",
         ]
         if self._summary_provider is not None:
             try:

@@ -109,7 +109,7 @@ Everything you need to set up and run daily streaks on Windows using `TikTokStre
   - **Local PC (Windows Task Scheduler):** Runs automatically on your PC at the times you add under **Local Schedule** (your PC needs to be turned on at those times).
   - **Cloud (GitHub Actions):** Runs on GitHub's servers even while your PC is off.
     1. Click **Sign in with GitHub** and approve the browser login prompt (`repo` and `workflow` permissions).
-    2. Keep **Create Private Repository** switched on so your bot repository and action logs stay private (or choose an existing repo with **Fetch My Repos**).
+    2. Keep **Create Private Repository** switched on so your bot repository and action logs stay private. Existing bot repositories appear automatically under **Detected Bot Repositories** — click any row to select it, toggle **Pause / Resume** per repository, or click **Pause Others** if multiple active bots are detected.
     3. Add your daily run times (or click an off-peak **Quick fill** preset like `08:15` / `20:15`) and click **Save & Deploy to GitHub**.
   - **Hybrid:** Combines both Local PC scheduling and GitHub Cloud runs.
 
@@ -118,13 +118,14 @@ Everything you need to set up and run daily streaks on Windows using `TikTokStre
 ### 4. Test With One Friend First (**Run & Logs** tab)
 
 1. Pick one friend under **Select friend for 1-friend smoke test**.
-2. Toggle **Show browser window** on if you want to watch the run live, or leave it off to run headless (this switch controls both **Quick Test (1 Friend)** and **Run Full Streak Locally**).
+2. Toggle **Show browser window** on if you want to watch the run live, or leave it off to run headless (while visible browser runs are active, inbox sidebar clicks are automatically locked and every target `@username` header is strictly verified to prevent misdelivery).
 3. Click **Quick Test (1 Friend)** to confirm your session and message flow work before running against everyone.
-4. For cloud runs, check **GitHub Cloud Monitor** to run workflows on demand (**Run on GitHub Now**), inspect job logs, or download `debug-diagnostics` screenshots if anything fails.
+4. For cloud runs, check **GitHub Cloud Monitor** to run workflows on demand (**Run on GitHub Now**), toggle **Pause / Resume Schedule**, cancel an active run (**Stop Run**), inspect job logs, or download `debug-diagnostics` screenshots if anything fails.
 
-### 5. Theme, Language, and Telegram Alerts (**Settings** tab)
+### 5. Theme, Language, Updates & Telegram Alerts (**Settings** tab)
 
 - **Appearance & Language:** Syncs with Windows Dark/Light mode and Windows Personalization accent colors by default, with overrides for Light, Dark, or TikTok pink (`#fe2c55`), plus **English (`EN`)** and **Bahasa Indonesia (`ID`)** switching.
+- **About & Updates:** Checks GitHub Releases automatically on startup (or manually via **Check for Updates**) with SHA-256 verification and in-app install/restart, plus a Dashboard reminder when your app version is newer than your last Cloud deployment.
 - **Telegram Alerts (Optional):** Create a bot via [`@BotFather`](https://t.me/BotFather), paste your token, send `/start` to your bot, click **Detect Chat ID**, and click **Send Test Message**.
 
 ### Troubleshooting
@@ -153,8 +154,8 @@ Technical overview, CLI usage, configuration schemas, and build pipeline.
    - Immediately checks redirects for `/login` (`SessionExpiredError`) or `business-suite` (`InboxUnavailableError`) before wasting selectors downstream.
 
 2. **Thread Resolution & Human Pacing (`src/actions.py`)**
-   - `open_inbox_chat()` scans rendered conversation rows using `OPEN_THREAD_JS` (bidirectional display-name / handle match), falling back to `INBOX_SEARCH_CANDIDATES` inside the inbox search input rather than navigating outside `/messages`.
-   - `send_streak_message()` dismisses blocking modals, focuses the composer (`MESSAGE_INPUT_CANDIDATES`), types character-by-character with randomized delays (`0.04s–0.12s`), submits with `Keys.RETURN`, inspects `data-e2e="toast"` / `role="alert"` banners for `RateLimitError`, and verifies the composer text cleared.
+   - `open_inbox_chat()` resolves rendered threads via exact 3-tier verification (React Fiber / DOM / network metadata, then inbox search, then bounded read-only scan skipping unread threads), verifies the right-pane chat header matches the target `@username` (`RecipientMismatchError`), and locks accidental inbox sidebar clicks during headful runs (`HEADFUL_GUARD_JS`).
+   - `send_streak_message()` dismisses blocking modals, focuses the composer (`MESSAGE_INPUT_CANDIDATES`), re-verifies the active `@username` header before typing and before pressing `Keys.RETURN`, types character-by-character with randomized delays (`0.04s–0.12s`), inspects `data-e2e="toast"` / `role="alert"` banners for `RateLimitError`, and verifies the composer text cleared.
 
 3. **Video Share Card Forging & Fallback (`src/share.py`)**
    - Installed via `Page.addScriptToEvaluateOnNewDocument` before `/messages` loads:
@@ -191,10 +192,11 @@ tiktok-streak/
 ├── docs/screenshots/            # GUI screenshots embedded in README
 ├── gui/
 │   ├── app.py                   # FluentWindow shell, Windows theme listener, splash & nav
+│   ├── version.py               # Single source of truth APP_VERSION & release repo config
 │   ├── workers.py               # QThread worker bridge with threading.Event cancellation
 │   ├── pages/                   # Home, Accounts, Content & Schedule, Run & Logs, Settings
-│   ├── services/                # Pure-Python backend (storage, i18n, validators, browsers, tiktok_auth, github_api, local_runner, scheduler, theme)
-│   └── widgets/                 # AccountCard, StatusPill, FluentSpinBox, CookieDialog, DeviceLoginDialog, LogViewer
+│   ├── services/                # Pure-Python backend (storage, i18n, validators, browsers, tiktok_auth, github_api, updater, local_runner, scheduler, theme)
+│   └── widgets/                 # AccountCard, StatusPill, FluentSpinBox, ChipFlowWidget, ResponsiveSplitRow, SecurityPrivacyDialog, UpdateDialog, CookieDialog, DeviceLoginDialog, LogViewer
 ├── src/
 │   ├── actions.py               # Inbox navigation, typing pacing, send verification
 │   ├── browser.py               # Stealth Chrome/Edge launcher and session cookie injection

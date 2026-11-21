@@ -1,10 +1,10 @@
 import argparse
 from dataclasses import replace
-import logging, os, random, sys, time
+import inspect, logging, os, random, sys, time
 from src.browser import init_browser, authenticate_session
 from src.config import load_accounts, clean_handle
 from src.actions import send_streak_message
-from src.exceptions import RateLimitError
+from src.exceptions import RateLimitError, RecipientMismatchError
 from src.share import install_ws_hook, install_media_guard, parse_aweme_id, send_share_card, send_photo_card
 from src.notifier import notify_streak_summary, notify_telegram
 
@@ -265,18 +265,41 @@ def run(
                     else:
                         err = f"@{friend}: {res['error']}"
                         acc_result["failures"].append(err)
-                        logger.error("[%s] Text to @%s FAILED: %s", account.name, friend, res["error"])
+                        logger.error(
+                            "[%s] Text to @%s FAILED (%s) — skipping share cards & photo for fail-closed recipient safety.",
+                            account.name, friend, res["error"],
+                        )
+                        _emit_progress(
+                            progress_cb,
+                            stage="friend_done",
+                            account=account.name,
+                            friend=friend,
+                            friend_index=f_idx,
+                            friends_total=len(friends),
+                            ok=False,
+                            sent=acc_result["sent"],
+                            shares_sent=acc_result["shares_sent"],
+                            photos_sent=acc_result["photos_sent"],
+                            message=f"[{account.name}] @{friend} -> text=FAIL",
+                        )
+                        if f_idx < len(friends) and not _is_cancelled(stop_event):
+                            _sleep_or_stop(random.uniform(3.0, 8.0), stop_event)
+                        continue
 
                     if _is_cancelled(stop_event):
                         break
 
                     # Send N video-share cards (streak progression needs more than one).
                     shares_here = 0
+                    share_mismatch = False
                     if item_id and account.share_times > 0 and not _is_cancelled(stop_event):
                         for s_idx in range(account.share_times):
                             if _is_cancelled(stop_event):
                                 break
-                            sres = send_share_card(browser, friend, item_id)
+                            try:
+                                sres = send_share_card(browser, friend, item_id)
+                            except RecipientMismatchError as rme:
+                                sres = {"sent": False, "error": str(rme)}
                             if sres["sent"]:
                                 shares_here += 1
                                 acc_result["shares_sent"] += 1
@@ -285,13 +308,26 @@ def run(
                                 acc_result["failures"].append(f"@{friend} share {s_idx + 1}: {sres['error']}")
                                 logger.error("[%s] Share %d/%d to @%s FAILED: %s",
                                              account.name, s_idx + 1, account.share_times, friend, sres["error"])
+                                if "mismatch" in str(sres.get("error") or "").lower():
+                                    share_mismatch = True
+                                    break
                             if s_idx + 1 < account.share_times:
                                 _sleep_or_stop(random.uniform(1.5, 3.0), stop_event)
 
                     # Send 1 photo (streak progression also needs a media message).
                     photo_ok = None
-                    if account.photo_path and not _is_cancelled(stop_event):
-                        pres = send_photo_card(browser, friend, account.photo_path)
+                    if share_mismatch:
+                        photo_ok = False
+                        logger.warning("[%s] Skipping photo for @%s after recipient mismatch.", account.name, friend)
+                    elif account.photo_path and not _is_cancelled(stop_event):
+                        try:
+                            photo_sig = inspect.signature(send_photo_card)
+                            if stop_event is not None and "stop_event" in photo_sig.parameters:
+                                pres = send_photo_card(browser, friend, account.photo_path, stop_event=stop_event)
+                            else:
+                                pres = send_photo_card(browser, friend, account.photo_path)
+                        except RecipientMismatchError as rme:
+                            pres = {"sent": False, "error": str(rme)}
                         if pres["sent"]:
                             photo_ok = True
                             acc_result["photos_sent"] += 1

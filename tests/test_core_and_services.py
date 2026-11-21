@@ -430,6 +430,7 @@ class TestActionsAndMain:
         mock_browser.find_elements.return_value = [toast]
 
         with patch("src.actions.open_inbox_chat"), \
+             patch("src.share.get_active_chat_handle", return_value="friend1"), \
              patch("src.actions.find_element_by_candidates", return_value=MagicMock()), \
              patch("src.actions.dump_debug_diagnostics") as mock_dump, \
              patch("time.sleep", return_value=None):
@@ -1952,6 +1953,8 @@ class TestGitHubApiService:
             "name": "shared-bot",
             "owner": "org",
             "private": True,
+            "archived": False,
+            "fork": False,
             "default_branch": "master",
             "html_url": "https://github.com/org/shared-bot",
         }
@@ -2374,4 +2377,375 @@ class TestThemeService:
         # Invalid hex falls back cleanly without raising
         fallback_icon = create_app_icon("not-a-hex", dark=True)
         assert not fallback_icon.isNull()
+
+
+class TestRecipientSafetyAndIsolation:
+    def test_open_inbox_chat_never_matches_single_letter_nickname_and_skips_unread(self):
+        from src.actions import open_inbox_chat
+
+        mock_b = MagicMock()
+        mock_b.current_url = "https://www.tiktok.com/messages?lang=en"
+        active_header = {"val": None}
+        clicked_indices: list[int] = []
+
+        rows_data = [
+            {"idx": 0, "nickname": "M", "handle": None, "unread": False, "rowKey": "m|0"},
+            {"idx": 1, "nickname": "Secret Unread", "handle": None, "unread": True, "rowKey": "u|1"},
+            {"idx": 2, "nickname": "Max Morgan", "handle": None, "unread": False, "rowKey": "max|2"},
+        ]
+
+        def fake_exec(script, *args):
+            if "READ_ACTIVE_CHAT" in script or "dm-new-chat-header" in script:
+                return active_header["val"]
+            if "dm-new-conversation-item" in script and "rowKey" in script:
+                return rows_data
+            if "window.__botAllowSidebarClick = true" in script and args:
+                idx = int(args[0])
+                clicked_indices.append(idx)
+                if idx == 0:
+                    active_header["val"] = "morgan_other"
+                elif idx == 1:
+                    active_header["val"] = "other_unread"
+                elif idx == 2:
+                    active_header["val"] = "max_demo"
+                return True
+            if "scrollTop" in script:
+                return False
+            return None
+
+        mock_b.execute_script.side_effect = fake_exec
+        with patch("src.actions.find_element_by_candidates", side_effect=TimeoutError("no search")), \
+             patch("time.sleep", return_value=None):
+            resolved = open_inbox_chat(mock_b, "max_demo")
+
+        assert resolved == "max_demo"
+        # Row 2 ("Max Morgan") has priority 2 (>= 3 char token) while "M" (1 char) is not boosted,
+        # and unread row 1 is NEVER clicked!
+        assert 1 not in clicked_indices
+        assert clicked_indices[0] == 2
+
+    def test_open_inbox_chat_tier1_exact_fiber_handle_even_if_unread(self):
+        from src.actions import open_inbox_chat
+
+        mock_b = MagicMock()
+        mock_b.current_url = "https://www.tiktok.com/messages?lang=en"
+        active_header = {"val": "morgan_other"}
+        clicked: list[int] = []
+        rows_data = [
+            {"idx": 0, "nickname": "M", "handle": "morgan_other", "unread": False, "rowKey": "m|0"},
+            {"idx": 1, "nickname": "Someone", "handle": "sam_unread", "unread": True, "rowKey": "h|1"},
+        ]
+
+        def fake_exec(script, *args):
+            if "dm-new-chat-header" in script:
+                return active_header["val"]
+            if "rowKey" in script:
+                return rows_data
+            if "window.__botAllowSidebarClick = true" in script and args:
+                clicked.append(int(args[0]))
+                active_header["val"] = "sam_unread"
+                return True
+            return None
+
+        mock_b.execute_script.side_effect = fake_exec
+        with patch("time.sleep", return_value=None):
+            resolved = open_inbox_chat(mock_b, "sam_unread")
+        assert resolved == "sam_unread"
+        assert clicked == [1]
+
+    def test_send_streak_message_aborts_before_return_on_mid_send_chat_switch(self):
+        from selenium.webdriver.common.keys import Keys
+        from src.actions import send_streak_message
+
+        mock_b = MagicMock()
+        mock_input = MagicMock()
+        # First 3 assertions during open/click/type pass as "max_demo",
+        # final check right before Keys.RETURN sees user clicked onto "morgan_other"!
+        header_seq = iter(["max_demo", "max_demo", "max_demo", "morgan_other"])
+
+        with patch("src.actions.open_inbox_chat", return_value="max_demo"), \
+             patch("src.share.get_active_chat_handle", side_effect=lambda _b: next(header_seq)), \
+             patch("src.actions.find_element_by_candidates", return_value=mock_input), \
+             patch("src.actions.dump_debug_diagnostics") as mock_dump, \
+             patch("time.sleep", return_value=None):
+            res = send_streak_message(mock_b, "max_demo", "hi")
+
+        assert res["sent"] is False
+        assert "morgan_other" in (res["error"] or "")
+        assert all(call.args[0] != Keys.RETURN for call in mock_input.send_keys.call_args_list)
+        mock_dump.assert_called_once()
+
+    def test_main_run_skips_share_and_photo_when_text_fails(self):
+        import main
+        from src.config import AccountConfig
+
+        acc = AccountConfig(
+            name="Main",
+            session_id="sid",
+            friends=["max_demo", "taylor_demo"],
+            video_url="https://www.tiktok.com/@u/video/1234567890123456789",
+            share_times=2,
+            photo_path="assets/default_photo.png",
+        )
+        mock_b = MagicMock()
+
+        def fake_text(**kwargs):
+            if kwargs["friend"] == "max_demo":
+                return {"friend": "max_demo", "sent": False, "error": "Header mismatch"}
+            return {"friend": kwargs["friend"], "sent": True, "error": None}
+
+        with patch("main.init_browser", return_value=(mock_b, MagicMock())), \
+             patch("main.install_ws_hook"), \
+             patch("main.install_media_guard"), \
+             patch("main.authenticate_session"), \
+             patch("main.send_streak_message", side_effect=fake_text), \
+             patch("main.send_share_card", return_value={"sent": True, "error": None}) as mock_share, \
+             patch("main.send_photo_card", return_value={"sent": True, "error": None}) as mock_photo, \
+             patch("main.notify_streak_summary"), \
+             patch("random.shuffle", side_effect=lambda x: x), \
+             patch("time.sleep", return_value=None):
+            out = main.run(accounts_override=[acc])
+
+        assert out["ok"] is True
+        assert mock_share.call_count == 2
+        assert all(c.args[1] == "taylor_demo" for c in mock_share.call_args_list)
+        assert mock_photo.call_count == 1
+        assert mock_photo.call_args.args[1] == "taylor_demo"
+
+    def test_send_share_card_refuses_stale_template_or_header_mismatch(self):
+        from src.share import send_share_card
+
+        mock_b = MagicMock()
+        # 1) Wrong active header -> refuse immediately without calling fetch_item_detail or send
+        with patch("src.share.get_active_chat_handle", return_value="morgan_other"), \
+             patch("src.share.fetch_item_detail") as mock_detail:
+            res = send_share_card(mock_b, "max_demo", "7684838545659317524")
+        assert res["sent"] is False
+        assert "mismatch" in (res["error"] or "").lower()
+        mock_detail.assert_not_called()
+
+        # 2) Explicit template belonging to another friend -> rejected
+        with patch("src.share.get_active_chat_handle", return_value="max_demo"), \
+             patch("src.share.fetch_item_detail", return_value={"ok": True, "data": {}}), \
+             patch("src.share.build_share_json", return_value="{}"):
+            mock_b.execute_async_script.return_value = {"ok": False, "error": "no captured HTTP send for target recipient"}
+            res2 = send_share_card(
+                mock_b,
+                "max_demo",
+                "7684838545659317524",
+                template={"b64": "AAAA", "sock": 0, "handle": "taylor_demo"},
+            )
+        assert res2["sent"] is False
+        assert "no captured http send" in (res2["error"] or "").lower()
+
+    def test_send_photo_card_aborts_and_dismisses_modal_on_header_mismatch(self, tmp_path):
+        from src.share import send_photo_card
+
+        photo = tmp_path / "p.png"
+        photo.write_bytes(b"PNG")
+        mock_b = MagicMock()
+        mock_b.current_url = "https://www.tiktok.com/messages?lang=en"
+        mock_inp = MagicMock()
+        mock_b.find_elements.return_value = [mock_inp]
+
+        # Sequence of active chat checks:
+        # 1 (already on friend), 2 (verified after open), 3 (after media btn wait),
+        # 4 (pre-CLICK_MEDIA_JS) -> "max_demo",
+        # 5 (inside modal loop right before Send click) -> user clicked "morgan_other"!
+        handles = iter(["max_demo", "max_demo", "max_demo", "max_demo", "morgan_other"])
+        clicked_send = {"yes": False}
+
+        def fake_exec(script, *args):
+            if "dm-new-chat-header" in script:
+                return next(handles, "morgan_other")
+            if "dm-new-media-btn" in script:
+                return True
+            if "SEND_BTN_PRESENT" in script or "^send\\b" in script and "best.click" not in script:
+                return True
+            if "__mediaSend" in script and "commit" in script:
+                return {"commit": 0, "media": None}
+            if "__recv" in script:
+                return []
+            if "best.click" in script:
+                clicked_send["yes"] = True
+                return {"clicked": True}
+            return None
+
+        mock_b.execute_script.side_effect = fake_exec
+        with patch("src.actions.dismiss_modals") as mock_dismiss, \
+             patch("time.sleep", return_value=None):
+            res = send_photo_card(mock_b, "max_demo", str(photo))
+
+        assert res["sent"] is False
+        assert "mismatch" in (res["error"] or "").lower()
+        assert clicked_send["yes"] is False
+        mock_dismiss.assert_called()
+
+    def test_headful_guard_installed_only_when_not_headless(self):
+        from src.browser import HEADFUL_GUARD_JS, init_browser
+
+        mock_chrome = MagicMock()
+        with patch("src.browser.webdriver.Chrome", return_value=mock_chrome):
+            init_browser(headless=True)
+        headless_sources = [c.args[1]["source"] for c in mock_chrome.execute_cdp_cmd.call_args_list if len(c.args) > 1]
+        assert not any("__headfulGuard" in s for s in headless_sources)
+
+        mock_chrome2 = MagicMock()
+        with patch("src.browser.webdriver.Chrome", return_value=mock_chrome2):
+            init_browser(headless=False)
+        headful_sources = [c.args[1]["source"] for c in mock_chrome2.execute_cdp_cmd.call_args_list if len(c.args) > 1]
+        assert any("__headfulGuard" in s for s in headful_sources)
+        assert "captcha" in HEADFUL_GUARD_JS.lower()
+        assert "__botAllowSidebarClick" in HEADFUL_GUARD_JS
+
+
+class TestGitHubWorkflowControlAndDiscovery:
+    def test_workflow_pause_resume_cancel_and_discover_bot_repos(self):
+        from gui.services.github_api import GitHub, GitHubError
+
+        gh = GitHub("ghp_tok")
+        reqs: list[tuple[str, str]] = []
+
+        def fake_req(method, path, body=None, api=None):
+            reqs.append((method, path))
+            if path.startswith("/user/repos"):
+                return [
+                    {"full_name": "alice/notes", "name": "notes", "owner": {"login": "alice"}, "private": True, "archived": False, "fork": False, "default_branch": "main", "html_url": ""},
+                    {"full_name": "alice/tiktok-streak", "name": "tiktok-streak", "owner": {"login": "alice"}, "private": True, "archived": False, "fork": False, "default_branch": "main", "html_url": ""},
+                    {"full_name": "alice/tiktok-streak-2", "name": "tiktok-streak-2", "owner": {"login": "alice"}, "private": False, "archived": False, "fork": True, "default_branch": "main", "html_url": ""},
+                    {"full_name": "alice/old-archived", "name": "old-archived", "owner": {"login": "alice"}, "private": True, "archived": True, "fork": False, "default_branch": "main", "html_url": ""},
+                    {"full_name": "alice/paused-bot", "name": "paused-bot", "owner": {"login": "alice"}, "private": True, "archived": False, "fork": False, "default_branch": "main", "html_url": ""},
+                ]
+            if path == "/repos/alice/notes/actions/workflows/streak.yml":
+                raise GitHubError("Not Found", status_code=404)
+            if path == "/repos/alice/tiktok-streak/actions/workflows/streak.yml":
+                return {"id": 1, "state": "active"}
+            if path == "/repos/alice/tiktok-streak-2/actions/workflows/streak.yml":
+                return {"id": 2, "state": "active"}
+            if path == "/repos/alice/paused-bot/actions/workflows/streak.yml":
+                return {"id": 3, "state": "disabled_manually"}
+            if "/actions/workflows/streak.yml/runs" in path:
+                return {
+                    "workflow_runs": [
+                        {"id": 1001, "status": "in_progress"},
+                        {"id": 1002, "status": "completed"},
+                    ]
+                }
+            return {}
+
+        with patch.object(gh, "_req", side_effect=fake_req):
+            disc = gh.discover_bot_repos()
+            assert [r["full_name"] for r in disc["bot_repos"]] == [
+                "alice/tiktok-streak",
+                "alice/tiktok-streak-2",
+                "alice/paused-bot",
+            ]
+            assert disc["has_duplicates"] is True
+            assert len(disc["active_bot_repos"]) == 2
+
+            pause_res = gh.pause_workflow("alice/tiktok-streak")
+            assert pause_res["paused"] is True
+            assert pause_res["cancelled_run_ids"] == [1001]
+
+        assert ("PUT", "/repos/alice/tiktok-streak/actions/workflows/streak.yml/disable") in reqs
+        assert ("POST", "/repos/alice/tiktok-streak/actions/runs/1001/cancel") in reqs
+        assert ("POST", "/repos/alice/tiktok-streak/actions/runs/1002/cancel") not in reqs
+
+
+class TestUpdaterService:
+    def test_version_comparison_check_for_update_and_sha256_download_and_self_update_cmd(self, tmp_path):
+        from gui.services.updater import (
+            check_for_update,
+            download_update_asset,
+            is_newer_version,
+            launch_windows_self_update,
+            parse_version,
+        )
+
+        assert parse_version("v1.3.0") == (1, 3, 0)
+        assert is_newer_version("v1.3.1", "1.3.0") is True
+        assert is_newer_version("1.3.0", "1.3.0") is False
+        assert is_newer_version("1.2.1", "1.3.0") is False
+
+        # check_for_update filters untrusted URLs and surfaces valid SHA-256 digest
+        fake_payload = {
+            "tag_name": "v1.4.0",
+            "html_url": "https://github.com/alexanderfrit/tiktok-streak/releases/tag/v1.4.0",
+            "body": "Fix recipient mismatch",
+            "assets": [
+                {
+                    "name": "TikTokStreakSetup.exe",
+                    "browser_download_url": "https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.4.0/TikTokStreakSetup.exe",
+                    "size": 4096,
+                    "digest": "sha256:" + ("a" * 64),
+                }
+            ],
+        }
+
+        class _MockResp:
+            url = "https://objects.githubusercontent.com/release/TikTokStreakSetup.exe"
+            headers = {"Content-Length": "2048"}
+
+            def __init__(self, chunks):
+                self._chunks = list(chunks)
+
+            def read(self, _n=65536):
+                return self._chunks.pop(0) if self._chunks else b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        import hashlib
+        with patch("urllib.request.urlopen") as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = json.dumps(fake_payload).encode()
+            info = check_for_update(current_version="1.3.0")
+        assert info["ok"] is True
+        assert info["has_update"] is True
+        assert info["latest_version"] == "1.4.0"
+        assert info["asset_sha256"] == "a" * 64
+
+        # Download validates MZ header + exact SHA-256 + rejects bad checksum
+        exe_bytes = b"MZ" + (b"\x90" * 2046)
+        good_sha = hashlib.sha256(exe_bytes).hexdigest()
+        dest = tmp_path / "dl" / "TikTokStreakSetup-v1.4.0.exe"
+
+        with patch("urllib.request.urlopen", return_value=_MockResp([exe_bytes])):
+            out = download_update_asset(
+                "https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.4.0/TikTokStreakSetup.exe",
+                dest,
+                expected_sha256=good_sha,
+                expected_size=len(exe_bytes),
+            )
+        assert out.is_file() and out.read_bytes() == exe_bytes
+
+        bad_dest = tmp_path / "dl" / "bad.exe"
+        with patch("urllib.request.urlopen", return_value=_MockResp([exe_bytes])):
+            with pytest.raises(ValueError, match="SHA-256"):
+                download_update_asset(
+                    "https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.4.0/TikTokStreakSetup.exe",
+                    bad_dest,
+                    expected_sha256="b" * 64,
+                )
+        assert not bad_dest.exists()
+
+        # Self-update helper script writes clean rollback batch script without spawning real cmd in test
+        fake_target = tmp_path / "TikTokStreakSetup.exe"
+        fake_target.write_bytes(b"MZ_OLD")
+        with patch("subprocess.Popen") as mock_popen:
+            cmd_file = launch_windows_self_update(
+                out,
+                target_exe_path=fake_target,
+                pid=99999,
+                work_dir=tmp_path,
+                relaunch=True,
+            )
+        assert cmd_file.is_file()
+        cmd_text = cmd_file.read_text(encoding="ascii")
+        assert "99999" in cmd_text and ".bak" in cmd_text and "start \"\"" in cmd_text
+        if sys.platform == "win32":
+            mock_popen.assert_called_once()
+
 

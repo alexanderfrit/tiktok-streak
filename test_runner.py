@@ -7,6 +7,7 @@ from src.exceptions import (
     SessionExpiredError,
     UserNotFoundError,
     DMBlockedError,
+    RecipientMismatchError,
     RateLimitError,
 )
 from src.notifier import get_wib_timestamp, notify_telegram, notify_streak_summary
@@ -24,7 +25,7 @@ wib_ts = get_wib_timestamp()
 assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} WIB$", wib_ts), f"Invalid WIB format: {wib_ts}"
 
 # 2. Test Exception classes have actionable tips
-for cls in [SessionExpiredError, UserNotFoundError, DMBlockedError, RateLimitError]:
+for cls in [SessionExpiredError, UserNotFoundError, DMBlockedError, RecipientMismatchError, RateLimitError]:
     assert issubclass(cls, TikTokError)
     assert cls.action_tip, f"Missing action tip for {cls.__name__}"
 
@@ -93,6 +94,7 @@ assert res == [mock_target]
 # 9. Test Inbox Streak Message Send Flow
 mock_browser.current_url = "https://www.tiktok.com/messages?lang=vi"
 with patch("src.actions.open_inbox_chat") as mock_open, \
+     patch("src.share.get_active_chat_handle", return_value="friend1"), \
      patch("src.actions.find_element_by_candidates") as mock_find, \
      patch("time.sleep", return_value=None):
     mock_input = MagicMock()
@@ -104,6 +106,7 @@ with patch("src.actions.open_inbox_chat") as mock_open, \
 # 10. Test Send Verification: message still in composer => not sent
 mock_browser.current_url = "https://www.tiktok.com/messages?lang=vi"
 with patch("src.actions.open_inbox_chat"), \
+     patch("src.share.get_active_chat_handle", return_value="friend1"), \
      patch("src.actions.find_element_by_candidates") as mock_find, \
      patch("time.sleep", return_value=None):
     mock_input = MagicMock()
@@ -362,4 +365,16 @@ finally:
     os.chdir(_prev_cwd)
     shutil.rmtree(_tmpdir, ignore_errors=True)
 
-print("All 27 test suites in test_runner.py passed successfully!")
+# 28. Recipient safety: OPEN_THREAD_JS must not substring-match short display names (e.g. "M" -> "max_demo")
+from src.share import OPEN_THREAD_JS as _ot_js, assert_active_chat_handle as _assert_hdr
+assert "t.indexOf(txt)" not in _ot_js, "Unsafe reverse-substring matching must stay removed from OPEN_THREAD_JS"
+_hdr_b = MagicMock()
+_hdr_b.execute_script.return_value = "morgan_other"
+_mismatch_raised = False
+try:
+    _assert_hdr(_hdr_b, "max_demo")
+except RecipientMismatchError:
+    _mismatch_raised = True
+assert _mismatch_raised, "Expected RecipientMismatchError when active chat handle differs from target"
+
+print("All 28 test suites in test_runner.py passed successfully!")

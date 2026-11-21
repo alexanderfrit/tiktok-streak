@@ -8,6 +8,7 @@ Telegram setup verification.
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import fnmatch
 import io
 import json
@@ -412,6 +413,8 @@ class GitHub:
                     "name": str(item.get("name") or ""),
                     "owner": owner_login,
                     "private": bool(item.get("private", False)),
+                    "archived": bool(item.get("archived", False)),
+                    "fork": bool(item.get("fork", False)),
                     "default_branch": str(item.get("default_branch") or "main"),
                     "html_url": str(item.get("html_url") or ""),
                 })
@@ -703,6 +706,129 @@ class GitHub:
             "PUT",
             f"/repos/{_encode_repo(full_name)}/actions/workflows/{_encode_seg(workflow_file)}/enable",
         )
+
+    def get_workflow(self, full_name: str, workflow_file: str = WORKFLOW_FILE) -> dict[str, Any] | None:
+        """Fetch workflow metadata (`state`, `id`, `name`, `path`); returns None when missing (404)."""
+        try:
+            d = self._req(
+                "GET",
+                f"/repos/{_encode_repo(full_name)}/actions/workflows/{_encode_seg(workflow_file)}",
+            )
+            return d if isinstance(d, dict) and d.get("id") is not None else None
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+
+    def disable_workflow(self, full_name: str, workflow_file: str = WORKFLOW_FILE) -> None:
+        """Pause scheduled & manual triggers for `workflow_file` (`disabled_manually`)."""
+        self._req(
+            "PUT",
+            f"/repos/{_encode_repo(full_name)}/actions/workflows/{_encode_seg(workflow_file)}/disable",
+        )
+
+    def cancel_run(self, full_name: str, run_id: int) -> None:
+        """Cancel a queued or in-progress workflow run."""
+        self._req(
+            "POST",
+            f"/repos/{_encode_repo(full_name)}/actions/runs/{int(run_id)}/cancel",
+        )
+
+    def cancel_active_runs(self, full_name: str, workflow_file: str = WORKFLOW_FILE) -> list[int]:
+        """Cancel any active (`queued`/`in_progress`/`waiting`/`pending`) runs for `workflow_file`."""
+        active_statuses = {"queued", "in_progress", "waiting", "pending", "requested"}
+        cancelled: list[int] = []
+        for run in self.runs(full_name, workflow_file, limit=15):
+            if not isinstance(run, dict):
+                continue
+            rid = run.get("id")
+            st = str(run.get("status") or "").strip().lower()
+            if rid is None or st not in active_statuses:
+                continue
+            try:
+                self.cancel_run(full_name, int(rid))
+                cancelled.append(int(rid))
+            except GitHubError as exc:
+                if exc.status_code in (404, 409):
+                    continue
+                raise
+        return cancelled
+
+    def pause_workflow(
+        self,
+        full_name: str,
+        workflow_file: str = WORKFLOW_FILE,
+        cancel_running: bool = True,
+    ) -> dict[str, Any]:
+        """Disable `workflow_file` and optionally cancel active runs."""
+        self.disable_workflow(full_name, workflow_file)
+        cancelled_ids: list[int] = []
+        if cancel_running:
+            try:
+                cancelled_ids = self.cancel_active_runs(full_name, workflow_file)
+            except GitHubError as exc:
+                logger.debug("cancel_active_runs during pause skipped: %s", exc)
+        return {"paused": True, "cancelled_run_ids": cancelled_ids}
+
+    def discover_bot_repos(
+        self,
+        limit: int = 100,
+        workflow_file: str = WORKFLOW_FILE,
+        max_workers: int = 6,
+    ) -> dict[str, Any]:
+        """Scan user repositories to detect existing TikTok Streak bot deployments and active duplicates."""
+        all_repos = self.list_user_repos(limit=limit)
+        candidates = [r for r in all_repos if r.get("full_name") and not r.get("archived")]
+
+        def _probe(repo: dict[str, Any]) -> dict[str, Any] | None:
+            full_name = str(repo["full_name"])
+            try:
+                wf = self.get_workflow(full_name, workflow_file)
+            except GitHubError as exc:
+                if exc.status_code in (403, 404, 410):
+                    return None
+                raise
+            if not wf:
+                return None
+            state = str(wf.get("state") or "active").strip().lower()
+            is_active = state == "active"
+            return {
+                "full_name": full_name,
+                "name": repo.get("name", ""),
+                "owner": repo.get("owner", ""),
+                "private": bool(repo.get("private", False)),
+                "fork": bool(repo.get("fork", False)),
+                "html_url": repo.get("html_url") or f"https://github.com/{full_name}",
+                "workflow_id": wf.get("id"),
+                "workflow_state": state,
+                "active": is_active,
+            }
+
+        bot_repos: list[dict[str, Any]] = []
+        if candidates:
+            worker_count = max(1, min(int(max_workers or 6), len(candidates)))
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                futures = [pool.submit(_probe, r) for r in candidates]
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    if res is not None:
+                        bot_repos.append(res)
+
+        order = {str(r.get("full_name") or "").lower(): i for i, r in enumerate(candidates)}
+        bot_repos.sort(
+            key=lambda item: (
+                0 if item.get("active") else 1,
+                order.get(str(item.get("full_name") or "").lower(), 9999),
+            )
+        )
+        active_repos = [r for r in bot_repos if r.get("active")]
+        return {
+            "all_repos": all_repos,
+            "bot_repos": bot_repos,
+            "active_bot_repos": active_repos,
+            "has_duplicates": len(active_repos) >= 2,
+            "scanned_count": len(candidates),
+        }
 
     def secret_key(self, full_name: str) -> dict:
         return self._req("GET", f"/repos/{_encode_repo(full_name)}/actions/secrets/public-key")

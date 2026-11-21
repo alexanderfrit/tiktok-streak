@@ -34,6 +34,7 @@ from qfluentwidgets import (
     SwitchButton,
     TableWidget,
     TitleLabel,
+    TransparentToolButton,
 )
 
 from gui.services.github_api import WORKFLOW_FILE, GitHub, GitHubError
@@ -41,6 +42,8 @@ from gui.services.i18n import tr
 from gui.services.local_runner import LocalRunner
 from gui.services.storage import AppState, ConfigStore, SecretStore
 from gui.services.theme import escape_qt_mnemonic, tabular_mono_font
+from gui.widgets.split_row import ResponsiveSplitRow
+from gui.widgets.status_pill import StatusPill
 try:
     from gui.services.validators import format_utc_timestamp
 except ImportError:  # pragma: no cover
@@ -96,9 +99,57 @@ def _run_local_task(
     )
 
 
-def _fetch_runs_task(token: str, full_name: str) -> list[dict[str, Any]]:
+_ACTIVE_RUN_STATUSES = frozenset({"queued", "in_progress", "waiting", "pending", "requested"})
+
+
+def _fetch_runs_task(token: str, full_name: str) -> dict[str, Any]:
     gh = GitHub(token)
-    return gh.runs(full_name, WORKFLOW_FILE, limit=8)
+    runs = gh.runs(full_name, WORKFLOW_FILE, limit=8)
+    wf_state: str | None = None
+    get_wf = getattr(gh, "get_workflow", None)
+    if callable(get_wf):
+        try:
+            wf = get_wf(full_name, WORKFLOW_FILE)
+            if isinstance(wf, dict) and wf.get("state"):
+                wf_state = str(wf["state"]).strip().lower()
+        except Exception:
+            wf_state = None
+    return {"full_name": full_name, "runs": runs, "workflow_state": wf_state}
+
+
+def _toggle_cloud_schedule_task(token: str, full_name: str, pause: bool) -> dict[str, Any]:
+    gh = GitHub(token)
+    cancelled: list[int] = []
+    if pause:
+        res = gh.pause_workflow(full_name, WORKFLOW_FILE, cancel_running=True)
+        cancelled = list(res.get("cancelled_run_ids") or [])
+        new_state = "disabled_manually"
+    else:
+        gh.enable_workflow(full_name, WORKFLOW_FILE)
+        new_state = "active"
+    runs: list[dict[str, Any]] = []
+    try:
+        runs = gh.runs(full_name, WORKFLOW_FILE, limit=8)
+    except Exception:
+        runs = []
+    return {
+        "full_name": full_name,
+        "paused": pause,
+        "workflow_state": new_state,
+        "cancelled_run_ids": cancelled,
+        "runs": runs,
+    }
+
+
+def _cancel_run_task(token: str, full_name: str, run_id: int) -> dict[str, Any]:
+    gh = GitHub(token)
+    gh.cancel_run(full_name, int(run_id))
+    runs: list[dict[str, Any]] = []
+    try:
+        runs = gh.runs(full_name, WORKFLOW_FILE, limit=8)
+    except Exception:
+        runs = []
+    return {"full_name": full_name, "run_id": int(run_id), "runs": runs}
 
 
 def _dispatch_run_task(token: str, full_name: str, log_cb: Callable[[str], None] | None = None) -> dict[str, Any]:
@@ -111,7 +162,7 @@ def _dispatch_run_task(token: str, full_name: str, log_cb: Callable[[str], None]
         pass
     run = gh.dispatch_and_track(full_name, WORKFLOW_FILE, timeout=30.0)
     runs = gh.runs(full_name, WORKFLOW_FILE, limit=8)
-    return {"run": run, "runs": runs}
+    return {"run": run, "runs": runs, "workflow_state": "active", "full_name": full_name}
 
 
 def _fetch_job_logs_task(token: str, full_name: str, run_id: int) -> str:
@@ -195,6 +246,7 @@ class RunPage(SmoothScrollArea):
     """Execute local smoke tests / full runs, monitor GitHub runs, and inspect logs."""
 
     state_changed = Signal()
+    cloud_schedule_toggled = Signal(str, str)
 
     def __init__(
         self,
@@ -202,6 +254,7 @@ class RunPage(SmoothScrollArea):
         config_store: ConfigStore,
         secret_store: SecretStore,
         worker_controller: WorkerController,
+        smoke_test: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -210,9 +263,11 @@ class RunPage(SmoothScrollArea):
         self._config_store = config_store
         self._secrets = secret_store
         self._workers = worker_controller
+        self._smoke_test = smoke_test
         self._loading = False
         self._local_cancel: threading.Event | None = None
         self._runs: list[dict[str, Any]] = []
+        self._cloud_workflow_state: str | None = None
         self._last_diag_dir: Path | None = None
 
         self.view = QWidget(self)
@@ -254,9 +309,13 @@ class RunPage(SmoothScrollArea):
         browser_opt.setSpacing(8)
         browser_opt.addWidget(self.showBrowserLabel)
         browser_opt.addWidget(self.showBrowserSwitch)
+        self.showBrowserHintLabel = CaptionLabel(tr("run.show_browser_hint"), self.localCard)
+        self.showBrowserHintLabel.setWordWrap(True)
+        self.showBrowserHintLabel.hide()
         friend_grid.addWidget(self.friendPromptLabel, 0, 0, 1, 2)
         friend_grid.addWidget(self.friendCombo, 1, 0)
         friend_grid.addLayout(browser_opt, 1, 1)
+        friend_grid.addWidget(self.showBrowserHintLabel, 2, 0, 1, 2)
 
         btn_row = _FlowBox(self.localCard, h_spacing=10, v_spacing=6)
         self.quickTestBtn = PrimaryPushButton(
@@ -298,22 +357,43 @@ class RunPage(SmoothScrollArea):
         cloud_body.setContentsMargins(0, 0, 0, 0)
         cloud_body.setSpacing(10)
 
-        cloud_top = QHBoxLayout()
-        cloud_top.setSpacing(10)
-        self.repoTargetLabel = BodyLabel("", self.cloudCard)
-        self.repoTargetLabel.setWordWrap(True)
-        self.runCloudBtn = PrimaryPushButton(
-            FIF.CLOUD, escape_qt_mnemonic(tr("run.run_cloud_btn")), self.cloudCard
+        cloud_left = QWidget(self.cloudCard)
+        cloud_left.setFixedHeight(32)
+        cloud_left_lay = QHBoxLayout(cloud_left)
+        cloud_left_lay.setContentsMargins(0, 0, 0, 0)
+        cloud_left_lay.setSpacing(8)
+        self.repoTargetLabel = BodyLabel("", cloud_left)
+        self.repoTargetLabel.setMinimumWidth(0)
+        self.cloudWorkflowBadge = StatusPill("", "neutral", cloud_left)
+        self.cloudWorkflowBadge.hide()
+        cloud_left_lay.addWidget(self.repoTargetLabel, 0, Qt.AlignVCenter)
+        cloud_left_lay.addWidget(self.cloudWorkflowBadge, 0, Qt.AlignVCenter)
+
+        cloud_ctrl_row = QWidget(self.cloudCard)
+        cloud_ctrl_row.setFixedHeight(32)
+        ctrl_lay = QHBoxLayout(cloud_ctrl_row)
+        ctrl_lay.setContentsMargins(0, 0, 0, 0)
+        ctrl_lay.setSpacing(8)
+        self.toggleCloudScheduleBtn = PushButton(
+            FIF.PAUSE, escape_qt_mnemonic(tr("cloud.pause_schedule")), cloud_ctrl_row
         )
-        self.refreshRunsBtn = PushButton(
-            FIF.SYNC, escape_qt_mnemonic(tr("common.refresh")), self.cloudCard
+        self.refreshRunsBtn = TransparentToolButton(FIF.SYNC, cloud_ctrl_row)
+        self.refreshRunsBtn.setFixedSize(32, 32)
+        self.refreshRunsBtn.setToolTip(tr("common.refresh"))
+        self.runCloudBtn = PrimaryPushButton(
+            FIF.CLOUD, escape_qt_mnemonic(tr("run.run_cloud_btn")), cloud_ctrl_row
         )
         self.runCloudBtn.clicked.connect(self._run_on_github_now)
+        self.toggleCloudScheduleBtn.clicked.connect(self._toggle_cloud_schedule)
         self.refreshRunsBtn.clicked.connect(self.refresh_cloud_runs)
-        cloud_top.addWidget(self.repoTargetLabel, 1)
-        cloud_top.addWidget(self.runCloudBtn)
-        cloud_top.addWidget(self.refreshRunsBtn)
-        cloud_body.addLayout(cloud_top)
+        ctrl_lay.addWidget(self.toggleCloudScheduleBtn, 0, Qt.AlignVCenter)
+        ctrl_lay.addWidget(self.refreshRunsBtn, 0, Qt.AlignVCenter)
+        ctrl_lay.addWidget(self.runCloudBtn, 0, Qt.AlignVCenter)
+
+        self.cloudHeaderRow = ResponsiveSplitRow(
+            cloud_left, cloud_ctrl_row, h_spacing=12, v_spacing=8, parent=self.cloudCard
+        )
+        cloud_body.addWidget(self.cloudHeaderRow)
 
         self.cloudDelayHintLabel = CaptionLabel(tr("run.cloud_delay_hint"), self.cloudCard)
         self.cloudDelayHintLabel.setWordWrap(True)
@@ -364,12 +444,17 @@ class RunPage(SmoothScrollArea):
         self.downloadDiagBtn = PushButton(
             FIF.CLOUD_DOWNLOAD, escape_qt_mnemonic(tr("cloud.download_diagnostics")), run_actions
         )
+        self.cancelCloudRunBtn = PushButton(
+            FIF.CANCEL, escape_qt_mnemonic(tr("cloud.stop_run")), run_actions
+        )
         self.openRunBtn.clicked.connect(self._open_selected_run_url)
         self.viewLogsBtn.clicked.connect(self._view_selected_run_logs)
         self.downloadDiagBtn.clicked.connect(self._download_selected_diagnostics)
+        self.cancelCloudRunBtn.clicked.connect(self._cancel_selected_cloud_run)
         run_actions.addWidget(self.openRunBtn)
         run_actions.addWidget(self.viewLogsBtn)
         run_actions.addWidget(self.downloadDiagBtn)
+        run_actions.addWidget(self.cancelCloudRunBtn)
         cloud_body.addWidget(run_actions)
 
         # Diagnostics screenshot preview container (hidden until downloaded)
@@ -430,6 +515,7 @@ class RunPage(SmoothScrollArea):
             self.showBrowserSwitch.setChecked(not st.headless_local)
         finally:
             self._loading = False
+        self.showBrowserHintLabel.setVisible(not st.headless_local)
 
         # Populate friend dropdown from active accounts
         prev_data = self.friendCombo.currentData()
@@ -453,10 +539,14 @@ class RunPage(SmoothScrollArea):
             self.repoTargetLabel.setText(f"GitHub: {full_name}")
             self.runCloudBtn.setEnabled(True)
             self.refreshRunsBtn.setEnabled(True)
+            self.toggleCloudScheduleBtn.setEnabled(True)
         else:
             self.repoTargetLabel.setText(tr("schedule.not_signed_in"))
             self.runCloudBtn.setEnabled(False)
             self.refreshRunsBtn.setEnabled(False)
+            self.toggleCloudScheduleBtn.setEnabled(False)
+            self._cloud_workflow_state = None
+        self._sync_cloud_workflow_controls()
 
         if self._runs:
             tz_id = getattr(self._state, "timezone", "Asia/Jakarta")
@@ -478,6 +568,7 @@ class RunPage(SmoothScrollArea):
         return f"{owner}/{repo}" if owner else ""
 
     def _on_show_browser_changed(self, checked: bool) -> None:
+        self.showBrowserHintLabel.setVisible(bool(checked))
         if self._loading:
             return
         new_headless = not bool(checked)
@@ -649,10 +740,42 @@ class RunPage(SmoothScrollArea):
         return None
 
     def _sync_selected_run_buttons(self) -> None:
-        has_sel = self._selected_run() is not None and bool(self._secrets.get_github_token())
+        run = self._selected_run()
+        has_tok = bool(self._secrets.get_github_token())
+        has_sel = run is not None and has_tok
         self.openRunBtn.setEnabled(has_sel)
         self.viewLogsBtn.setEnabled(has_sel)
         self.downloadDiagBtn.setEnabled(has_sel)
+        run_status = str((run or {}).get("status") or "").strip().lower()
+        self.cancelCloudRunBtn.setEnabled(has_sel and run_status in _ACTIVE_RUN_STATUSES)
+
+    def _is_cloud_workflow_paused(self) -> bool:
+        return bool(self._cloud_workflow_state and self._cloud_workflow_state != "active")
+
+    def _sync_cloud_workflow_controls(self) -> None:
+        if not self._cloud_workflow_state:
+            self.cloudWorkflowBadge.hide()
+            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.pause_schedule")))
+            self.toggleCloudScheduleBtn.setIcon(FIF.PAUSE)
+            return
+        paused = self._is_cloud_workflow_paused()
+        if paused:
+            self.cloudWorkflowBadge.setState("warning", tr("cloud.repo_state_paused"))
+            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.resume_schedule")))
+            self.toggleCloudScheduleBtn.setIcon(FIF.PLAY)
+        else:
+            self.cloudWorkflowBadge.setState("success", tr("cloud.repo_state_active"))
+            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.pause_schedule")))
+            self.toggleCloudScheduleBtn.setIcon(FIF.PAUSE)
+        self.cloudWorkflowBadge.show()
+        self.cloudWorkflowBadge.adjustSize()
+
+    def set_cloud_workflow_state(self, full_name: str, wf_state: str | None) -> None:
+        cur_repo = self._full_repo_name().strip().lower()
+        if cur_repo and full_name and cur_repo != full_name.strip().lower():
+            return
+        self._cloud_workflow_state = wf_state.strip().lower() if wf_state else None
+        self._sync_cloud_workflow_controls()
 
     def refresh_cloud_runs(self) -> None:
         token = self._secrets.get_github_token().strip()
@@ -669,8 +792,15 @@ class RunPage(SmoothScrollArea):
             on_error=self._on_cloud_error,
         )
 
-    def _on_runs_fetched(self, runs: list[dict[str, Any]]) -> None:
+    def _on_runs_fetched(self, payload: Any) -> None:
         self.refreshRunsBtn.setEnabled(True)
+        if isinstance(payload, dict):
+            runs = list(payload.get("runs") or [])
+            if payload.get("workflow_state") is not None:
+                self._cloud_workflow_state = str(payload["workflow_state"]).strip().lower()
+                self._sync_cloud_workflow_controls()
+        else:
+            runs = list(payload or [])
         self._populate_runs_table(runs)
 
     def _run_on_github_now(self) -> None:
@@ -692,6 +822,11 @@ class RunPage(SmoothScrollArea):
 
     def _on_cloud_dispatched(self, payload: dict[str, Any]) -> None:
         self.runCloudBtn.setEnabled(True)
+        if payload.get("workflow_state"):
+            self._cloud_workflow_state = str(payload["workflow_state"]).strip().lower()
+            self._sync_cloud_workflow_controls()
+            if payload.get("full_name"):
+                self.cloud_schedule_toggled.emit(str(payload["full_name"]), self._cloud_workflow_state)
         self._populate_runs_table(payload.get("runs") or [])
         run = payload.get("run") or {}
         InfoBar.success(
@@ -702,9 +837,76 @@ class RunPage(SmoothScrollArea):
             parent=self.window(),
         )
 
+    def _toggle_cloud_schedule(self) -> None:
+        token = self._secrets.get_github_token().strip()
+        full_name = self._full_repo_name()
+        if not token or not full_name:
+            return
+        pause = not self._is_cloud_workflow_paused()
+        self.toggleCloudScheduleBtn.setEnabled(False)
+        self._workers.start_task(
+            _toggle_cloud_schedule_task,
+            token,
+            full_name,
+            pause,
+            task_key="toggle_cloud_schedule",
+            on_finished=self._on_cloud_schedule_toggled,
+            on_error=self._on_cloud_error,
+        )
+
+    def _on_cloud_schedule_toggled(self, payload: dict[str, Any]) -> None:
+        self.toggleCloudScheduleBtn.setEnabled(bool(self._secrets.get_github_token() and self._full_repo_name()))
+        full_name = str(payload.get("full_name") or self._full_repo_name())
+        wf_state = str(payload.get("workflow_state") or ("disabled_manually" if payload.get("paused") else "active"))
+        self._cloud_workflow_state = wf_state
+        self._sync_cloud_workflow_controls()
+        if payload.get("runs") is not None:
+            self._populate_runs_table(payload.get("runs") or [])
+        self.cloud_schedule_toggled.emit(full_name, wf_state)
+        msg_key = "cloud.schedule_paused_ok" if payload.get("paused") else "cloud.schedule_resumed_ok"
+        InfoBar.success(
+            tr("common.success"),
+            tr(msg_key, repo=full_name),
+            duration=4000,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
+    def _cancel_selected_cloud_run(self) -> None:
+        run = self._selected_run()
+        token = self._secrets.get_github_token().strip()
+        full_name = self._full_repo_name()
+        if not run or not token or not full_name:
+            return
+        rid = int(run["id"])
+        self.cancelCloudRunBtn.setEnabled(False)
+        self._workers.start_task(
+            _cancel_run_task,
+            token,
+            full_name,
+            rid,
+            task_key="cancel_cloud_run",
+            on_finished=self._on_cloud_run_cancelled,
+            on_error=self._on_cloud_error,
+        )
+
+    def _on_cloud_run_cancelled(self, payload: dict[str, Any]) -> None:
+        self._populate_runs_table(payload.get("runs") or [])
+        rid = payload.get("run_id", "?")
+        InfoBar.success(
+            tr("common.success"),
+            tr("cloud.run_cancelled_ok", run_id=rid),
+            duration=4000,
+            position=InfoBarPosition.TOP_RIGHT,
+            parent=self.window(),
+        )
+
     def _on_cloud_error(self, err: str) -> None:
-        self.refreshRunsBtn.setEnabled(bool(self._secrets.get_github_token() and self._full_repo_name()))
-        self.runCloudBtn.setEnabled(bool(self._secrets.get_github_token() and self._full_repo_name()))
+        ready = bool(self._secrets.get_github_token() and self._full_repo_name())
+        self.refreshRunsBtn.setEnabled(ready)
+        self.runCloudBtn.setEnabled(ready)
+        self.toggleCloudScheduleBtn.setEnabled(ready)
+        self._sync_selected_run_buttons()
         InfoBar.error(
             tr("common.error"),
             err,
@@ -824,13 +1026,14 @@ class RunPage(SmoothScrollArea):
         self.localCard.setTitle(tr("run.local_title"))
         self.friendPromptLabel.setText(tr("schedule.test_friend_prompt"))
         self.showBrowserLabel.setText(tr("run.show_browser"))
+        self.showBrowserHintLabel.setText(tr("run.show_browser_hint"))
         self.quickTestBtn.setText(escape_qt_mnemonic(tr("run.quick_test")))
         self.fullRunBtn.setText(escape_qt_mnemonic(tr("run.full_run")))
         self.stopBtn.setText(escape_qt_mnemonic(tr("schedule.stop_run")))
         self.cloudCard.setTitle(tr("run.cloud_title"))
         self.cloudDelayHintLabel.setText(tr("run.cloud_delay_hint"))
         self.runCloudBtn.setText(escape_qt_mnemonic(tr("run.run_cloud_btn")))
-        self.refreshRunsBtn.setText(escape_qt_mnemonic(tr("common.refresh")))
+        self.refreshRunsBtn.setToolTip(tr("common.refresh"))
         self.runEmptyLabel.setText(tr("run.empty_runs"))
         self.runHintLabel.setText(tr("run.select_run_hint"))
         self.runsTable.setHorizontalHeaderLabels([
@@ -842,7 +1045,9 @@ class RunPage(SmoothScrollArea):
         self.openRunBtn.setText(escape_qt_mnemonic(tr("run.open_run")))
         self.viewLogsBtn.setText(escape_qt_mnemonic(tr("cloud.view_logs")))
         self.downloadDiagBtn.setText(escape_qt_mnemonic(tr("cloud.download_diagnostics")))
+        self.cancelCloudRunBtn.setText(escape_qt_mnemonic(tr("cloud.stop_run")))
         self.openDiagFolderBtn.setText(escape_qt_mnemonic(tr("run.open_folder")))
+        self._sync_cloud_workflow_controls()
         self.logViewer.retranslate()
         self.refresh_from_state()
 

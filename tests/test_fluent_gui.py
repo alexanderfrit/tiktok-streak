@@ -20,13 +20,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt, QTime
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QDialog, QFrame
 from qfluentwidgets import (
     InfoLevel,
     ListWidget,
     NavigationDisplayMode,
     PrimaryPushButton,
     Theme,
+    TransparentToolButton,
     isDarkTheme,
     qconfig,
     setTheme,
@@ -1254,35 +1256,69 @@ def test_v021_existing_repo_picker_owner_repo_sync_only_and_run_page(
     rp.refresh_from_state()
     qapp.processEvents()
 
-    # 1) Fetch repos populates existingRepoCombo and selecting owner/repo updates state + badge + private switch
+    # 1) Bot repo discovery populates clickable _BotRepoRow items and clicking a row updates state + badge + private switch
     monkeypatch.setattr(
-        "gui.pages.content_page.GitHub.list_user_repos",
-        lambda self, limit=100: [
-            {
-                "full_name": "myorg/streak-bot",
-                "name": "streak-bot",
-                "owner": "myorg",
-                "private": True,
-                "default_branch": "main",
-                "html_url": "https://github.com/myorg/streak-bot",
-            },
-            {
-                "full_name": "octocat/public-streak",
-                "name": "public-streak",
-                "owner": "octocat",
-                "private": False,
-                "default_branch": "main",
-                "html_url": "https://github.com/octocat/public-streak",
-            },
-        ],
+        "gui.pages.content_page.GitHub.discover_bot_repos",
+        lambda self, limit=100, workflow_file="streak.yml": {
+            "all_repos": [
+                {
+                    "full_name": "myorg/streak-bot",
+                    "name": "streak-bot",
+                    "owner": "myorg",
+                    "private": True,
+                    "archived": False,
+                    "fork": False,
+                    "default_branch": "main",
+                    "html_url": "https://github.com/myorg/streak-bot",
+                },
+                {
+                    "full_name": "octocat/public-streak",
+                    "name": "public-streak",
+                    "owner": "octocat",
+                    "private": False,
+                    "archived": False,
+                    "fork": False,
+                    "default_branch": "main",
+                    "html_url": "https://github.com/octocat/public-streak",
+                },
+            ],
+            "bot_repos": [
+                {
+                    "full_name": "myorg/streak-bot",
+                    "name": "streak-bot",
+                    "owner": "myorg",
+                    "private": True,
+                    "fork": False,
+                    "html_url": "https://github.com/myorg/streak-bot",
+                    "workflow_id": 10,
+                    "workflow_state": "active",
+                    "active": True,
+                },
+                {
+                    "full_name": "octocat/public-streak",
+                    "name": "public-streak",
+                    "owner": "octocat",
+                    "private": False,
+                    "fork": False,
+                    "html_url": "https://github.com/octocat/public-streak",
+                    "workflow_id": 11,
+                    "workflow_state": "disabled_manually",
+                    "active": False,
+                },
+            ],
+            "active_bot_repos": [{"full_name": "myorg/streak-bot", "active": True}],
+            "has_duplicates": False,
+            "scanned_count": 2,
+        },
     )
-    cp.fetchReposBtn.click()
-    _pump_until(qapp, lambda: not win.workers.is_running("fetch_user_repos"), timeout=4.0)
+    assert not hasattr(cp, "existingRepoCombo")
+    assert not hasattr(cp, "fetchReposBtn")
+    cp.scan_bot_repos()
+    _pump_until(qapp, lambda: not win.workers.is_running("discover_bot_repos"), timeout=4.0)
     qapp.processEvents()
-    assert cp.existingRepoCombo.count() == 3
-    assert "myorg/streak-bot" in cp.existingRepoCombo.itemText(1)
+    assert len(cp._bot_repo_row_widgets) == 2
 
-    cp.existingRepoCombo.setCurrentIndex(1)
+    QTest.mouseClick(cp._bot_repo_row_widgets[0], Qt.LeftButton)
     qapp.processEvents()
     assert cp.repoNameEdit.text() == "myorg/streak-bot"
     assert cp.privateRepoSwitch.isChecked() is True
@@ -2090,3 +2126,261 @@ assert '<REDACTED' in log_txt
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# 13. Cloud Stop/Pause, Bot Repo Discovery, Headful Hint & Auto-Updater UI
+# ---------------------------------------------------------------------------
+
+def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
+    qapp: QApplication,
+    make_window,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from qfluentwidgets import MessageBox
+    from gui.version import APP_VERSION
+    from gui.widgets.update_dialog import UpdateDialog
+
+    acc = AccountProfile(id="a1", name="Main", friends=["alice"], username="tester", inbox_verified=True)
+    state = AppState(
+        mode="cloud",
+        accounts=[acc],
+        github_login="octocat",
+        github_repo_name="tiktok-streak",
+        github_private=True,
+        headless_local=True,
+        video_enabled=False,
+        photo_enabled=False,
+        last_deployed_version="1.2.0",
+    )
+    win, _store, secrets, _mem, _tmp = make_window(state=state, smoke_test=True)
+    secrets.set_account_cookie("a1", "sessionid=sid_ok; tt-target-idc=useast5")
+    secrets.set_github_token("ghp_tok123")
+    qapp.processEvents()
+
+    hp = win.home_interface
+    cp = win.content_interface
+    rp = win.run_interface
+    sp = win.settings_interface
+
+    # 1) HomePage shows Cloud Bot Needs Re-Deploy reminder when last_deployed_version < APP_VERSION
+    hp.refresh_state()
+    qapp.processEvents()
+    assert hp.cloudSyncBannerCard.isHidden() is False
+    assert "v1.2.0" in hp.cloudSyncBannerDesc.text()
+    assert APP_VERSION in hp.cloudSyncBannerDesc.text()
+
+    # 2) RunPage headful hint toggles with showBrowserSwitch & translates cleanly
+    assert rp.showBrowserHintLabel.isHidden() is True
+    rp.showBrowserSwitch.setChecked(True)
+    qapp.processEvents()
+    assert rp.showBrowserHintLabel.isHidden() is False
+    set_language("id")
+    qapp.processEvents()
+    assert "dikunci" in rp.showBrowserHintLabel.text().lower()
+    set_language("en")
+    qapp.processEvents()
+
+    # 3) RunPage Cloud Monitor: Stop Run enabled only on active run; Pause/Resume syncs workflow badge & ContentPage
+    fake_runs = [
+        {"id": 901, "status": "in_progress", "conclusion": None, "event": "workflow_dispatch", "created_at": "2026-11-20T01:00:00Z", "html_url": "https://github.com/octocat/tiktok-streak/actions/runs/901"},
+        {"id": 902, "status": "completed", "conclusion": "success", "event": "schedule", "created_at": "2026-11-19T01:00:00Z", "html_url": "https://github.com/octocat/tiktok-streak/actions/runs/902"},
+    ]
+    cancelled_calls: list[tuple[str, int]] = []
+    paused_calls: list[str] = []
+    resumed_calls: list[str] = []
+
+    monkeypatch.setattr("gui.pages.run_page.GitHub.runs", lambda self, fn, wf, limit=8: fake_runs)
+    monkeypatch.setattr("gui.pages.run_page.GitHub.get_workflow", lambda self, fn, wf: {"id": 1, "state": "active"})
+    monkeypatch.setattr(
+        "gui.pages.run_page.GitHub.cancel_run",
+        lambda self, fn, rid: cancelled_calls.append((fn, int(rid))),
+    )
+    monkeypatch.setattr(
+        "gui.pages.run_page.GitHub.pause_workflow",
+        lambda self, fn, wf, cancel_running=True: (paused_calls.append(fn), {"paused": True, "cancelled_run_ids": [901]})[-1],
+    )
+    monkeypatch.setattr(
+        "gui.pages.run_page.GitHub.enable_workflow",
+        lambda self, fn, wf: resumed_calls.append(fn),
+    )
+
+    rp.refresh_cloud_runs()
+    _pump_until(qapp, lambda: not win.workers.is_running("fetch_cloud_runs"), timeout=4.0)
+    qapp.processEvents()
+    assert rp.runsTable.rowCount() == 2
+    assert rp.cloudWorkflowBadge.isHidden() is False
+    assert rp.cloudWorkflowBadge.text() == tr("cloud.repo_state_active")
+    assert rp.cancelCloudRunBtn.isEnabled() is True
+
+    rp.runsTable.selectRow(1)
+    qapp.processEvents()
+    assert rp.cancelCloudRunBtn.isEnabled() is False
+
+    rp.runsTable.selectRow(0)
+    qapp.processEvents()
+    rp.cancelCloudRunBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("cancel_cloud_run"), timeout=4.0)
+    assert cancelled_calls == [("octocat/tiktok-streak", 901)]
+
+    rp.toggleCloudScheduleBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("toggle_cloud_schedule"), timeout=4.0)
+    qapp.processEvents()
+    assert paused_calls == ["octocat/tiktok-streak"]
+    assert rp.cloudWorkflowBadge.text() == tr("cloud.repo_state_paused")
+    assert rp.toggleCloudScheduleBtn.text() == tr("cloud.resume_schedule")
+
+    rp.toggleCloudScheduleBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("toggle_cloud_schedule"), timeout=4.0)
+    qapp.processEvents()
+    assert resumed_calls == ["octocat/tiktok-streak"]
+    assert rp.cloudWorkflowBadge.text() == tr("cloud.repo_state_active")
+
+    # 4) ContentPage Detected Bot Repos: duplicate banner, non-bot warning, anti-duplicate deploy dialog
+    fake_discovery = {
+        "all_repos": [
+            {"full_name": "octocat/tiktok-streak", "name": "tiktok-streak", "owner": "octocat", "private": True, "archived": False, "fork": False, "default_branch": "main", "html_url": ""},
+            {"full_name": "octocat/tiktok-streak-2", "name": "tiktok-streak-2", "owner": "octocat", "private": False, "archived": False, "fork": True, "default_branch": "main", "html_url": ""},
+            {"full_name": "octocat/website", "name": "website", "owner": "octocat", "private": False, "archived": False, "fork": False, "default_branch": "main", "html_url": ""},
+        ],
+        "bot_repos": [
+            {"full_name": "octocat/tiktok-streak", "name": "tiktok-streak", "owner": "octocat", "private": True, "fork": False, "html_url": "", "workflow_id": 1, "workflow_state": "active", "active": True},
+            {"full_name": "octocat/tiktok-streak-2", "name": "tiktok-streak-2", "owner": "octocat", "private": False, "fork": True, "html_url": "", "workflow_id": 2, "workflow_state": "active", "active": True},
+        ],
+        "active_bot_repos": [
+            {"full_name": "octocat/tiktok-streak", "active": True},
+            {"full_name": "octocat/tiktok-streak-2", "active": True},
+        ],
+        "has_duplicates": True,
+        "scanned_count": 3,
+    }
+    monkeypatch.setattr("gui.pages.content_page.GitHub.discover_bot_repos", lambda self, **kw: fake_discovery)
+    cp.scan_bot_repos()
+    _pump_until(qapp, lambda: not win.workers.is_running("discover_bot_repos"), timeout=4.0)
+    qapp.processEvents()
+
+    assert cp.botReposPanel.isHidden() is False
+    assert cp.duplicateBotBanner.isHidden() is False
+    assert len(cp._bot_repo_row_widgets) == 2
+    assert isinstance(cp.scanBotReposBtn, TransparentToolButton)
+    assert (cp.scanBotReposBtn.width(), cp.scanBotReposBtn.height()) == (32, 32)
+    assert isinstance(cp._bot_repo_row_widgets[0].openBtn, TransparentToolButton)
+    assert (
+        cp._bot_repo_row_widgets[0].openBtn.width(),
+        cp._bot_repo_row_widgets[0].openBtn.height(),
+    ) == (32, 32)
+    assert isinstance(rp.refreshRunsBtn, TransparentToolButton)
+    assert (rp.refreshRunsBtn.width(), rp.refreshRunsBtn.height()) == (32, 32)
+    assert not isinstance(cp.cloudRepoBox, QFrame)
+    assert not isinstance(cp.botReposPanel, QFrame)
+    assert not isinstance(cp.cloudScheduleBox, QFrame)
+    assert not hasattr(cp, "cloudDelayBox")
+    assert "Existing bot repo" in cp.repoValidCaption.text()
+
+    cp.repoNameEdit.setText("website")
+    qapp.processEvents()
+    assert cp.repoValidBadge.isHidden() is False
+
+    cp.repoNameEdit.setText("brand-new-bot")
+    qapp.processEvents()
+    assert cp.repoValidBadge.isHidden() is True
+    assert "New repository" in cp.repoValidCaption.text()
+
+    # Deploy to brand-new-bot while 2 active bots exist triggers anti-duplicate dialog; accept => pauses old repos
+    monkeypatch.setattr(MessageBox, "exec", lambda self: 1)
+    paused_during_deploy: list[str] = []
+    monkeypatch.setattr("gui.pages.content_page.GitHub.whoami", lambda self: {"login": "octocat", "scopes_header_present": True, "scopes": ["repo", "workflow"]})
+    monkeypatch.setattr("gui.pages.content_page.GitHub.pause_workflow", lambda self, fn, wf, cancel_running=True: paused_during_deploy.append(fn) or {"paused": True})
+    monkeypatch.setattr("gui.pages.content_page.GitHub.create_private_repo_with_bot", lambda self, **kw: {"full_name": "octocat/brand-new-bot", "html_url": "https://github.com/octocat/brand-new-bot"})
+    monkeypatch.setattr("gui.pages.content_page.GitHub.sync_secrets", lambda self, fn, d, managed_names=None: {"written": list(d.keys()), "deleted": []})
+
+    cp.deployBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("deploy_github"), timeout=4.0)
+    qapp.processEvents()
+    assert set(paused_during_deploy) == {"octocat/tiktok-streak", "octocat/tiktok-streak-2"}
+    assert win.state.last_deployed_version == APP_VERSION
+    hp.refresh_state()
+    qapp.processEvents()
+    assert hp.cloudSyncBannerCard.isHidden() is True
+
+    # Test 1-click Pause Others button on duplicate banner
+    fresh_dup = {
+        "all_repos": list(fake_discovery["all_repos"]),
+        "bot_repos": [
+            {"full_name": "octocat/tiktok-streak", "name": "tiktok-streak", "owner": "octocat", "private": True, "fork": False, "html_url": "", "workflow_id": 1, "workflow_state": "active", "active": True},
+            {"full_name": "octocat/tiktok-streak-2", "name": "tiktok-streak-2", "owner": "octocat", "private": False, "fork": True, "html_url": "", "workflow_id": 2, "workflow_state": "active", "active": True},
+        ],
+        "active_bot_repos": [
+            {"full_name": "octocat/tiktok-streak", "active": True},
+            {"full_name": "octocat/tiktok-streak-2", "active": True},
+        ],
+        "has_duplicates": True,
+        "scanned_count": 3,
+    }
+    monkeypatch.setattr("gui.pages.content_page.GitHub.discover_bot_repos", lambda self, **kw: fresh_dup)
+    cp.scan_bot_repos()
+    _pump_until(qapp, lambda: not win.workers.is_running("discover_bot_repos"), timeout=4.0)
+    qapp.processEvents()
+    QTest.mouseClick(cp._bot_repo_row_widgets[0], Qt.LeftButton)
+    qapp.processEvents()
+    assert cp.duplicateBotBanner.isHidden() is False
+
+    paused_others: list[str] = []
+    monkeypatch.setattr(
+        "gui.pages.content_page.GitHub.pause_workflow",
+        lambda self, fn, wf, cancel_running=True: paused_others.append(fn) or {"paused": True},
+    )
+    cp.pauseOtherBotsBtn.click()
+    _pump_until(qapp, lambda: not win.workers.is_running("pause_other_bot_repos"), timeout=4.0)
+    qapp.processEvents()
+    assert paused_others == ["octocat/tiktok-streak-2"]
+    assert cp.duplicateBotBanner.isHidden() is True
+    assert len([r for r in cp._discovered_bot_repos if r.get("active")]) == 1
+
+    # Ensure redesigned HomePage banners, ContentPage & RunPage cloud surfaces respect <= 840px in both EN and ID
+    for lang in ("en", "id"):
+        set_language(lang)
+        qapp.processEvents()
+        assert hp.updateBannerCard.minimumSizeHint().width() <= 840, f"updateBannerCard too wide in {lang}: {hp.updateBannerCard.minimumSizeHint().width()}"
+        assert hp.cloudSyncBannerCard.minimumSizeHint().width() <= 840, f"cloudSyncBannerCard too wide in {lang}: {hp.cloudSyncBannerCard.minimumSizeHint().width()}"
+        assert cp.view.minimumSizeHint().width() <= 840, f"ContentPage too wide in {lang}: {cp.view.minimumSizeHint().width()}"
+        assert rp.cloudCard.minimumSizeHint().width() <= 840, f"RunPage cloudCard too wide in {lang}: {rp.cloudCard.minimumSizeHint().width()}"
+        assert rp.cloudHeaderRow.minimumSizeHint().width() <= 840, f"RunPage cloudHeaderRow too wide in {lang}: {rp.cloudHeaderRow.minimumSizeHint().width()}"
+    set_language("en")
+    qapp.processEvents()
+
+    # 5) SettingsPage About & Updates + HomePage Update Banner + UpdateDialog + Skip Version
+    assert APP_VERSION in sp.versionCard.titleLabel.text()
+    assert sp.autoUpdateSwitch.isChecked() is True
+    sp.autoUpdateSwitch.setChecked(False)
+    qapp.processEvents()
+    assert win.state.auto_check_updates is False
+
+    fake_upd = {
+        "ok": True,
+        "current_version": APP_VERSION,
+        "latest_version": "9.9.9",
+        "tag_name": "v9.9.9",
+        "has_update": True,
+        "download_url": "https://github.com/alexanderfrit/tiktok-streak/releases/download/v9.9.9/TikTokStreakSetup.exe",
+        "asset_name": "TikTokStreakSetup.exe",
+        "asset_size": 1048576,
+        "asset_sha256": "a" * 64,
+        "html_url": "https://github.com/alexanderfrit/tiktok-streak/releases/tag/v9.9.9",
+        "release_notes": "Critical recipient safety release",
+    }
+    win._on_update_check_finished(fake_upd, manual=False)
+    qapp.processEvents()
+    assert hp.updateBannerCard.isHidden() is False
+    assert "9.9.9" in hp.updateBannerTitle.text()
+    assert "9.9.9" in sp.versionCard.contentLabel.text()
+
+    dlg = UpdateDialog(parent=win, update_info=fake_upd, worker_controller=win.workers)
+    assert "9.9.9" in dlg.titleLabel.text()
+    assert "Critical recipient safety release" in dlg.notesEdit.toPlainText()
+    dlg.close()
+
+    hp.updateSkipBtn.click()
+    qapp.processEvents()
+    assert win.state.skipped_update_version == "9.9.9"
+    assert hp.updateBannerCard.isHidden() is True
