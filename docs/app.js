@@ -5,6 +5,54 @@
   var REPO = "alexanderfrit/tiktok-streak";
   var API_LATEST = "https://api.github.com/repos/" + REPO + "/releases/latest";
 
+  function loadWebFonts() {
+    if (typeof window.FontFace !== "function" || !document.fonts || typeof document.fonts.add !== "function") {
+      return;
+    }
+    var fonts = [
+      new FontFace("Google Sans", "url(fonts/google-sans-latin.woff2)", {
+        weight: "400 700",
+        style: "normal",
+        display: "swap"
+      }),
+      new FontFace("Google Sans Code", "url(fonts/google-sans-code-latin.woff2)", {
+        weight: "300 800",
+        style: "normal",
+        display: "swap"
+      })
+    ];
+    for (var i = 0; i < fonts.length; i++) {
+      (function (face) {
+        face
+          .load()
+          .then(function (loaded) {
+            document.fonts.add(loaded);
+          })
+          .catch(function () {
+            /* Fall back gracefully to system HTML font stack. */
+          });
+      })(fonts[i]);
+    }
+  }
+
+  function applyCodeFontTags() {
+    var nodes = document.getElementsByTagName("code");
+    for (var i = 0; i < nodes.length; i++) {
+      var codeEl = nodes[i];
+      if (codeEl.querySelector("font")) {
+        continue;
+      }
+      var wrapper = document.createElement("font");
+      wrapper.setAttribute("face", "Google Sans Code, Consolas, 'Courier New', monospace");
+      while (codeEl.firstChild) {
+        wrapper.appendChild(codeEl.firstChild);
+      }
+      codeEl.appendChild(wrapper);
+    }
+  }
+
+  loadWebFonts();
+
   function formatBytesMB(bytes) {
     if (!bytes || isNaN(bytes)) {
       return "";
@@ -214,6 +262,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    applyCodeFontTags();
     hydrateLatestRelease();
     initCronCalculator();
     initFaqControls();
