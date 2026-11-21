@@ -5,6 +5,7 @@ import ctypes
 import ctypes.wintypes
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     FluentTranslator,
     FluentWindow,
+    InfoBadge,
+    InfoBadgePosition,
     InfoBar,
     InfoBarPosition,
     NavigationItemPosition,
@@ -46,8 +49,12 @@ from gui.services.theme import (
     get_windows_personalization,
     resolve_accent_color,
 )
-from gui.services.updater import CHECK_INTERVAL_SECONDS, check_for_update
-from gui.widgets.update_dialog import UpdateDialog
+from gui.services.updater import (
+    CHECK_INTERVAL_SECONDS,
+    check_for_update,
+    launch_windows_self_update,
+)
+from gui.widgets.update_dialog import UpdateDialog, _download_update_task
 from gui.workers import WorkerController
 
 logger = logging.getLogger("tiktok-streak")
@@ -139,6 +146,13 @@ class MainWindow(FluentWindow):
 
         self._nav_items: dict[str, object] = {}
         self._latest_update_info: dict[str, Any] | None = None
+        self._startup_update_prompted: bool = False
+        self._update_download_state: str = "idle"
+        self._update_download_progress: tuple[int, int] = (0, 0)
+        self._update_download_error: str = ""
+        self._update_cancel_event: threading.Event | None = None
+        self._active_update_dialog: UpdateDialog | None = None
+        self._update_nav_badge: InfoBadge | None = None
         self._init_pages()
 
         self.navigationInterface.setExpandWidth(210)
@@ -162,12 +176,8 @@ class MainWindow(FluentWindow):
         if self.splashScreen is not None:
             self.splashScreen.finish()
 
-        if (
-            not self.smoke_test
-            and getattr(self.state, "auto_check_updates", True)
-            and (time.time() - int(getattr(self.state, "last_update_check_ts", 0) or 0) >= CHECK_INTERVAL_SECONDS)
-        ):
-            QTimer.singleShot(2000, lambda: self.check_for_app_updates(manual=False))
+        if self._should_auto_check_updates():
+            QTimer.singleShot(1200, lambda: self.check_for_app_updates(manual=False))
 
     def _init_pages(self) -> None:
         self.home_interface = HomePage(
@@ -239,6 +249,24 @@ class MainWindow(FluentWindow):
             tr("nav.run_logs"),
             NavigationItemPosition.TOP,
         )
+        update_item = self.navigationInterface.addItem(
+            routeKey="update",
+            icon=FIF.UPDATE,
+            text="",
+            onClick=self._open_update_dialog,
+            selectable=False,
+            position=NavigationItemPosition.BOTTOM,
+        )
+        self._nav_items["update"] = update_item
+        self._update_nav_badge = InfoBadge.attension(
+            tr("nav.update_badge_new"),
+            parent=update_item.parent(),
+            target=update_item,
+            position=InfoBadgePosition.NAVIGATION_ITEM,
+        )
+        update_item.setVisible(False)
+        self._update_nav_badge.setVisible(False)
+
         self._nav_items["settings"] = self.addSubInterface(
             self.settings_interface,
             FIF.SETTING,
@@ -248,8 +276,6 @@ class MainWindow(FluentWindow):
 
         # Wire cross-page interactions
         self.home_interface.navigate_requested.connect(self.navigate_to)
-        self.home_interface.update_requested.connect(self._open_update_dialog)
-        self.home_interface.skip_update_requested.connect(self._skip_update_version)
         self.accounts_interface.state_changed.connect(self._on_state_changed)
         self.content_interface.state_changed.connect(self._on_state_changed)
         self.run_interface.state_changed.connect(self._on_state_changed)
@@ -293,6 +319,16 @@ class MainWindow(FluentWindow):
                 str(match.get("workflow_state") or ("active" if match.get("active") else "disabled_manually")),
             )
 
+    def _should_auto_check_updates(self, now_ts: float | None = None) -> bool:
+        """True on startup when auto-check is enabled and outside the double-launch cooldown."""
+        if self.smoke_test or not getattr(self.state, "auto_check_updates", True):
+            return False
+        last_ts = int(getattr(self.state, "last_update_check_ts", 0) or 0)
+        if last_ts <= 0:
+            return True
+        cur = time.time() if now_ts is None else float(now_ts)
+        return cur < last_ts or (cur - last_ts) >= CHECK_INTERVAL_SECONDS
+
     def check_for_app_updates(self, manual: bool = False) -> None:
         if self.workers.is_running("app_update_check"):
             return
@@ -304,6 +340,55 @@ class MainWindow(FluentWindow):
             on_finished=lambda res, m=manual: self._on_update_check_finished(res, manual=m),
             on_error=lambda err, m=manual: self._on_update_check_error(err, manual=m),
         )
+
+    def _sync_sidebar_update_item(self) -> None:
+        item = self._nav_items.get("update")
+        badge = self._update_nav_badge
+        if item is None:
+            return
+        info = self._latest_update_info or {}
+        latest = str(info.get("latest_version") or "").strip().lstrip("vV")
+        skipped = str(getattr(self.state, "skipped_update_version", "") or "").strip().lstrip("vV")
+        downloading = self._update_download_state in ("downloading", "installing")
+        has_upd = bool(info.get("has_update")) and bool(latest)
+        show = bool(downloading or (has_upd and latest != skipped))
+
+        if not show:
+            item.setVisible(False)
+            if badge is not None:
+                badge.setVisible(False)
+            return
+
+        dl_bytes, total_bytes = self._update_download_progress
+        if self._update_download_state == "installing":
+            label = tr("nav.update_installing")
+            badge_txt = "..."
+            icon = FIF.SYNC
+        elif self._update_download_state == "downloading":
+            if total_bytes > 0:
+                pct = max(0, min(100, int((dl_bytes * 100) / total_bytes)))
+                label = tr("nav.update_downloading")
+                badge_txt = f"{pct}%"
+            else:
+                label = tr("nav.update_downloading_ind")
+                badge_txt = "..."
+            icon = FIF.DOWNLOAD
+        else:
+            label = tr("nav.update_available", version=latest)
+            badge_txt = tr("nav.update_badge_new")
+            icon = FIF.UPDATE
+
+        if hasattr(item, "setIcon"):
+            item.setIcon(icon)
+        if hasattr(item, "setText"):
+            item.setText(label)
+        if hasattr(item, "setToolTip"):
+            item.setToolTip(label)
+        item.setVisible(True)
+        if badge is not None:
+            badge.setText(badge_txt)
+            badge.adjustSize()
+            badge.setVisible(True)
 
     def _on_update_check_finished(self, info: Any, manual: bool = False) -> None:
         if not isinstance(info, dict):
@@ -318,7 +403,7 @@ class MainWindow(FluentWindow):
         if info.get("has_update"):
             self._latest_update_info = dict(info)
         self.settings_interface.set_update_check_status(checking=False, info=info)
-        self.home_interface.set_available_update(info if info.get("has_update") else None)
+        self._sync_sidebar_update_item()
 
         latest = str(info.get("latest_version") or "").strip().lstrip("vV")
         skipped = str(getattr(self.state, "skipped_update_version", "") or "").strip().lstrip("vV")
@@ -326,13 +411,22 @@ class MainWindow(FluentWindow):
             if manual:
                 self._open_update_dialog()
             elif latest != skipped:
-                InfoBar.info(
-                    tr("update.banner_title", version=latest),
-                    tr("update.banner_desc"),
-                    duration=6000,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    parent=self,
-                )
+                if not self.smoke_test and not self._startup_update_prompted:
+                    self._startup_update_prompted = True
+                    try:
+                        self.raise_()
+                        self.activateWindow()
+                    except Exception:
+                        pass
+                    self._open_update_dialog()
+                else:
+                    InfoBar.info(
+                        tr("update.banner_title", version=latest),
+                        tr("update.banner_desc"),
+                        duration=6000,
+                        position=InfoBarPosition.TOP_RIGHT,
+                        parent=self,
+                    )
         elif manual:
             if info.get("ok"):
                 InfoBar.success(
@@ -368,23 +462,149 @@ class MainWindow(FluentWindow):
         if not self._latest_update_info or not self._latest_update_info.get("has_update"):
             self.check_for_app_updates(manual=True)
             return
+        if self._active_update_dialog is not None:
+            try:
+                self._active_update_dialog.raise_()
+                self._active_update_dialog.activateWindow()
+            except Exception:
+                pass
+            return
+
+        total_bytes = self._update_download_progress[1] or int(
+            self._latest_update_info.get("asset_size") or 0
+        )
         dlg = UpdateDialog(
             parent=self,
             update_info=self._latest_update_info,
             worker_controller=self.workers,
             download_dir=self.config_store.config_dir / "updates",
+            start_download_cb=self.start_app_update_download,
+            cancel_download_cb=self.cancel_app_update_download,
+            download_state=self._update_download_state,
+            downloaded_bytes=self._update_download_progress[0],
+            total_bytes=total_bytes,
+            download_error=self._update_download_error,
         )
-        dlg.exec()
+        self._active_update_dialog = dlg
+        try:
+            dlg.exec()
+        finally:
+            self._active_update_dialog = None
         if dlg.user_skipped_version:
             latest = str(self._latest_update_info.get("latest_version") or "").strip().lstrip("vV")
             self._skip_update_version(latest)
+
+    def start_app_update_download(self) -> None:
+        """Start downloading the update asset in the background while keeping the UI usable."""
+        if self._update_download_state in ("downloading", "installing"):
+            return
+        info = self._latest_update_info or {}
+        dl_url = str(info.get("download_url") or "").strip()
+        latest_ver = str(info.get("latest_version") or "").strip().lstrip("vV")
+        if not dl_url or not latest_ver:
+            return
+
+        expected_size = int(info.get("asset_size") or 0)
+        self._update_cancel_event = threading.Event()
+        self._update_download_state = "downloading"
+        self._update_download_error = ""
+        self._update_download_progress = (0, expected_size)
+        self._sync_sidebar_update_item()
+        if self._active_update_dialog is not None:
+            self._active_update_dialog.sync_download_state(
+                "downloading", downloaded=0, total=expected_size
+            )
+
+        dest_path = self.config_store.config_dir / "updates" / f"TikTokStreakSetup-v{latest_ver}.exe"
+        self.workers.start_task(
+            _download_update_task,
+            dl_url,
+            str(dest_path),
+            str(info.get("asset_sha256") or ""),
+            expected_size,
+            self._update_cancel_event,
+            task_key="app_update_download",
+            cancel_event=self._update_cancel_event,
+            pass_progress_cb=True,
+            on_progress=self._on_update_download_progress,
+            on_finished=self._on_update_download_finished,
+            on_error=self._on_update_download_error,
+        )
+
+    def cancel_app_update_download(self) -> None:
+        """Cancel an in-flight background update download and return to idle."""
+        if self._update_cancel_event is not None:
+            self._update_cancel_event.set()
+        self._update_download_state = "idle"
+        self._update_download_progress = (0, 0)
+        self._update_download_error = ""
+        self._sync_sidebar_update_item()
+        if self._active_update_dialog is not None:
+            self._active_update_dialog.sync_download_state("idle")
+
+    def _on_update_download_progress(self, payload: Any) -> None:
+        if self._update_download_state != "downloading" or not isinstance(payload, dict):
+            return
+        dl = int(payload.get("downloaded") or 0)
+        total = int(payload.get("total") or 0)
+        self._update_download_progress = (dl, total)
+        self._sync_sidebar_update_item()
+        if self._active_update_dialog is not None:
+            self._active_update_dialog.sync_download_state("downloading", downloaded=dl, total=total)
+
+    def _on_update_download_finished(self, payload: Any) -> None:
+        ev = self._update_cancel_event
+        if ev is not None and ev.is_set():
+            return
+        path_str = str((payload or {}).get("path") or "").strip()
+        if not path_str:
+            self._on_update_download_error("Downloaded file path is missing.")
+            return
+        self._update_download_state = "installing"
+        self._sync_sidebar_update_item()
+        if self._active_update_dialog is not None:
+            self._active_update_dialog.sync_download_state("installing")
+        try:
+            self._flush_and_save_state()
+            launch_windows_self_update(Path(path_str))
+            if self._active_update_dialog is not None:
+                self._active_update_dialog.install_launched = True
+                self._active_update_dialog.accept()
+            self.close()
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        except Exception as exc:
+            self._on_update_download_error(str(exc))
+
+    def _on_update_download_error(self, err: str) -> None:
+        ev = self._update_cancel_event
+        if ev is not None and ev.is_set():
+            self._update_download_state = "idle"
+            self._sync_sidebar_update_item()
+            if self._active_update_dialog is not None:
+                self._active_update_dialog.sync_download_state("idle")
+            return
+        self._update_download_state = "error"
+        self._update_download_error = str(err)
+        self._sync_sidebar_update_item()
+        if self._active_update_dialog is not None:
+            self._active_update_dialog.sync_download_state("error", error=str(err))
+        else:
+            InfoBar.warning(
+                tr("common.warning"),
+                str(err),
+                duration=5000,
+                position=InfoBarPosition.TOP_RIGHT,
+                parent=self,
+            )
 
     def _skip_update_version(self, version: str) -> None:
         clean = str(version or "").strip().lstrip("vV")
         if not clean:
             return
         self.state.skipped_update_version = clean
-        self.home_interface.set_available_update(self._latest_update_info)
+        self._sync_sidebar_update_item()
         self._on_state_changed()
 
     def navigate_to(self, route_key: str) -> None:
@@ -476,6 +696,7 @@ class MainWindow(FluentWindow):
             self.settings_interface,
         ):
             page.retranslate()
+        self._sync_sidebar_update_item()
 
     def _on_state_changed(self) -> None:
         self._dirty = True
@@ -503,15 +724,21 @@ class MainWindow(FluentWindow):
         self.settings_interface.refresh_from_state(self.state)
         self.home_interface.refresh_state(self.state)
 
+    def _flush_and_save_state(self) -> None:
+        if self.smoke_test or not (self._dirty or self.config_store.exists()):
+            return
+        try:
+            self.accounts_interface.flush_edits()
+            self.content_interface.flush_edits()
+            self.settings_interface.flush_edits()
+            self.config_store.save(self.state)
+        except Exception as exc:
+            logger.warning("Failed flushing config on exit: %s", exc)
+
     def closeEvent(self, event) -> None:
-        if not self.smoke_test and (self._dirty or self.config_store.exists()):
-            try:
-                self.accounts_interface.flush_edits()
-                self.content_interface.flush_edits()
-                self.settings_interface.flush_edits()
-                self.config_store.save(self.state)
-            except Exception as exc:
-                logger.warning("Failed flushing config on exit: %s", exc)
+        self._flush_and_save_state()
+        if self._update_cancel_event is not None:
+            self._update_cancel_event.set()
 
         unsubscribe(self._on_i18n_language_changed)
         listener = getattr(self, "themeListener", None)
