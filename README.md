@@ -6,6 +6,7 @@
     Runs automatically via <strong>GitHub Actions</strong> with no paid server or VPS needed, or locally on Windows through the desktop app.
   </p>
   <p>
+    <a href="https://alexanderfrit.github.io/tiktok-streak/">Website &amp; Guide</a> &middot;
     <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest">Download Windows App (.exe)</a> &middot;
     <a href="#security-privacy--self-audit">Security &amp; Privacy</a> &middot;
     <a href="#user-guide">User Guide</a> &middot;
@@ -189,7 +190,7 @@ tiktok-streak/
 │   ├── app_icon.png             # Transparent app icon used at runtime
 │   ├── app_icon.ico             # Multi-resolution Windows executable icon (16-256px)
 │   └── default_photo.png        # Default photo card asset
-├── docs/screenshots/            # GUI screenshots embedded in README
+├── docs/                        # GitHub Pages static site (zero-CSS HTML/JS, llms.txt, sitemap.xml, screenshots)
 ├── gui/
 │   ├── app.py                   # FluentWindow shell, Windows theme listener, splash & nav
 │   ├── version.py               # Single source of truth APP_VERSION & release repo config

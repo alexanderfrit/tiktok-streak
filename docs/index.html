@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTok Streak Auto &amp; Setup — Free GitHub Actions &amp; Windows Bot</title>
+  <meta name="description" content="Automate daily TikTok DM streaks and Streak Pet growth (+7 pts/day) for free using GitHub Actions or a Windows desktop app. Zero server cost, Chrome v20 bypass, open source.">
+  <meta name="keywords" content="TikTok streak bot, TikTok Streak Auto, TikTok DM automation, TikTok Streak Pet bot, GitHub Actions TikTok streak, TikTok v20 cookie bypass, Windows TikTok streak app">
+  <meta name="author" content="alexanderfrit">
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+  <meta name="bingbot" content="index, follow, max-image-preview:large, max-snippet:-1">
+  <meta name="OAI-SearchBot" content="index, follow">
+  <meta name="GPTBot" content="index, follow">
+  <meta name="ClaudeBot" content="index, follow">
+  <meta name="PerplexityBot" content="index, follow">
+  <meta name="theme-color" content="#fafafa">
+
+  <link rel="canonical" href="https://alexanderfrit.github.io/tiktok-streak/">
+  <link rel="author" href="https://github.com/alexanderfrit">
+  <link rel="sitemap" type="application/xml" title="Sitemap" href="https://alexanderfrit.github.io/tiktok-streak/sitemap.xml">
+  <link rel="alternate" type="text/plain" href="https://alexanderfrit.github.io/tiktok-streak/llms.txt" title="LLM Summary (llms.txt)">
+  <link rel="alternate" type="text/plain" href="https://alexanderfrit.github.io/tiktok-streak/llms-full.txt" title="Complete AI Reference (llms-full.txt)">
+  <link rel="icon" type="image/png" sizes="512x512" href="assets/app_icon.png">
+  <link rel="apple-touch-icon" href="assets/app_icon.png">
+  <link rel="manifest" href="site.webmanifest">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="TikTok Streak Auto">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:url" content="https://alexanderfrit.github.io/tiktok-streak/">
+  <meta property="og:title" content="TikTok Streak Auto &amp; Setup — Free GitHub Actions &amp; Windows Bot">
+  <meta property="og:description" content="Keep TikTok DM streaks alive and grow your Streak Pet (+7 points daily) at $0 server cost via GitHub Actions or the Windows desktop app.">
+  <meta property="og:image" content="https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1350">
+  <meta property="og:image:height" content="950">
+  <meta property="og:image:alt" content="TikTok Streak Setup desktop application dashboard and readiness checklist">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="TikTok Streak Auto &amp; Setup — Free GitHub Actions &amp; Windows Bot">
+  <meta name="twitter:description" content="Serverless GitHub Actions and Windows desktop automation for daily TikTok DM streaks and Streak Pet leveling.">
+  <meta name="twitter:image" content="https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png">
+  <meta name="twitter:image:alt" content="TikTok Streak Setup desktop GUI dashboard">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#website",
+        "url": "https://alexanderfrit.github.io/tiktok-streak/",
+        "name": "TikTok Streak Auto",
+        "description": "Official documentation, download hub, security audit, and setup guide for TikTok Streak Auto.",
+        "inLanguage": "en",
+        "publisher": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#organization"
+        }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#organization",
+        "name": "TikTok Streak Auto",
+        "url": "https://github.com/alexanderfrit/tiktok-streak",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://alexanderfrit.github.io/tiktok-streak/assets/app_icon.png",
+          "width": 512,
+          "height": 512
+        },
+        "founder": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#author"
+        }
+      },
+      {
+        "@type": "Person",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#author",
+        "name": "alexanderfrit",
+        "url": "https://github.com/alexanderfrit",
+        "sameAs": [
+          "https://github.com/alexanderfrit"
+        ]
+      },
+      {
+        "@type": "WebPage",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#webpage",
+        "url": "https://alexanderfrit.github.io/tiktok-streak/",
+        "name": "TikTok Streak Auto & Setup — Free GitHub Actions & Windows Bot",
+        "isPartOf": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#website"
+        },
+        "about": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#software"
+        },
+        "mainEntity": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#software"
+        },
+        "primaryImageOfPage": {
+          "@type": "ImageObject",
+          "url": "https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png",
+          "width": 1350,
+          "height": 950
+        },
+        "datePublished": "2026-11-18",
+        "dateModified": "2026-11-21",
+        "inLanguage": "en",
+        "speakable": {
+          "@type": "SpeakableSpecification",
+          "xpath": [
+            "/html/body//section[@id='tldr']",
+            "/html/body//section[@id='faq']//summary"
+          ]
+        }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#breadcrumb",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "Home",
+            "item": "https://alexanderfrit.github.io/tiktok-streak/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "TikTok Streak Setup v1.3.0",
+            "item": "https://alexanderfrit.github.io/tiktok-streak/#download"
+          }
+        ]
+      },
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#software",
+        "name": "TikTok Streak Setup",
+        "alternateName": "TikTok Streak Auto",
+        "applicationCategory": "UtilitiesApplication",
+        "applicationSubCategory": "Social Media Automation",
+        "operatingSystem": "Windows 10, Windows 11, GitHub Actions Ubuntu Linux",
+        "softwareVersion": "1.3.0",
+        "datePublished": "2026-11-18",
+        "dateModified": "2026-11-21",
+        "isAccessibleForFree": true,
+        "license": "https://opensource.org/licenses/MIT",
+        "url": "https://alexanderfrit.github.io/tiktok-streak/",
+        "codeRepository": "https://github.com/alexanderfrit/tiktok-streak",
+        "downloadUrl": "https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.3.0/TikTokStreakSetup.exe",
+        "fileSize": "94967727B",
+        "softwareRequirements": "Windows 10/11 (standalone EXE) or Python 3.10+ with Chrome/Edge; optional free GitHub account for serverless cloud execution.",
+        "author": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#author"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
+        },
+        "screenshot": [
+          "https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png",
+          "https://alexanderfrit.github.io/tiktok-streak/screenshots/02-accounts.png",
+          "https://alexanderfrit.github.io/tiktok-streak/screenshots/03-content-schedule.png",
+          "https://alexanderfrit.github.io/tiktok-streak/screenshots/04-cloud-deploy.png",
+          "https://alexanderfrit.github.io/tiktok-streak/screenshots/05-run-logs.png",
+          "https://alexanderfrit.github.io/tiktok-streak/screenshots/06-settings.png"
+        ],
+        "featureList": [
+          "Serverless daily execution via free GitHub Actions cron workflows",
+          "Automates text messages, 2 TikTok video share cards, and 1 photo per friend (+7 daily Streak Pet growth)",
+          "Guided native Chrome/Edge CDP browser login bypassing Windows v20 App-Bound Encryption",
+          "Strict active chat @username verification and headful inbox sidebar click-lock",
+          "Detected Bot Repositories discovery with duplicate schedule Pause Others protection",
+          "Windows DPAPI local secret encryption and client-side PyNaCl SealedBox GitHub secrets",
+          "SHA-256 verified in-app Windows self-updater and Telegram run reports"
+        ]
+      },
+      {
+        "@type": "TechArticle",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#article",
+        "headline": "How TikTok Streak Auto Automates Daily TikTok DM Streaks & Pet Growth Without a Server",
+        "description": "Complete technical architecture, security audit, and setup documentation for running TikTok Streak Setup on GitHub Actions or Windows PC.",
+        "author": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#author"
+        },
+        "publisher": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#organization"
+        },
+        "mainEntityOfPage": {
+          "@id": "https://alexanderfrit.github.io/tiktok-streak/#webpage"
+        },
+        "datePublished": "2026-11-18",
+        "dateModified": "2026-11-21",
+        "image": "https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png"
+      },
+      {
+        "@type": "HowTo",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#howto",
+        "name": "How to Automate Daily TikTok DM Streaks Using TikTok Streak Setup",
+        "description": "Set up automated TikTok DM streak messages and Streak Pet tasks on Windows PC or free GitHub Actions in 5 minutes.",
+        "totalTime": "PT5M",
+        "supply": [
+          { "@type": "HowToSupply", "name": "Personal TikTok account with /messages access" },
+          { "@type": "HowToSupply", "name": "Free GitHub account (optional for 24/7 Cloud scheduling)" }
+        ],
+        "tool": [
+          { "@type": "HowToTool", "name": "TikTokStreakSetup.exe (Windows 10/11)" },
+          { "@type": "HowToTool", "name": "Google Chrome or Microsoft Edge" }
+        ],
+        "step": [
+          {
+            "@type": "HowToStep",
+            "position": 1,
+            "name": "Download and launch TikTokStreakSetup.exe",
+            "url": "https://alexanderfrit.github.io/tiktok-streak/#step-1",
+            "text": "Download the standalone Windows executable (v1.3.0) from GitHub Releases and double-click to launch without installing Python."
+          },
+          {
+            "@type": "HowToStep",
+            "position": 2,
+            "name": "Sign in to TikTok via Guided Browser Login",
+            "url": "https://alexanderfrit.github.io/tiktok-streak/#step-2",
+            "text": "Open the Accounts tab, click Sign in via Browser (Recommended) to bypass Chrome v20 encryption, log into TikTok messages, verify the account, and add target @username friends."
+          },
+          {
+            "@type": "HowToStep",
+            "position": 3,
+            "name": "Configure message content and Cloud or Local schedule",
+            "url": "https://alexanderfrit.github.io/tiktok-streak/#step-3",
+            "text": "Customize your streak message, video URL, and photo, choose off-peak minutes like :15 or :17, sign in to GitHub, and click Save & Deploy to GitHub."
+          },
+          {
+            "@type": "HowToStep",
+            "position": 4,
+            "name": "Verify delivery with a 1-friend smoke test",
+            "url": "https://alexanderfrit.github.io/tiktok-streak/#step-4",
+            "text": "Open Run & Logs, select one friend, click Quick Test (1 Friend) to verify header safety and delivery, then monitor scheduled cloud runs or optional Telegram alerts."
+          }
+        ]
+      },
+      {
+        "@type": "FAQPage",
+        "@id": "https://alexanderfrit.github.io/tiktok-streak/#faq-schema",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "How does TikTok Streak Auto run for free without a paid server or VPS?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "When configured in GitHub Cloud mode, the app creates a private repository on your own GitHub account via the Git Data API, seals your credentials client-side using PyNaCl SealedBox, and schedules headless Chromium runs using .github/workflows/streak.yml on GitHub's free Actions runners."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why does Chrome v20 encryption block cookie readers, and how does this app bypass it?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Modern Chrome and Edge on Windows use App-Bound Encryption (v20), preventing external programs from decrypting cookie SQLite files on disk. TikTok Streak Setup uses Guided Browser Login to launch your native browser cleanly without automation flags and captures active session cookies via a one-shot Chrome DevTools Protocol WebSocket (Storage.getCookies)."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does sending automated streaks level up a TikTok Streak Pet?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "For each friend, sending 1 text message (+1 point), 1 photo or video (+4 points), and 2 shared video posts (+2 points) satisfies all daily Grow your Pet checklist tasks for +7 growth points per day."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is TikTok Streak Auto safe and private for cookies and tokens?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. The project has 0% telemetry and no middleman server. Credentials are encrypted locally via Windows Credential Manager or Windows DPAPI (CryptProtectData), sealed client-side with PyNaCl SealedBox for GitHub Actions, and masked by redact_secrets() in all logs."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can the bot accidentally send a streak message to the wrong friend?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Starting in v1.3.0, open_inbox_chat verifies the active chat header @username before typing, before pressing Enter, and before video/photo submission (raising RecipientMismatchError on mismatch), skips unread threads during scans, isolates WebSocket/HTTP templates per friend, and locks sidebar clicks while Show browser window is enabled."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why do GitHub Actions schedules sometimes start 15 minutes to 4+ hours late?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "GitHub Actions scheduled workflows run on a shared best-effort cron queue that becomes heavily congested at the top of the hour (:00). Choosing off-peak minutes such as :15 or :17 reduces queue delay, or you can use Local PC mode (Windows Task Scheduler) for exact minute execution."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does TikTok Streak Auto work without triggering captchas?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Unlike scrapers that load public profile pages or video watch URLs (common secsdk-captcha triggers), the runner navigates straight to tiktok.com/messages using pre-document webdriver stealth patches and sends video share cards over the authenticated inbox WebSocket/HTTP channel."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do I prevent duplicate messages if I deployed more than one bot repository?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Open Content & Schedule -> Detected Bot Repositories. All repositories on your GitHub account containing streak.yml are discovered automatically; click Pause Others to disable duplicate active schedules in one click, or toggle schedules from Run & Logs."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Why does TikTok Business Suite block sending DM streaks?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "TikTok Business accounts redirect tiktok.com/messages to Business Suite where the personal DM web inbox and streak system are unavailable. Switching to a standard personal TikTok account resolves InboxUnavailableError."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do existing Windows EXE users receive new updates?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Starting with v1.3.0, TikTok Streak Setup checks GitHub Releases automatically on startup (or manually in Settings -> About & Updates), downloads the latest TikTokStreakSetup.exe over HTTPS, verifies the PE header and SHA-256 digest, swaps the binary, and restarts automatically."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+</head>
+<body bgcolor="#fafafa" text="#111111" link="#0044cc" vlink="#551a8b" alink="#cc0000">
+  <table role="presentation" width="840" align="center" border="0" cellpadding="14" cellspacing="0">
+    <tr>
+      <td>
+        <font face="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif">
+
+          <header>
+            <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">
+              <tr>
+                <td width="96" valign="middle">
+                  <img src="assets/app_icon.png" alt="TikTok Streak Auto Mascot" width="84" height="84">
+                </td>
+                <td valign="middle">
+                  <h1>TikTok Streak Auto (<code>TikTok Streak Setup</code>)</h1>
+                  <p>
+                    <strong>Free, open-source TikTok DM streak &amp; Streak Pet automation</strong> &mdash; runs serverless on <strong>GitHub Actions</strong> ($0/month) or locally on <strong>Windows 10/11</strong>.
+                  </p>
+                  <p>
+                    <small>
+                      By <a href="https://github.com/alexanderfrit" rel="author">alexanderfrit</a> &middot;
+                      Latest release: <strong id="release-version">v1.3.0</strong> &middot;
+                      Last updated: <time datetime="2026-11-21">November 21, 2026</time> &middot;
+                      License: <a href="https://github.com/alexanderfrit/tiktok-streak/blob/main/LICENSE">MIT</a>
+                    </small>
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </header>
+
+          <hr>
+
+          <nav aria-label="Primary Page Navigation">
+            <table width="100%" border="1" cellpadding="7" cellspacing="0" bgcolor="#f0f2f5">
+              <tr>
+                <td align="center">
+                  <strong>Jump to:</strong>
+                  <a href="#tldr">Quick Answer</a> &middot;
+                  <a href="#download">Download v1.3.0</a> &middot;
+                  <a href="#comparison">Modes</a> &middot;
+                  <a href="#pet-growth">Pet Growth (+7/day)</a> &middot;
+                  <a href="#screenshots">Screenshots</a> &middot;
+                  <a href="#setup-guide">Setup Guide</a> &middot;
+                  <a href="#security">Security Audit</a> &middot;
+                  <a href="#faq">FAQ</a> &middot;
+                  <a href="#troubleshooting">Troubleshooting</a> &middot;
+                  <a href="#developer">CLI &amp; Schema</a> &middot;
+                  <a href="llms.txt">llms.txt</a> &middot;
+                  <a href="llms-full.txt">llms-full.txt</a>
+                </td>
+              </tr>
+            </table>
+          </nav>
+
+          <main>
+            <article>
+
+              <!-- QUICK ANSWER / TL;DR (Answer Engine Magnet) -->
+              <section id="tldr">
+                <h2>What Is TikTok Streak Auto?</h2>
+                <table width="100%" border="1" cellpadding="10" cellspacing="0" bgcolor="#eef4fb">
+                  <tr>
+                    <td>
+                      <p>
+                        <strong>In short,</strong> <dfn>TikTok Streak Auto</dfn> (distributed on Windows as <strong>TikTok Streak Setup</strong>) refers to an open-source, self-hosted automation tool built by <a href="https://github.com/alexanderfrit" rel="author">alexanderfrit</a> that keeps daily TikTok DM streaks alive and completes every daily <strong>Grow your Pet</strong> task automatically without renting a server.
+                      </p>
+                      <ul>
+                        <li><strong>Zero hosting cost ($0/month):</strong> Deploys directly to a private GitHub repository on your own account using GitHub Actions scheduled cron runs, or runs locally via Windows Task Scheduler.</li>
+                        <li><strong>Full daily Pet growth (+7 pts/day):</strong> Sends <strong>1 text message (+1)</strong>, <strong>2 shared video cards (+2)</strong>, and <strong>1 photo card (+4)</strong> to each configured friend, verified inside <code>/messages</code>.</li>
+                        <li><strong>Bypass Chrome v20 encryption:</strong> Guided Browser Login launches your native Chrome or Edge cleanly without automation flags and captures session cookies over a one-shot Chrome DevTools Protocol WebSocket.</li>
+                        <li><strong>0% telemetry, client-side encryption:</strong> Stores cookies locally with Windows DPAPI / Credential Manager and seals GitHub secrets on your PC using <code>PyNaCl SealedBox</code>.</li>
+                      </ul>
+                    </td>
+                  </tr>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- DOWNLOAD CTA -->
+              <section id="download">
+                <h2>Download Windows App &amp; Source Code</h2>
+                <table width="100%" border="1" cellpadding="10" cellspacing="0" bgcolor="#fff8dc">
+                  <tr>
+                    <td>
+                      <p>
+                        <strong>Standalone Windows Executable (No Python Needed):</strong>
+                        <a id="release-link" href="https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.3.0/TikTokStreakSetup.exe">
+                          <strong>Download TikTokStreakSetup.exe (v1.3.0)</strong>
+                        </a>
+                        &nbsp;|&nbsp;
+                        <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest">All GitHub Releases</a>
+                        &nbsp;|&nbsp;
+                        <a href="https://github.com/alexanderfrit/tiktok-streak">GitHub Source Repository</a>
+                      </p>
+                      <p>
+                        <small>
+                          Build details: <span id="release-meta">90.6 MB &middot; Standalone PyInstaller --noupx binary &middot; Built transparently via GitHub Actions</span><br>
+                          SHA-256 (<code>TikTokStreakSetup.exe</code> v1.3.0): <code id="release-sha256">a217a80d75b64fc544069b2790017f9db7319349c7c99812168721d37f3bd6c3</code>
+                        </small>
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- COMPARISON MATRIX -->
+              <section id="comparison">
+                <h2>Execution Mode Comparison: Cloud vs. Local PC vs. Hybrid</h2>
+                <p>
+                  Choose the delivery schedule that matches your uptime needs. According to the codebase architecture in <code>gui/pages/content_page.py</code>, all three modes share identical message templates, recipient verification, and media toggles.
+                </p>
+                <table width="100%" border="1" cellpadding="7" cellspacing="0">
+                  <thead>
+                    <tr bgcolor="#e9ecef">
+                      <th scope="col" align="left">Execution Mode</th>
+                      <th scope="col" align="left">Server Cost</th>
+                      <th scope="col" align="left">PC Must Stay On?</th>
+                      <th scope="col" align="left">Schedule Precision</th>
+                      <th scope="col" align="left">Best Use Case</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>GitHub Cloud</strong></td>
+                      <td><strong>$0</strong> (free GitHub Actions)</td>
+                      <td><strong>No</strong> (runs 24/7 in your private repo)</td>
+                      <td>Shared queue (15m to 1&ndash;4h delay at <code>:00</code>; pick <code>:15</code>/<code>:17</code>)</td>
+                      <td>Set-and-forget daily streaks while PC is asleep or off</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Local PC</strong></td>
+                      <td><strong>$0</strong> (Windows Task Scheduler)</td>
+                      <td><strong>Yes</strong> during scheduled minutes</td>
+                      <td><strong>Exact minute</strong> (<code>schtasks</code> local trigger)</td>
+                      <td>Exact wall-clock timing or visible browser testing</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Hybrid (Both)</strong></td>
+                      <td><strong>$0</strong></td>
+                      <td>Optional fallback</td>
+                      <td>Exact PC trigger + cloud backup</td>
+                      <td>Maximum reliability across laptop travel and downtime</td>
+                    </tr>
+                    <tr>
+                      <td><strong>Manual Daily DMs</strong></td>
+                      <td>$0</td>
+                      <td>Yes (manual phone/PC open)</td>
+                      <td>100% manual daily effort</td>
+                      <td>Only practical for 1&ndash;2 friends with zero automation</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- WHAT IT SENDS & PET GROWTH -->
+              <section id="pet-growth">
+                <h2>What It Sends &amp; Daily Streak Pet Growth (+7 Points/Day)</h2>
+                <p>
+                  By definition, <dfn>Streak Pet growth tasks</dfn> require specific daily interaction types beyond plain text. Sending all three customizable stages per friend satisfies every daily <strong>Grow your Pet</strong> milestone in one run:
+                </p>
+                <table width="100%" border="1" cellpadding="7" cellspacing="0">
+                  <thead>
+                    <tr bgcolor="#e9ecef">
+                      <th scope="col" align="left">Stage Order</th>
+                      <th scope="col" align="left">Payload Sent per Friend</th>
+                      <th scope="col" align="left">Grow Your Pet Reward</th>
+                      <th scope="col" align="left">How It Avoids Captchas &amp; Misdelivery</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>1. Text Streak</strong></td>
+                      <td>Custom text message (default: <code>&#128293; Daily Streak</code>)</td>
+                      <td><strong>+1 growth point</strong></td>
+                      <td>Human-paced typing (0.04s&ndash;0.12s/char); verifies right-pane <code>@username</code> before typing and before Enter</td>
+                    </tr>
+                    <tr>
+                      <td><strong>2. Video Share Cards</strong></td>
+                      <td>2 shared TikTok video cards (<code>aweType: 800</code>)</td>
+                      <td><strong>+2 growth points</strong></td>
+                      <td>Borrows in-page protobuf frame, re-signs <code>X-Bogus</code> via <code>window.byted_acrawler.frontierSign</code> inside <code>/messages</code></td>
+                    </tr>
+                    <tr>
+                      <td><strong>3. Photo Card</strong></td>
+                      <td>1 default or custom photo image</td>
+                      <td><strong>+4 growth points</strong></td>
+                      <td>Captures hidden file input without OS file picker; verifies preview modal target and <code>CommitImageUpload</code> confirmation</td>
+                    </tr>
+                    <tr bgcolor="#eef4fb">
+                      <td><strong>Total Daily Gain</strong></td>
+                      <td>Text + 2 Video Cards + 1 Photo (each toggleable)</td>
+                      <td><strong>+7 points/day per friend</strong></td>
+                      <td>Fail-closed gate skips media immediately if text verification fails</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <br>
+                <table width="100%" border="1" cellpadding="8" cellspacing="0" bgcolor="#f4f6f8">
+                  <tr align="center" valign="top">
+                    <td width="33%">
+                      <figure>
+                        <img src="examples/chat-send-example.jpg" alt="TikTok DM chat showing 1 automated text message, 2 video share cards, and 1 photo delivered" width="220" height="421">
+                        <figcaption><small><strong>1. Delivered Chat Sequence</strong><br>1 text + 2 video cards + 1 photo per friend.</small></figcaption>
+                      </figure>
+                    </td>
+                    <td width="33%">
+                      <figure>
+                        <img src="examples/streak-pet-tasks.jpg" alt="TikTok daily Grow your Pet checklist displaying +1 message, +4 photo/video, and +2 post share points" width="220" height="451">
+                        <figcaption><small><strong>2. Daily Pet Tasks (+7 pts)</strong><br>Completes all 3 checklist tasks automatically.</small></figcaption>
+                      </figure>
+                    </td>
+                    <td width="33%">
+                      <figure>
+                        <img src="examples/pet-growth-journey.jpg" alt="TikTok Streak Pet growth journey showing level milestones, outfits, and pet evolutions" width="220" height="412">
+                        <figcaption><small><strong>3. Streak Pet Growth Journey</strong><br>Unlocks levels, outfits, and new forms.</small></figcaption>
+                      </figure>
+                    </td>
+                  </tr>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- DESKTOP APP SCREENSHOTS -->
+              <section id="screenshots">
+                <h2>Windows Desktop GUI Screenshots (v1.3.0)</h2>
+                <p>
+                  Built natively on Windows with <code>PySide6</code> and <code>PySide6-Fluent-Widgets</code>, syncing automatically with Windows Light/Dark themes and Windows Personalization accent colors (in English and Bahasa Indonesia).
+                </p>
+                <table width="100%" border="1" cellpadding="8" cellspacing="0" bgcolor="#f4f6f8">
+                  <tr align="center" valign="top">
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/01-dashboard.png" alt="TikTok Streak Setup Dashboard with account count, target friends, execution mode, and 4-step readiness checklist" width="380" height="267">
+                        <figcaption><small><strong>Dashboard &amp; Setup Checklist</strong> &mdash; live readiness summary and drift alerts.</small></figcaption>
+                      </figure>
+                    </td>
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/02-accounts.png" alt="TikTok Accounts screen showing Chrome v20 status, Guided Browser Login button, @username chips, and Verified inbox badge" width="380" height="267">
+                        <figcaption><small><strong>Accounts &amp; Friends</strong> &mdash; v20-safe Guided Browser Login, multi-account toggle, and CSV import.</small></figcaption>
+                      </figure>
+                    </td>
+                  </tr>
+                  <tr align="center" valign="top">
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/03-content-schedule.png" alt="Content configuration cards for daily text streak message, TikTok video URL verification, and photo card upload" width="380" height="267">
+                        <figcaption><small><strong>Message, Video &amp; Photo Cards</strong> &mdash; short-link resolver and per-friend share count.</small></figcaption>
+                      </figure>
+                    </td>
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/04-cloud-deploy.png" alt="GitHub Cloud Deployment showing Target Repository, Detected Bot Repositories list, Daily Cloud Schedule, and Save &amp; Deploy CTA" width="380" height="267">
+                        <figcaption><small><strong>Cloud Deploy &amp; Bot Discovery</strong> &mdash; auto-detects existing bot repos and stops duplicates.</small></figcaption>
+                      </figure>
+                    </td>
+                  </tr>
+                  <tr align="center" valign="top">
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/05-run-logs.png" alt="Run and Logs screen featuring 1-friend smoke test switch, Active schedule badge, Pause Schedule, Run on GitHub Now, and run history table" width="380" height="267">
+                        <figcaption><small><strong>Run History &amp; Cloud Monitor</strong> &mdash; 1-friend test, Pause/Resume Schedule, and Stop Run.</small></figcaption>
+                      </figure>
+                    </td>
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/06-settings.png" alt="Settings screen displaying Appearance Theme, Windows Accent Color sync, Language, Timezone, and Telegram Alerts" width="380" height="267">
+                        <figcaption><small><strong>Settings, Theme &amp; Updates</strong> &mdash; Windows theme sync, timezone, Telegram bot, and auto-updater.</small></figcaption>
+                      </figure>
+                    </td>
+                  </tr>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- STEP BY STEP HOWTO + INTERACTIVE CRON CALCULATOR -->
+              <section id="setup-guide">
+                <h2>Step-by-Step Setup Guide (Under 5 Minutes)</h2>
+                <ol>
+                  <li id="step-1">
+                    <strong>Download &amp; Open:</strong> Download <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest"><code>TikTokStreakSetup.exe</code></a> (v1.3.0) and double-click to launch. No ZIP extraction or Python install is required. On Windows SmartScreen, click <em>More info &rarr; Run anyway</em> (or inspect/build directly from source via <code>build-exe.yml</code>).
+                  </li>
+                  <li id="step-2">
+                    <strong>Connect TikTok &amp; Friends (Accounts Tab):</strong> Click <strong>Sign in via Browser (Recommended)</strong>. Log into TikTok in the clean browser window, click <strong>Verify</strong> to confirm <code>/messages</code> works and fetch regional Cloud routing cookies (<code>tt-target-idc</code>, <code>store-idc</code>), and add mutual friend <code>@usernames</code> (or import <code>friends.csv</code>).
+                  </li>
+                  <li id="step-3">
+                    <strong>Pick Message, Media &amp; Cloud Schedule (Content &amp; Schedule Tab):</strong> Customize text, video share URL (<code>vt.tiktok.com</code> short links supported), and photo. Sign in with 1-click GitHub OAuth Device Flow, keep <strong>Create Private Repository</strong> on, pick off-peak minutes such as <code>:15</code> or <code>:17</code>, review <strong>Detected Bot Repositories</strong> to avoid duplicate schedules, and click <strong>Save &amp; Deploy to GitHub</strong>.
+                  </li>
+                  <li id="step-4">
+                    <strong>Run a 1-Friend Smoke Test (Run &amp; Logs Tab):</strong> Select one friend, optionally toggle <strong>Show browser window</strong> (inbox sidebar clicks are automatically locked while running), and run <strong>Quick Test (1 Friend)</strong> before enabling full runs.
+                  </li>
+                </ol>
+
+                <h3>Interactive Timezone-to-UTC GitHub Actions Cron Calculator</h3>
+                <p>
+                  GitHub Actions <code>cron</code> expressions always execute in <strong>UTC</strong>. Enter your desired local run times below to generate exact <code>.github/workflows/streak.yml</code> schedules (matches the desktop app conversion formula):
+                </p>
+                <table width="100%" border="1" cellpadding="8" cellspacing="0" bgcolor="#f0f2f5">
+                  <tr>
+                    <td>
+                      <table width="100%" border="0" cellpadding="4" cellspacing="0">
+                        <tr>
+                          <td width="35%"><label for="calc-tz"><strong>Your Timezone:</strong></label></td>
+                          <td>
+                            <select id="calc-tz" name="calc-tz">
+                              <option value="420" selected>WIB &mdash; Jakarta / Western Indonesia (UTC+7)</option>
+                              <option value="480">WITA &mdash; Makassar / Singapore / MYT / PHT (UTC+8)</option>
+                              <option value="540">WIT &mdash; Jayapura / Tokyo / Seoul (UTC+9)</option>
+                              <option value="330">IST &mdash; India Standard Time (UTC+5:30)</option>
+                              <option value="240">GST &mdash; Dubai (UTC+4)</option>
+                              <option value="0">UTC / GMT &mdash; London (UTC+0)</option>
+                              <option value="60">CET &mdash; Berlin / Central Europe (UTC+1)</option>
+                              <option value="-300">ET &mdash; US Eastern (UTC-5)</option>
+                              <option value="-360">CT &mdash; US Central (UTC-6)</option>
+                              <option value="-480">PT &mdash; US Pacific (UTC-8)</option>
+                              <option value="-180">BRT &mdash; Sao Paulo (UTC-3)</option>
+                              <option value="600">AEST &mdash; Sydney (UTC+10)</option>
+                            </select>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td><label for="calc-times"><strong>Daily Run Times (24h HH:MM):</strong></label></td>
+                          <td>
+                            <input id="calc-times" name="calc-times" type="text" value="08:15, 20:15" size="30">
+                            <button type="button" data-copy-target="calc-output">Copy Cron YAML</button>
+                          </td>
+                        </tr>
+                      </table>
+                      <pre><code id="calc-output">on:
+  schedule:
+    - cron: '15 1,13 * * *'</code></pre>
+                      <p><small id="calc-warning">Converted 08:15, 20:15 to off-peak UTC GitHub Actions cron.</small></p>
+                      <noscript>
+                        <p><small><em>JavaScript is disabled. Manual formula: subtract your UTC offset from local time (for example, 08:15 WIB &minus; 7 hours = <code>15 1 * * *</code> UTC).</em></small></p>
+                      </noscript>
+                    </td>
+                  </tr>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- SECURITY AUDIT -->
+              <section id="security">
+                <h2>Security, Privacy &amp; Self-Audit</h2>
+                <p>
+                  TikTok Streak Auto operates with <strong>100% open-source transparency</strong> and <strong>0% telemetry</strong>. No developer server ever receives your cookies, tokens, or friend lists.
+                </p>
+                <ul>
+                  <li><strong>Local OS Encryption (<code>gui/services/storage.py</code>):</strong> Plain settings go to <code>%APPDATA%\TikTokStreak\config.json</code>, while session cookies, GitHub OAuth tokens, and Telegram bot tokens are encrypted via <strong>Windows Credential Manager (<code>keyring</code>)</strong> or <strong>Windows DPAPI</strong> (<code>secrets.dpapi</code> bound to your Windows user login).</li>
+                  <li><strong>Client-Side GitHub Secret Sealing (<code>gui/services/github_api.py</code>):</strong> Secrets are encrypted on your PC using <strong>PyNaCl (<code>SealedBox</code>)</strong> with your own private repository's Actions public key before upload.</li>
+                  <li><strong>Automatic Log Redaction &amp; Read-Only Cookie DBs:</strong> Browser imports use SQLite read-only mode (<code>?mode=ro</code>) filtered strictly to <code>tiktok.com</code>, and <code>redact_secrets()</code> strips tokens/cookies from UI logs and diagnostics.</li>
+                  <li><strong>1-Click Reset:</strong> Use <strong>Settings &rarr; Reset All Settings &amp; Secrets</strong> anytime to wipe config files, DPAPI secrets, and Credential Manager entries.</li>
+                </ul>
+
+                <h3>Exact Network Hosts Contacted</h3>
+                <table width="100%" border="1" cellpadding="7" cellspacing="0">
+                  <thead>
+                    <tr bgcolor="#e9ecef">
+                      <th scope="col" align="left">Host</th>
+                      <th scope="col" align="left">Module(s)</th>
+                      <th scope="col" align="left">Exact Purpose</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><code>*.tiktok.com</code> (<code>www</code>, <code>vt</code>, <code>vm</code>)</td>
+                      <td><code>src/browser.py</code>, <code>src/share.py</code>, <code>gui/services/tiktok_auth.py</code>, <code>gui/services/validators.py</code></td>
+                      <td>Session verification, short-link resolution, and DM inbox message/media sending</td>
+                    </tr>
+                    <tr>
+                      <td><code>github.com</code>, <code>api.github.com</code></td>
+                      <td><code>gui/services/github_api.py</code>, <code>gui/services/updater.py</code></td>
+                      <td>OAuth Device Flow login, workflow deployment, run inspection (strips <code>Authorization</code> on log redirects), and SHA-256 verified app update checks</td>
+                    </tr>
+                    <tr>
+                      <td><code>api.telegram.org</code></td>
+                      <td><code>src/notifier.py</code>, <code>gui/services/github_api.py</code></td>
+                      <td>Optional Telegram run status alerts (only when enabled in Settings)</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- FAQ SECTION -->
+              <section id="faq">
+                <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td><h2>Frequently Asked Questions</h2></td>
+                    <td align="right" valign="middle">
+                      <button type="button" id="faq-toggle-all">Expand All Answers</button>
+                    </td>
+                  </tr>
+                </table>
+
+                <details open>
+                  <summary><strong>How does TikTok Streak Auto run for free without a paid server or VPS?</strong></summary>
+                  <p>In Cloud mode, the app deploys <code>.github/workflows/streak.yml</code> and encrypted secrets (<code>PyNaCl SealedBox</code>) into a private repository on your own GitHub account. GitHub Actions executes headless Chromium automatically on scheduled UTC cron times at $0/month.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>Why does Chrome v20 encryption block cookie readers, and how does this app bypass it?</strong></summary>
+                  <p>Chrome and Edge on Windows use App-Bound Encryption (<code>v20</code>), blocking external tools from reading encrypted cookie SQLite files from disk. <strong>Guided Browser Login</strong> opens your real installed browser without ChromeDriver or <code>--enable-automation</code> flags and collects active cookies over a one-shot Chrome DevTools Protocol WebSocket (<code>Storage.getCookies</code>) once <code>/messages</code> loads.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>How does sending automated streaks level up a TikTok Streak Pet?</strong></summary>
+                  <p>Delivering 1 text message (+1), 1 photo or video (+4), and 2 video share cards (+2) satisfies all three daily <strong>Grow your Pet</strong> checklist items per friend, earning <strong>+7 growth points/day</strong> automatically.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>Is TikTok Streak Auto safe and private for cookies and tokens?</strong></summary>
+                  <p>Yes. There is 0% telemetry and no external relay server. Local secrets are stored in Windows Credential Manager or Windows DPAPI (<code>CryptProtectData</code>), GitHub secrets are encrypted client-side before upload, and <code>redact_secrets()</code> strips credentials from all logs.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>Can the bot accidentally send a streak message to the wrong friend?</strong></summary>
+                  <p>Starting in <code>v1.3.0</code>, <code>src/actions.py</code> enforces strict right-pane <code>@username</code> header verification before typing, immediately before pressing <code>Keys.RETURN</code>, and before sending videos or photos (raising <code>RecipientMismatchError</code> on mismatch). It also resolves inbox threads across 3 exact tiers (skipping unread threads), isolates WS/HTTP templates per friend, and locks sidebar clicks while <strong>Show browser window</strong> is enabled.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>Why do GitHub Actions schedules sometimes start 15 minutes to 4+ hours late?</strong></summary>
+                  <p>GitHub Actions scheduled workflows share a best-effort cron queue across all repositories globally, causing severe congestion at top-of-hour marks such as <code>:00</code>. Pick off-peak minutes like <code>:15</code> or <code>:17</code> with buffer before midnight, or use Local PC Windows Task Scheduler for exact minute precision.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>Does TikTok Streak Auto work without triggering captchas?</strong></summary>
+                  <p>Yes. Never visiting public user profiles or video watch pages avoids common <code>secsdk-captcha</code> triggers. The automation navigates straight to <code>https://www.tiktok.com/messages</code> using stealth Chrome flags and exchanges share cards over the inbox's own signed socket/HTTP protocol.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>How do I prevent duplicate messages if I deployed more than one bot repository?</strong></summary>
+                  <p>In <code>v1.3.0</code>, <strong>Content &amp; Schedule &rarr; Detected Bot Repositories</strong> scans your GitHub account for repositories containing <code>.github/workflows/streak.yml</code>. If two or more schedules are active, click <strong>Pause Others</strong> to pause duplicate repositories in one click, or manage schedules directly in <strong>Run &amp; Logs</strong>.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>Why does TikTok Business Suite block sending DM streaks?</strong></summary>
+                  <p>Business TikTok accounts redirect <code>/messages</code> to Business Suite, where the personal web DM inbox and streak pet features are disabled. The app detects this redirect cleanly and raises <code>InboxUnavailableError</code>; switch to a standard personal TikTok account.</p>
+                </details>
+                <br>
+
+                <details>
+                  <summary><strong>How do Windows EXE users receive updates in v1.3.0+?</strong></summary>
+                  <p>Starting in <code>v1.3.0</code>, <strong>TikTok Streak Setup</strong> checks GitHub Releases on startup (or via <strong>Settings &rarr; About &amp; Updates &rarr; Check for Updates</strong>), verifies the downloaded executable's PE header and SHA-256 digest, swaps <code>TikTokStreakSetup.exe</code> safely with backup rollback, and reminds you on the Dashboard if your Cloud workflow also needs a re-deploy.</p>
+                </details>
+              </section>
+
+              <hr>
+
+              <!-- TROUBLESHOOTING MATRIX -->
+              <section id="troubleshooting">
+                <h2>Troubleshooting Matrix</h2>
+                <table width="100%" border="1" cellpadding="7" cellspacing="0">
+                  <thead>
+                    <tr bgcolor="#e9ecef">
+                      <th scope="col" align="left">Issue / Exception</th>
+                      <th scope="col" align="left">Root Cause</th>
+                      <th scope="col" align="left">Verified Fix</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Chrome/Edge shows <code>[v20]</code></td>
+                      <td>Windows App-Bound Encryption prevents reading SQLite cookie blobs externally</td>
+                      <td>Use <strong>Sign in via Browser (Recommended)</strong> or <strong>Paste Cookie Manually</strong></td>
+                    </tr>
+                    <tr>
+                      <td><code>SessionExpiredError</code></td>
+                      <td>Expired <code>sessionid</code> or manual cookie lacks regional Cloud routing cookies</td>
+                      <td>Click <strong>Verify</strong> on Accounts card to upgrade cookies, or re-sign in via Guided Browser Login</td>
+                    </tr>
+                    <tr>
+                      <td><code>InboxUnavailableError</code></td>
+                      <td>Account redirects <code>/messages</code> to TikTok Business Suite</td>
+                      <td>Use a personal TikTok account with standard DM inbox access</td>
+                    </tr>
+                    <tr>
+                      <td><code>RecipientMismatchError</code></td>
+                      <td>Active chat header did not match target <code>@username</code></td>
+                      <td>Safeguard aborted send automatically; avoid clicking inbox rows during visible runs and verify spelling</td>
+                    </tr>
+                    <tr>
+                      <td><code>RateLimitError</code></td>
+                      <td>TikTok rate-limit toast detected during send burst</td>
+                      <td>Stop runs for 24 hours for cooldown and set a lower <strong>Daily Friend Cap</strong></td>
+                    </tr>
+                    <tr>
+                      <td>Selector / Timeout Failure</td>
+                      <td>Slow network load or UI state mismatch on runner</td>
+                      <td>Open <strong>Run &amp; Logs &rarr; Download Debug Artifacts</strong> to inspect failure screenshots</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </section>
+
+              <hr>
+
+              <!-- DEVELOPER ARCHITECTURE & CLI REFERENCE -->
+              <section id="developer">
+                <h2>Technical Architecture, CLI &amp; Config Reference</h2>
+                <dl>
+                  <dt><strong>In-Page Protobuf &amp; <code>frontierSign</code> (<code>src/share.py</code>)</strong></dt>
+                  <dd>Hooks <code>window.WebSocket</code> and <code>fetch</code>/<code>XHR</code> <code>/v1/message/send</code> calls inside <code>/messages</code> with an inline protobuf codec, borrows emitted <code>SEND_MESSAGE</code> frames to craft video share cards (<code>aweType: 800</code>), refreshes message IDs, and re-signs <code>X-Bogus</code> via <code>window.byted_acrawler.frontierSign</code>.</dd>
+
+                  <dt><strong>3-Tier Exact Thread Resolver &amp; Header Guard (<code>src/actions.py</code>)</strong></dt>
+                  <dd>Maps visible conversation rows to handles via React Fiber/DOM/network inspection, falls back to in-inbox search, scans only already-read threads safely, and locks headful sidebar clicks via <code>HEADFUL_GUARD_JS</code>.</dd>
+
+                  <dt><strong>Zero-<code>git</code> GitHub Deployer (<code>gui/services/github_api.py</code>)</strong></dt>
+                  <dd>Bootstraps private repositories purely over GitHub REST Git Data API (<code>blobs &rarr; tree &rarr; commit &rarr; ref</code>), seals secrets with PyNaCl, discovers existing bot workflows (<code>discover_bot_repos()</code>), pauses duplicate runs, and downloads job logs safely.</dd>
+                </dl>
+
+                <h3>Run From Source &amp; CLI Flags</h3>
+                <p>
+                  <button type="button" data-copy-target="cli-snippet">Copy CLI Commands</button>
+                </p>
+                <pre><code id="cli-snippet">git clone https://github.com/alexanderfrit/tiktok-streak.git
+cd tiktok-streak
+pip install -r requirements.txt -r requirements-gui.txt
+python run_gui.py                                           # Launch Windows Fluent GUI
+python run_gui.py --smoke-test                              # Verify headless startup cleanly
+python run_gui.py --run-bot --headful --only-friend user1   # Run using saved GUI secrets
+python main.py --headful --only-friend friend_username_1    # Direct CLI 1-friend smoke test
+python fetch_friends.py                                     # Scrape mutual handles to friends.csv</code></pre>
+              </section>
+
+            </article>
+          </main>
+
+          <hr>
+
+          <footer>
+            <p align="center">
+              <small>
+                <strong>TikTok Streak Auto</strong> v1.3.0 &middot;
+                Maintained by <a href="https://github.com/alexanderfrit" rel="author">alexanderfrit</a> &middot;
+                <a href="https://github.com/alexanderfrit/tiktok-streak">GitHub Repository</a> &middot;
+                <a href="https://github.com/alexanderfrit/tiktok-streak/releases">Releases</a> &middot;
+                <a href="sitemap.xml">sitemap.xml</a> &middot;
+                <a href="robots.txt">robots.txt</a> &middot;
+                <a href="llms.txt">llms.txt</a> &middot;
+                <a href="llms-full.txt">llms-full.txt</a><br>
+                Built strictly with pure semantic HTML &amp; progressive JavaScript &mdash; zero CSS files, zero style attributes, 0% telemetry.
+              </small>
+            </p>
+          </footer>
+
+        </font>
+      </td>
+    </tr>
+  </table>
+  <script src="app.js" defer></script>
+</body>
+</html>
