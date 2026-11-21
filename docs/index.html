@@ -24,6 +24,8 @@
   <link rel="icon" type="image/png" sizes="512x512" href="assets/app_icon.png">
   <link rel="apple-touch-icon" href="assets/app_icon.png">
   <link rel="manifest" href="site.webmanifest">
+  <link rel="preload" href="fonts/google-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/google-sans-code-latin.woff2" as="font" type="font/woff2" crossorigin>
 
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="TikTok Streak Auto">
@@ -333,7 +335,7 @@
   <table role="presentation" width="840" align="center" border="0" cellpadding="14" cellspacing="0">
     <tr>
       <td>
-        <font face="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif">
+        <font face="Google Sans, system-ui, -apple-system, 'Segoe UI', Arial, sans-serif">
 
           <header>
             <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">
@@ -342,7 +344,7 @@
                   <img src="assets/app_icon.png" alt="TikTok Streak Auto Mascot" width="84" height="84">
                 </td>
                 <td valign="middle">
-                  <h1>TikTok Streak Auto (<code>TikTok Streak Setup</code>)</h1>
+                  <h1>TikTok Streak Auto (<code><font face="Google Sans Code, Consolas, 'Courier New', monospace">TikTok Streak Setup</font></code>)</h1>
                   <p>
                     <strong>Free, open-source TikTok DM streak &amp; Streak Pet automation</strong> &mdash; runs serverless on <strong>GitHub Actions</strong> ($0/month) or locally on <strong>Windows 10/11</strong>.
                   </p>
@@ -375,9 +377,7 @@
                   <a href="#security">Security Audit</a> &middot;
                   <a href="#faq">FAQ</a> &middot;
                   <a href="#troubleshooting">Troubleshooting</a> &middot;
-                  <a href="#developer">CLI &amp; Schema</a> &middot;
-                  <a href="llms.txt">llms.txt</a> &middot;
-                  <a href="llms-full.txt">llms-full.txt</a>
+                  <a href="#developer">CLI &amp; Schema</a>
                 </td>
               </tr>
             </table>
@@ -665,9 +665,9 @@
                           </td>
                         </tr>
                       </table>
-                      <pre><code id="calc-output">on:
+                      <pre><code><font id="calc-output" face="Google Sans Code, Consolas, 'Courier New', monospace">on:
   schedule:
-    - cron: '15 1,13 * * *'</code></pre>
+    - cron: '15 1,13 * * *'</font></code></pre>
                       <p><small id="calc-warning">Converted 08:15, 20:15 to off-peak UTC GitHub Actions cron.</small></p>
                       <noscript>
                         <p><small><em>JavaScript is disabled. Manual formula: subtract your UTC offset from local time (for example, 08:15 WIB &minus; 7 hours = <code>15 1 * * *</code> UTC).</em></small></p>
@@ -862,14 +862,14 @@
                 <p>
                   <button type="button" data-copy-target="cli-snippet">Copy CLI Commands</button>
                 </p>
-                <pre><code id="cli-snippet">git clone https://github.com/alexanderfrit/tiktok-streak.git
+                <pre><code><font id="cli-snippet" face="Google Sans Code, Consolas, 'Courier New', monospace">git clone https://github.com/alexanderfrit/tiktok-streak.git
 cd tiktok-streak
 pip install -r requirements.txt -r requirements-gui.txt
 python run_gui.py                                           # Launch Windows Fluent GUI
 python run_gui.py --smoke-test                              # Verify headless startup cleanly
 python run_gui.py --run-bot --headful --only-friend user1   # Run using saved GUI secrets
 python main.py --headful --only-friend friend_username_1    # Direct CLI 1-friend smoke test
-python fetch_friends.py                                     # Scrape mutual handles to friends.csv</code></pre>
+python fetch_friends.py                                     # Scrape mutual handles to friends.csv</font></code></pre>
               </section>
 
             </article>
@@ -882,13 +882,9 @@ python fetch_friends.py                                     # Scrape mutual hand
               <small>
                 <strong>TikTok Streak Auto</strong> v1.3.0 &middot;
                 Maintained by <a href="https://github.com/alexanderfrit" rel="author">alexanderfrit</a> &middot;
+                <a href="https://github.com/alexanderfrit/tiktok-streak/blob/main/LICENSE">MIT License</a> &middot;
                 <a href="https://github.com/alexanderfrit/tiktok-streak">GitHub Repository</a> &middot;
-                <a href="https://github.com/alexanderfrit/tiktok-streak/releases">Releases</a> &middot;
-                <a href="sitemap.xml">sitemap.xml</a> &middot;
-                <a href="robots.txt">robots.txt</a> &middot;
-                <a href="llms.txt">llms.txt</a> &middot;
-                <a href="llms-full.txt">llms-full.txt</a><br>
-                Built strictly with pure semantic HTML &amp; progressive JavaScript &mdash; zero CSS files, zero style attributes, 0% telemetry.
+                <a href="https://github.com/alexanderfrit/tiktok-streak/releases">Releases</a>
               </small>
             </p>
           </footer>
