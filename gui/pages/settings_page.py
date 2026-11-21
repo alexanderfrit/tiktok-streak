@@ -760,8 +760,8 @@ class SettingsPage(SmoothScrollArea):
 
         self.workspaceGroup.titleLabel.setText(tr("settings.workspace_group"))
         self.ghSignoutBtn.setText(escape_qt_mnemonic(tr("cloud.signout")))
-        self.cliExportCard.setTitle(tr("settings.cli_export_title"))
-        self.cliExportCard.setContent(tr("settings.cli_export_desc"))
+        self.cliExportCard.card.setTitle(tr("settings.cli_export_title"))
+        self.cliExportCard.card.setContent(tr("settings.cli_export_desc"))
         self.workspaceDirCard.setTitle(tr("settings.workspace_dir"))
         self.workspaceDirCard.setContent(tr("settings.workspace_dir_desc"))
         self.workspaceBrowseBtn.setText(escape_qt_mnemonic(tr("common.browse")))

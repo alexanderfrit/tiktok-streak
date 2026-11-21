@@ -257,7 +257,7 @@ TIKTOK_SESSION_ID="your_sessionid_cookie_here"
 MESSAGE="🔥 Daily Streak"
 FRIENDS_LIST="friend_username_1, friend_username_2"
 
-STREAK_VIDEO_URL="https://www.tiktok.com/@yutta/video/7684838545659317524"
+STREAK_VIDEO_URL="https://www.tiktok.com/@proofwereokay/video/7669608467589647629"
 SHARE_TIMES=2
 PHOTO_PATH="assets/default_photo.png"
 
@@ -280,7 +280,7 @@ Copy `accounts.example.json` to `accounts.json`:
     "session_id": "sessionid_cookie_1",
     "friends": ["friend_one", "friend_two"],
     "message": "🔥 Daily Streak",
-    "video_url": "https://www.tiktok.com/@yutta/video/7684838545659317524",
+    "video_url": "https://www.tiktok.com/@proofwereokay/video/7669608467589647629",
     "share_times": 2,
     "photo_path": "assets/default_photo.png"
   },

@@ -177,6 +177,9 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
     assert win.run_interface.logViewer.titleLabel.text() == "Log & Diagnostik"
     assert win.settings_interface.titleLabel.text() == "Pengaturan"
     assert win.settings_interface.themeCombo.itemText(0) == "Sistem"
+    assert win.settings_interface.securityCard.titleLabel.text() == "Keamanan & Privasi Data"
+    assert "CLI" in win.settings_interface.cliExportCard.card.titleLabel.text()
+    assert win.settings_interface.resetCard.titleLabel.text() == "Reset Semua Pengaturan & Rahasia"
 
     idx_en = win.settings_interface.langCombo.findData("en")
     assert idx_en >= 0
@@ -188,6 +191,11 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
     assert win.accounts_interface.titleLabel.text() == "TikTok Accounts"
     assert win.content_interface.titleLabel.text() == "Message, Media & Friends"
     assert win.run_interface.titleLabel.text() == "Run & Logs"
+    assert win.settings_interface.securityCard.titleLabel.text() == "Security & Data Privacy"
+    assert win.settings_interface.configFolderCard.titleLabel.text() == "Open App Config Folder"
+    assert win.settings_interface.cliExportCard.card.titleLabel.text() == "Developer / CLI Config Export (.env, accounts.json)"
+    assert win.settings_interface.resetCard.titleLabel.text() == "Reset All Settings & Secrets"
+    assert win.settings_interface.autoUpdateCard.titleLabel.text() == "Check for updates automatically on startup"
     assert win.settings_interface.titleLabel.text() == "Settings"
     assert win.settings_interface.themeCombo.itemText(0) == "System"
 
@@ -2336,12 +2344,82 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     assert paused_others == ["octocat/tiktok-streak-2"]
     assert cp.duplicateBotBanner.isHidden() is True
     assert len([r for r in cp._discovered_bot_repos if r.get("active")]) == 1
+    assert len(cp._bot_repo_row_widgets) == 2
+    assert cp._bot_repo_row_widgets[0].toggleBtn.width() == cp._bot_repo_row_widgets[1].toggleBtn.width()
+
+    # Honest video verification badge states (disabled -> neutral while unverified -> green live -> red unavailable -> warning offline)
+    assert cp.videoBadge._level == "neutral"
+    assert cp.videoBadge.text() == tr("common.disabled")
+    cp.videoSwitch.setChecked(True)
+    qapp.processEvents()
+    assert cp.videoBadge._level == "neutral"
+    assert cp.videoBadge.text() == tr("content.video_unverified")
+    cp.videoUrlEdit.setText("https://www.tiktok.com/@proofwereokay/video/7669608467589647629?is_from_webapp=1")
+    qapp.processEvents()
+    assert cp.videoBadge._level == "neutral"
+    assert cp.videoBadge.text() == tr("content.video_unverified")
+
+    cp._on_short_resolved(
+        {
+            "valid": True,
+            "ok": True,
+            "aweme_id": "7669608467589647629",
+            "normalized_url": "https://www.tiktok.com/@proofwereokay/video/7669608467589647629",
+            "verified": True,
+            "availability": "available",
+            "author": "proofwereokay",
+            "error": None,
+        }
+    )
+    qapp.processEvents()
+    assert cp.videoUrlEdit.text() == "https://www.tiktok.com/@proofwereokay/video/7669608467589647629"
+    assert cp.videoBadge.text() == tr("content.video_verified_author", author="proofwereokay")
+    assert cp.videoBadge._level == "success"
+
+    cp._on_short_resolved(
+        {
+            "valid": False,
+            "ok": False,
+            "aweme_id": "7684838545659317524",
+            "normalized_url": "https://www.tiktok.com/@yutta/video/7684838545659317524",
+            "verified": True,
+            "availability": "unavailable",
+            "author": None,
+            "error": "This TikTok video is currently unavailable on TikTok (author_invalid).",
+        }
+    )
+    qapp.processEvents()
+    assert cp.videoBadge._level == "error"
+    assert cp.videoBadge.text() == tr("content.video_unavailable")
+
+    cp._on_short_resolved(
+        {
+            "valid": True,
+            "ok": True,
+            "aweme_id": "7669608467589647629",
+            "normalized_url": "https://www.tiktok.com/@proofwereokay/video/7669608467589647629",
+            "verified": False,
+            "availability": "unverified",
+            "author": None,
+            "error": "Could not verify online: timed out",
+        }
+    )
+    qapp.processEvents()
+    assert cp.videoBadge._level == "warning"
+    assert cp.videoBadge.text() == tr("content.video_verify_offline")
+
+    # Editing URL resets verification state back to neutral unverified
+    cp.videoUrlEdit.setText("https://www.tiktok.com/@another/video/7123456789012345678")
+    qapp.processEvents()
+    assert cp.videoBadge._level == "neutral"
+    assert cp.videoBadge.text() == tr("content.video_unverified")
 
     # Ensure redesigned HomePage banner, ContentPage & RunPage cloud surfaces respect <= 840px in both EN and ID
     assert not hasattr(hp, "updateBannerCard")
     for lang in ("en", "id"):
         set_language(lang)
         qapp.processEvents()
+        assert cp._bot_repo_row_widgets[0].toggleBtn.width() == cp._bot_repo_row_widgets[1].toggleBtn.width()
         assert hp.cloudSyncBannerCard.minimumSizeHint().width() <= 840, f"cloudSyncBannerCard too wide in {lang}: {hp.cloudSyncBannerCard.minimumSizeHint().width()}"
         assert cp.view.minimumSizeHint().width() <= 840, f"ContentPage too wide in {lang}: {cp.view.minimumSizeHint().width()}"
         assert rp.cloudCard.minimumSizeHint().width() <= 840, f"RunPage cloudCard too wide in {lang}: {rp.cloudCard.minimumSizeHint().width()}"

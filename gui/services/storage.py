@@ -30,7 +30,21 @@ logger = logging.getLogger("tiktok-streak")
 
 APP_DIR_NAME = "TikTokStreak"
 KEYRING_SERVICE = "tiktok-streak-gui"
-DEFAULT_VIDEO_URL = "https://www.tiktok.com/@yutta/video/7684838545659317524"
+DEFAULT_VIDEO_URL = "https://www.tiktok.com/@proofwereokay/video/7669608467589647629"
+LEGACY_DEAD_DEFAULT_VIDEO_URLS = frozenset(
+    {
+        "https://www.tiktok.com/@yutta/video/7684838545659317524",
+    }
+)
+
+
+def _migrate_legacy_default_video_url(raw: str | None) -> str:
+    """Replace removed shipped default URL with current default while keeping custom URLs."""
+    text = str(raw if raw is not None else DEFAULT_VIDEO_URL)
+    cleaned = text.strip().split("?", 1)[0].rstrip("/").lower()
+    if cleaned in LEGACY_DEAD_DEFAULT_VIDEO_URLS:
+        return DEFAULT_VIDEO_URL
+    return text
 DEFAULT_PHOTO_PATH = "assets/default_photo.png"
 DEFAULT_SOURCE_REPO = "alexanderfrit/tiktok-streak"
 
@@ -277,7 +291,7 @@ class AppState:
             accounts=accounts,
             message=str(data.get("message") if data.get("message") is not None else "🔥 Daily Streak"),
             video_enabled=bool(data.get("video_enabled", True)),
-            video_url=str(data.get("video_url") if data.get("video_url") is not None else DEFAULT_VIDEO_URL),
+            video_url=_migrate_legacy_default_video_url(data.get("video_url")),
             share_times=share_times,
             photo_enabled=bool(data.get("photo_enabled", True)),
             photo_path=str(data.get("photo_path") or ""),
@@ -708,7 +722,7 @@ def import_local_workspace(target_dir: str | Path) -> dict[str, Any]:
         video_url = ""
         video_enabled = False
     else:
-        video_url = raw_video.strip()
+        video_url = _migrate_legacy_default_video_url(raw_video.strip())
         video_enabled = not disable_video
 
     raw_photo = env_map.get("PHOTO_PATH")

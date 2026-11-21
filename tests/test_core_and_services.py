@@ -986,6 +986,93 @@ class TestValidatorsService:
         assert res_short["aweme_id"] == "7123456789012345678"
         assert res_short["normalized_url"] == "https://www.tiktok.com/@creator/video/7123456789012345678"
 
+    def test_legacy_default_video_migration_and_live_availability_probe(self, tmp_path):
+        from src.config import DEFAULT_VIDEO_URL as CORE_DEFAULT_VIDEO
+        from gui.services.storage import ConfigStore, DEFAULT_VIDEO_URL as GUI_DEFAULT_VIDEO
+        from gui.services.validators import validate_video_url
+
+        expected_default = "https://www.tiktok.com/@proofwereokay/video/7669608467589647629"
+        assert CORE_DEFAULT_VIDEO == expected_default
+        assert GUI_DEFAULT_VIDEO == expected_default
+
+        # Old dead shipped default migrates cleanly; custom URLs remain untouched
+        cfg_dir = tmp_path / "cfg_migrate"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "config.json").write_text(
+            json.dumps({"video_url": "https://www.tiktok.com/@yutta/video/7684838545659317524?is_from_webapp=1"}),
+            encoding="utf-8",
+        )
+        assert ConfigStore(cfg_dir).load().video_url == expected_default
+
+        custom_url = "https://www.tiktok.com/@customcreator/video/7111222333444555666"
+        (cfg_dir / "config.json").write_text(json.dumps({"video_url": custom_url}), encoding="utf-8")
+        assert ConfigStore(cfg_dir).load().video_url == custom_url
+
+        def _ssr_page(video_detail: dict) -> _FakeHTTPResponse:
+            payload = {"__DEFAULT_SCOPE__": {"webapp.video-detail": video_detail}}
+            html_s = (
+                '<!doctype html><html><body>'
+                f'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">{json.dumps(payload)}</script>'
+                '</body></html>'
+            )
+            return _FakeHTTPResponse(html_s)
+
+        # 1) Available public shareable video -> canonical URL + author
+        live_detail = {
+            "statusCode": 0,
+            "statusMsg": "",
+            "itemInfo": {
+                "itemStruct": {
+                    "id": "7669608467589647629",
+                    "author": {"uniqueId": "proofwereokay"},
+                    "privateItem": False,
+                    "shareEnabled": True,
+                }
+            },
+        }
+        with patch("urllib.request.urlopen", return_value=_ssr_page(live_detail)):
+            ok_res = validate_video_url(
+                "https://www.tiktok.com/@proofwereokay/video/7669608467589647629?is_from_webapp=1&sender_device=pc",
+                verify_availability=True,
+            )
+        assert ok_res["valid"] is True and ok_res["verified"] is True
+        assert ok_res["availability"] == "available"
+        assert ok_res["author"] == "proofwereokay"
+        assert ok_res["normalized_url"] == expected_default
+
+        # 2) Unavailable deleted video (statusCode != 0, e.g. 10204)
+        dead_detail = {"statusCode": 10204, "statusMsg": "author_invalid,status_audit_not_pass"}
+        with patch("urllib.request.urlopen", return_value=_ssr_page(dead_detail)):
+            dead_res = validate_video_url(
+                "https://www.tiktok.com/@yutta/video/7684838545659317524",
+                verify_availability=True,
+            )
+        assert dead_res["valid"] is False and dead_res["verified"] is True
+        assert dead_res["availability"] == "unavailable"
+
+        # 3) Private & share-disabled items fail live verification
+        priv_detail = {
+            "statusCode": 0,
+            "itemInfo": {"itemStruct": {"id": "123", "author": {"uniqueId": "u"}, "privateItem": True}},
+        }
+        with patch("urllib.request.urlopen", return_value=_ssr_page(priv_detail)):
+            priv_res = validate_video_url("https://www.tiktok.com/@u/video/123456", verify_availability=True)
+        assert priv_res["valid"] is False and priv_res["availability"] == "private"
+
+        no_share_detail = {
+            "statusCode": 0,
+            "itemInfo": {"itemStruct": {"id": "123", "author": {"uniqueId": "u"}, "shareEnabled": False}},
+        }
+        with patch("urllib.request.urlopen", return_value=_ssr_page(no_share_detail)):
+            ns_res = validate_video_url("https://www.tiktok.com/@u/video/123456", verify_availability=True)
+        assert ns_res["valid"] is False and ns_res["availability"] == "share_disabled"
+
+        # 4) Offline / network failure returns valid syntax + unverified (never false green)
+        with patch("urllib.request.urlopen", side_effect=OSError("timed out")):
+            off_res = validate_video_url(expected_default, verify_availability=True)
+        assert off_res["valid"] is True and off_res["verified"] is False
+        assert off_res["availability"] == "unverified"
+
     def test_prepare_photo_secret_pillow(self, tmp_path):
         PIL_Image = pytest.importorskip("PIL.Image")
         from gui.services.validators import prepare_photo_secret

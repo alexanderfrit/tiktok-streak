@@ -8,7 +8,7 @@ logger = logging.getLogger("tiktok-streak")
 # Shipped defaults, used when a per-account value and the matching env var are
 # both unset. Set the env/secret to "", "none", "off", or "disabled" (or set
 # DISABLE_VIDEO / DISABLE_PHOTO=true) to disable the feature.
-DEFAULT_VIDEO_URL = "https://www.tiktok.com/@yutta/video/7684838545659317524"
+DEFAULT_VIDEO_URL = "https://www.tiktok.com/@proofwereokay/video/7669608467589647629"
 DEFAULT_PHOTO_PATH = "assets/default_photo.png"
 
 DISABLE_SENTINELS = ("none", "off", "disabled")
