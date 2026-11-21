@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://alexanderfrit.github.io/tiktok-streak/</loc>
+    <lastmod>2026-11-21</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png</image:loc>
+      <image:title>TikTok Streak Setup — Dashboard &amp; Setup Checklist</image:title>
+      <image:caption>Windows 11 Fluent desktop overview displaying setup status, connected accounts, execution mode, and readiness checklist.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/02-accounts.png</image:loc>
+      <image:title>TikTok Accounts &amp; Guided v20 Browser Login</image:title>
+      <image:caption>TikTok Accounts page with Guided Browser Login bypassing Chrome v20 encryption, @username friends list, and multi-account toggle.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/03-content-schedule.png</image:loc>
+      <image:title>Streak Message, Video Share Card &amp; Photo Configuration</image:title>
+      <image:caption>Customize streak text messages, TikTok video share URLs, and daily photo cards in TikTok Streak Setup.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/04-cloud-deploy.png</image:loc>
+      <image:title>GitHub Cloud Deployment &amp; Detected Bot Repositories</image:title>
+      <image:caption>Zero-server GitHub Actions deployment showing Detected Bot Repositories, duplicate scheduler protection, and timezone-aware cron schedules.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/05-run-logs.png</image:loc>
+      <image:title>Run History, Cloud Monitor &amp; Local Smoke Test</image:title>
+      <image:caption>Local 1-friend smoke test and GitHub Cloud Monitor with Pause/Resume schedule, Stop Run, job logs, and debug artifact viewer.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/06-settings.png</image:loc>
+      <image:title>Settings, Windows Theme Sync &amp; Telegram Alerts</image:title>
+      <image:caption>Appearance theme sync, English/Indonesian localization, timezone selection, and Telegram run notifications.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/examples/chat-send-example.jpg</image:loc>
+      <image:title>Automated TikTok DM Chat Output</image:title>
+      <image:caption>Delivered TikTok DM sequence containing 1 text streak message, 2 video share cards, and 1 photo per friend.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/examples/streak-pet-tasks.jpg</image:loc>
+      <image:title>TikTok Daily Grow Your Pet Checklist</image:title>
+      <image:caption>Daily Grow your Pet checklist showing +1 message, +4 photo/video, and +2 post-share points.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/examples/pet-growth-journey.jpg</image:loc>
+      <image:title>TikTok Streak Pet Growth Journey</image:title>
+      <image:caption>Streak Pet level rewards, outfits, and evolved forms earned from daily automated streak messages.</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://alexanderfrit.github.io/tiktok-streak/assets/app_icon.png</image:loc>
+      <image:title>TikTok Streak Auto Application Icon</image:title>
+      <image:caption>Official transparent mascot icon for TikTok Streak Setup.</image:caption>
+    </image:image>
+  </url>
+</urlset>

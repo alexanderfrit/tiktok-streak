@@ -1,0 +1,17 @@
+{
+  "name": "TikTok Streak Auto & Setup",
+  "short_name": "TikTok Streak",
+  "description": "Automated TikTok DM streak & Streak Pet growth keeper running free on GitHub Actions or locally on Windows.",
+  "start_url": "/tiktok-streak/",
+  "scope": "/tiktok-streak/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#111111",
+  "icons": [
+    {
+      "src": "assets/app_icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
