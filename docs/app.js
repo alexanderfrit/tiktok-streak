@@ -116,7 +116,7 @@
         }
       })
       .catch(function () {
-        /* Fail silently; static v1.3.0 HTML links remain intact. */
+        /* Fail silently; static v1.4.0 HTML links remain intact. */
       });
   }
 

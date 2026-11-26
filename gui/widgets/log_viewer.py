@@ -6,7 +6,7 @@ import sys
 from typing import Callable, Iterable
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CaptionLabel,
     CardWidget,
@@ -16,12 +16,15 @@ from qfluentwidgets import (
     PlainTextEdit,
     PushButton,
     StrongBodyLabel,
+    TransparentPushButton,
 )
 
 from gui.services.i18n import tr
 from gui.services.storage import redact_secrets
 from gui.services.theme import escape_qt_mnemonic, tabular_mono_font
 from gui.version import APP_VERSION
+from gui.widgets.split_row import ResponsiveSplitRow
+from gui.widgets.status_pill import StatusPill
 
 
 class LogViewer(CardWidget):
@@ -36,39 +39,50 @@ class LogViewer(CardWidget):
         super().__init__(parent)
         self._secrets_provider = secrets_provider
         self._summary_provider = summary_provider
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
+        root.setContentsMargins(16, 12, 16, 14)
         root.setSpacing(10)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
-        self.titleLabel = StrongBodyLabel(tr("diag.title"), self)
-        self.countLabel = CaptionLabel("", self)
+        left_grp = QWidget(self)
+        left_lay = QHBoxLayout(left_grp)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(8)
+        self.titleLabel = StrongBodyLabel(tr("run.live_logs_title"), left_grp)
+        self.redactedBadge = StatusPill(tr("run.redacted_badge"), "neutral", left_grp)
+        self.countLabel = CaptionLabel("", left_grp)
+        left_lay.addWidget(self.titleLabel, 0, Qt.AlignVCenter)
+        left_lay.addWidget(self.redactedBadge, 0, Qt.AlignVCenter)
+        left_lay.addWidget(self.countLabel, 0, Qt.AlignVCenter)
 
-        self.clearBtn = PushButton(
-            FIF.DELETE, escape_qt_mnemonic(tr("common.clear")), self
+        right_grp = QWidget(self)
+        right_lay = QHBoxLayout(right_grp)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(6)
+        self.clearBtn = TransparentPushButton(
+            FIF.DELETE, escape_qt_mnemonic(tr("common.clear")), right_grp
         )
         self.copyBtn = PushButton(
-            FIF.COPY, escape_qt_mnemonic(tr("diag.copy_report")), self
+            FIF.COPY, escape_qt_mnemonic(tr("diag.copy_report")), right_grp
         )
+        right_lay.addWidget(self.clearBtn, 0, Qt.AlignVCenter)
+        right_lay.addWidget(self.copyBtn, 0, Qt.AlignVCenter)
 
-        header.addWidget(self.titleLabel, 0, Qt.AlignVCenter)
-        header.addWidget(self.countLabel, 0, Qt.AlignVCenter)
-        header.addStretch(1)
-        header.addWidget(self.clearBtn, 0, Qt.AlignVCenter)
-        header.addWidget(self.copyBtn, 0, Qt.AlignVCenter)
+        self.headerRow = ResponsiveSplitRow(left_grp, right_grp, h_spacing=8, v_spacing=6, parent=self)
 
         self.editor = PlainTextEdit(self)
         self.editor.setReadOnly(True)
         self.editor.setMaximumBlockCount(5000)
-        self.editor.setMinimumHeight(200)
+        self.editor.setMinimumWidth(0)
+        self.editor.setMinimumHeight(210)
+        self.editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.editor.setPlaceholderText(tr("diag.empty"))
         self.editor.setFont(tabular_mono_font(10))
 
-        root.addLayout(header)
-        root.addWidget(self.editor)
+        root.addWidget(self.headerRow)
+        root.addWidget(self.editor, 1)
 
         self.clearBtn.clicked.connect(self.clear_logs)
         self.copyBtn.clicked.connect(self.copy_diagnostic_report)
@@ -142,7 +156,8 @@ class LogViewer(CardWidget):
         )
 
     def retranslate(self) -> None:
-        self.titleLabel.setText(tr("diag.title"))
+        self.titleLabel.setText(tr("run.live_logs_title"))
+        self.redactedBadge.setState("neutral", tr("run.redacted_badge"))
         self.clearBtn.setText(escape_qt_mnemonic(tr("common.clear")))
         self.copyBtn.setText(escape_qt_mnemonic(tr("diag.copy_report")))
         self.editor.setPlaceholderText(tr("diag.empty"))

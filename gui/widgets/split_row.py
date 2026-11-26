@@ -163,13 +163,8 @@ class ResponsiveSplitLayout(QLayout):
             fits_single_row = avail_w >= left_hint.width() + self._h_spacing + right_w
 
         if fits_single_row:
-            if self._left_min_width is not None:
-                left_w = max(avail_w - self._h_spacing - right_w, 1)
-                left_h = _item_height_for_width(left_item, left_w)
-            else:
-                left_hint = left_item.sizeHint()
-                left_w = left_hint.width()
-                left_h = left_hint.height()
+            left_w = max(avail_w - self._h_spacing - right_w, 1)
+            left_h = _item_height_for_width(left_item, left_w)
             row_h = max(left_h, right_h)
             if apply:
                 left_item.setGeometry(QRect(x, y + (row_h - left_h) // 2, left_w, left_h))
@@ -178,8 +173,7 @@ class ResponsiveSplitLayout(QLayout):
                 )
             return row_h + vm
 
-        left_hint = left_item.sizeHint()
-        left_w = avail_w if self._left_min_width is not None else min(avail_w, left_hint.width())
+        left_w = avail_w
         left_h = _item_height_for_width(left_item, left_w)
         if apply:
             left_item.setGeometry(QRect(x, y, left_w, left_h))

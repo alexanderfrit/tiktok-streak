@@ -1,28 +1,28 @@
 # TikTok Streak Auto (`TikTok Streak Setup`)
 
-> Open-source desktop app (`v1.3.3`, MIT License) and serverless GitHub Actions runner that keeps TikTok DM streaks alive and levels up TikTok Streak Pets daily (+7 growth points/day: 1 text message, 2 video share cards, and 1 photo per friend) without renting a server or VPS.
+> Open-source desktop app (`v1.4.0`, MIT License) and serverless GitHub Actions runner that keeps TikTok DM streaks alive and levels up TikTok Streak Pets daily (+7 growth points/day: 1 text message, 2 video share cards, and 1 photo per friend) without renting a server or VPS.
 
 - Canonical Homepage: https://alexanderfrit.github.io/tiktok-streak/
 - Source Repository: https://github.com/alexanderfrit/tiktok-streak
 - Latest Windows Installer (`TikTokStreakSetup.exe`): https://github.com/alexanderfrit/tiktok-streak/releases/latest
 - Complete RAG Documentation: https://alexanderfrit.github.io/tiktok-streak/llms-full.txt
 - Author / Maintainer: alexanderfrit (https://github.com/alexanderfrit)
-- Last Updated: 2026-11-21 (`v1.3.3`)
+- Last Updated: 2026-11-26 (`v1.4.0`)
 
 ## Core Technical Facts
 
-- **Execution Modes:** Serverless GitHub Actions (`cron` schedule), Local PC (Windows Task Scheduler via `run_gui.py --run-bot`), or Hybrid (both).
-- **Daily Streak Pet Growth Math:** Sends 1 text message (`+1`), 1 photo/video (`+4`), and 2 shared posts (`+2`) totaling `+7` daily Grow your Pet points per target friend.
-- **Chrome/Edge `v20` Bypass:** Launches native Chrome or Edge without `--enable-automation` and extracts cookies over a one-shot stdlib RFC 6455 WebSocket (`Storage.getCookies`), bypassing Windows App-Bound Encryption (`v20`).
-- **Recipient Safety (`v1.3.0`):** Enforces strict right-pane `@username` header verification (`RecipientMismatchError`) before typing, before `Keys.RETURN`, and before media sends; resolves threads using a 3-tier exact matcher skipping unread threads; locks sidebar clicks during headful runs (`HEADFUL_GUARD_JS`).
+- **Execution Modes:** Serverless GitHub Actions (`cron` schedule), Local PC (Windows Task Scheduler via `run_gui.py --run-bot`), or Hybrid (both) in the dedicated **Automation** route.
+- **Daily Streak Pet Growth Math:** Sends 1 text message (`+1`), 1 photo/video (`+4`), and 2 shared posts (`+2`) totaling `+7` daily Grow your Pet points per target friend, shown live in the 1:1 TikTok DM Preview.
+- **Chrome/Edge `v20` Bypass:** Launches native Chrome or Edge without `--enable-automation` and extracts cookies over a one-shot stdlib RFC 6455 WebSocket (`Storage.getCookies`), bypassing Windows App-Bound Encryption (`v20`); includes a self-contained **Import from Browser** picker dialog with 1-click switch to Guided Browser Login.
+- **Recipient Safety (`v1.3.0+`):** Enforces strict right-pane `@username` header verification (`RecipientMismatchError`) before typing, before `Keys.RETURN`, and before media sends; resolves threads using a 3-tier exact matcher skipping unread threads; locks sidebar clicks during headful runs (`HEADFUL_GUARD_JS`).
 - **Privacy & Security:** 100% local-first (`0%` telemetry, zero third-party relay servers). Secrets are encrypted via Windows Credential Manager / DPAPI locally and `PyNaCl` `SealedBox` on client before uploading to private GitHub repositories.
 - **Network Allowlist:** Only `*.tiktok.com`, `github.com` / `api.github.com`, and optionally `api.telegram.org`.
-- **In-App Updater & Cloud Controls (`v1.3.0`):** Auto-detects duplicate bot repositories (`discover_bot_repos`), provides 1-click **Pause Others**, **Pause / Resume Schedule**, **Stop Run**, and SHA-256 verified Windows `.exe` self-updates.
+- **6-Route Windows 11 Fluent UI & Compact `.exe` (`v1.4.0`):** `Home`, `Accounts`, `Message & Media` (1:1 live DM preview), `Automation` (3-check inline preflight + `Detected Bot Repositories`), `Run & Logs`, and `Settings` (native `Pivot` tabs + SHA-256 verified Windows `.exe` self-updates, ~52 MB pruned binary).
 
 ## Key Documentation Sections
 
 - [Quick Answer & Comparison Matrix](https://alexanderfrit.github.io/tiktok-streak/#comparison)
-- [Windows `.exe` Download (`v1.3.3`)](https://alexanderfrit.github.io/tiktok-streak/#download)
+- [Windows `.exe` Download (`v1.4.0`)](https://alexanderfrit.github.io/tiktok-streak/#download)
 - [Streak Pet Growth Sequence](https://alexanderfrit.github.io/tiktok-streak/#pet-growth)
 - [4-Step Setup Guide & Timezone Cron Calculator](https://alexanderfrit.github.io/tiktok-streak/#setup-guide)
 - [Security, Encryption & Network Audit](https://alexanderfrit.github.io/tiktok-streak/#security)

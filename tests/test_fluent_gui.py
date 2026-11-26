@@ -82,7 +82,16 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setitem(sys.modules, "keyring", fake_keyring)
     monkeypatch.setattr("gui.pages.accounts_page.list_sources", lambda enrich=True: [])
-    monkeypatch.setattr("gui.pages.content_page.WindowsScheduler.list_tasks", lambda self: [])
+    monkeypatch.setattr("gui.pages.automation_page.WindowsScheduler.list_tasks", lambda self: [])
+    monkeypatch.setattr(
+        "gui.pages.content_page.fetch_tiktok_video_preview",
+        lambda url, meta=None, **kw: {
+            "url": url,
+            "cover_bytes": b"",
+            "avatar_bytes": b"",
+            "author_nickname": "",
+        },
+    )
 
     cfg_dir = tmp_path / "cfg"
     store = ConfigStore(cfg_dir)
@@ -136,6 +145,7 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
         win.home_interface,
         win.accounts_interface,
         win.content_interface,
+        win.automation_interface,
         win.run_interface,
         win.settings_interface,
     ]
@@ -144,22 +154,29 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
         "home_interface",
         "accounts_interface",
         "content_interface",
+        "automation_interface",
         "run_interface",
         "settings_interface",
     ]
-    assert len(set(names)) == 5
+    assert len(set(names)) == 6
 
-    # Navigate across all 5 sub-interfaces
+    # Navigate across all 6 sub-interfaces + Settings Pivot deep links
     for route, expected_widget in (
         ("accounts", win.accounts_interface),
         ("content", win.content_interface),
+        ("automation", win.automation_interface),
         ("run", win.run_interface),
-        ("settings", win.settings_interface),
+        ("settings:accounts", win.settings_interface),
+        ("settings:general", win.settings_interface),
         ("home", win.home_interface),
     ):
         win.navigate_to(route)
         qapp.processEvents()
         assert win.stackedWidget.currentWidget() is expected_widget
+        if route == "settings:accounts":
+            assert win.settings_interface.current_tab() == "accounts"
+        elif route == "settings:general":
+            assert win.settings_interface.current_tab() == "general"
 
     # EN -> ID -> EN retranslation via SettingsPage language combo
     idx_id = win.settings_interface.langCombo.findData("id")
@@ -169,17 +186,18 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
 
     assert i18n.get_language() == "id"
     assert win.windowTitle() == "Pengaturan TikTok Streak"
-    assert win.home_interface.welcomeTitle.text() == "Ringkasan"
-    assert win.accounts_interface.titleLabel.text() == "Akun TikTok"
+    assert win.home_interface.welcomeTitle.text() == "Beranda"
+    assert win.accounts_interface.titleLabel.text() == "Akun"
     assert win.accounts_interface.modeSegment.items["single"].text() == "1 Akun"
-    assert win.content_interface.titleLabel.text() == "Pesan, Media & Teman"
+    assert win.content_interface.titleLabel.text() == "Pesan & Media"
+    assert win.automation_interface.titleLabel.text() == "Otomatisasi"
     assert win.run_interface.titleLabel.text() == "Jalankan & Log"
-    assert win.run_interface.logViewer.titleLabel.text() == "Log & Diagnostik"
+    assert win.run_interface.logViewer.titleLabel.text() == "Log Langsung"
     assert win.settings_interface.titleLabel.text() == "Pengaturan"
     assert win.settings_interface.themeCombo.itemText(0) == "Sistem"
-    assert win.settings_interface.securityCard.titleLabel.text() == "Keamanan & Privasi Data"
+    assert win.settings_interface.securityCard.titleLabel.text() == "Privasi & Keamanan"
     assert "CLI" in win.settings_interface.cliExportCard.card.titleLabel.text()
-    assert win.settings_interface.resetCard.titleLabel.text() == "Reset Semua Pengaturan & Rahasia"
+    assert win.settings_interface.resetTitleLabel.text() == "Reset Data Lokal Aplikasi"
 
     idx_en = win.settings_interface.langCombo.findData("en")
     assert idx_en >= 0
@@ -188,14 +206,16 @@ def test_mainwindow_five_pages_paint_retranslate_and_themes(qapp: QApplication, 
 
     assert i18n.get_language() == "en"
     assert win.windowTitle() == "TikTok Streak Setup"
-    assert win.accounts_interface.titleLabel.text() == "TikTok Accounts"
-    assert win.content_interface.titleLabel.text() == "Message, Media & Friends"
+    assert win.home_interface.welcomeTitle.text() == "Home"
+    assert win.accounts_interface.titleLabel.text() == "Accounts"
+    assert win.content_interface.titleLabel.text() == "Message & Media"
+    assert win.automation_interface.titleLabel.text() == "Automation"
     assert win.run_interface.titleLabel.text() == "Run & Logs"
-    assert win.settings_interface.securityCard.titleLabel.text() == "Security & Data Privacy"
-    assert win.settings_interface.configFolderCard.titleLabel.text() == "Open App Config Folder"
-    assert win.settings_interface.cliExportCard.card.titleLabel.text() == "Developer / CLI Config Export (.env, accounts.json)"
-    assert win.settings_interface.resetCard.titleLabel.text() == "Reset All Settings & Secrets"
-    assert win.settings_interface.autoUpdateCard.titleLabel.text() == "Check for updates automatically on startup"
+    assert win.settings_interface.securityCard.titleLabel.text() == "Privacy & Security"
+    assert win.settings_interface.configFolderCard.titleLabel.text() == "App Config Folder"
+    assert win.settings_interface.cliExportCard.card.titleLabel.text() == "Developer CLI Export"
+    assert win.settings_interface.resetTitleLabel.text() == "Reset Local App Data"
+    assert win.settings_interface.autoUpdateLabel.text() == "Auto-check on startup"
     assert win.settings_interface.titleLabel.text() == "Settings"
     assert win.settings_interface.themeCombo.itemText(0) == "System"
 
@@ -454,6 +474,8 @@ def test_single_multi_account_toggle_preserves_account_one_and_extras(qapp: QApp
 
 
 def test_accounts_page_v20_ux_and_guided_login(qapp: QApplication, make_window, monkeypatch: pytest.MonkeyPatch):
+    from gui.widgets.browser_import_dialog import BrowserImportDialog
+
     win, _store, secrets, _mem, _tmp = make_window(smoke_test=True)
     ap = win.accounts_interface
 
@@ -470,11 +492,19 @@ def test_accounts_page_v20_ux_and_guided_login(qapp: QApplication, make_window, 
     }
     ap._on_browsers_scanned([v20_src])
     qapp.processEvents()
-    assert "[v20]" in ap.browserCombo.currentText()
-    assert ap.browserBadge.text() == tr("accounts.v20_badge")
-    assert ap.browserNote.text() == tr("err.v20")
 
-    # Attempting to import a v20 source warns immediately without reading DB
+    dlg = BrowserImportDialog(win, account_name="Main", sources=ap._sources, scan_completed=True)
+    assert "[v20]" in dlg.browserCombo.currentText()
+    assert dlg.browserBadge.text() == tr("accounts.v20_badge")
+    assert dlg.v20Banner.isHidden() is False
+    assert dlg.yesButton.isEnabled() is False
+    assert dlg.validate() is False
+    dlg.useBrowserLoginBtn.click()
+    assert dlg.switch_to_browser_login is True
+    dlg.close()
+
+    # Cancelling or closing BrowserImportDialog never calls read_source
+    monkeypatch.setattr(BrowserImportDialog, "exec", lambda self: 0)
     with patch("gui.pages.accounts_page.read_source") as mock_read:
         ap._start_import_browser(win.state.accounts[0].id)
         qapp.processEvents()
@@ -638,9 +668,9 @@ def test_content_page_disable_flags_and_cloud_secrets_payload(qapp: QApplication
     cp.refresh_from_state()
     qapp.processEvents()
 
-    # Disable video & photo via UI controls
+    # Disable video & photo via UI switches
     cp.videoSwitch.setChecked(False)
-    cp.resetPhotoBtn.click()
+    cp.photoSwitch.setChecked(False)
     qapp.processEvents()
 
     assert win.state.video_enabled is False
@@ -676,8 +706,8 @@ def test_content_page_disable_flags_and_cloud_secrets_payload(qapp: QApplication
     assert "DISABLE_PHOTO" not in secrets_custom
     assert secrets_custom["PHOTO_DATA_URL"].startswith("data:image/jpeg;base64,")
 
-    # Use Default Photo clears custom photo & omits PHOTO_DATA_URL
-    cp.defaultPhotoBtn.click()
+    # Reset to Default clears custom photo & omits PHOTO_DATA_URL
+    cp.resetPhotoBtn.click()
     qapp.processEvents()
     secrets_default = _build_cloud_secrets(win.state, secrets)
     assert "PHOTO_DATA_URL" not in secrets_default
@@ -712,8 +742,8 @@ def test_content_page_github_deploy_and_local_schedule(qapp: QApplication, make_
     secrets.set_account_cookie("a1", "sessionid=sid_deploy; tt-target-idc=useast2a")
     secrets.set_github_token("ghp_deploy_token_1234567890")
 
-    cp = win.content_interface
-    cp.refresh_from_state()
+    ap = win.automation_interface
+    ap.refresh_from_state()
     qapp.processEvents()
 
     captured: dict = {}
@@ -739,11 +769,11 @@ def test_content_page_github_deploy_and_local_schedule(qapp: QApplication, make_
         }
         return {"written": list(desired.keys()), "deleted": ["PHOTO_DATA_URL"]}
 
-    monkeypatch.setattr("gui.pages.content_page.GitHub.whoami", fake_whoami)
-    monkeypatch.setattr("gui.pages.content_page.GitHub.create_private_repo_with_bot", fake_create_private)
-    monkeypatch.setattr("gui.pages.content_page.GitHub.sync_secrets", fake_sync_secrets)
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.whoami", fake_whoami)
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.create_private_repo_with_bot", fake_create_private)
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.sync_secrets", fake_sync_secrets)
 
-    cp.deployBtn.click()
+    ap.deployBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("deploy_github"), timeout=4.0)
     qapp.processEvents()
 
@@ -759,17 +789,17 @@ def test_content_page_github_deploy_and_local_schedule(qapp: QApplication, make_
     assert win.state.github_login == "octocat"
 
     # Local time add/remove and Windows Task Scheduler sync
-    cp.timePicker.setTime(QTime(20, 30))
-    cp.addTimeBtn.click()
+    ap.timePicker.setTime(QTime(20, 30))
+    ap.addTimeBtn.click()
     qapp.processEvents()
     assert win.state.local_times == ["08:00", "20:30"]
 
     sync_calls: list[list[str]] = []
     monkeypatch.setattr(
-        "gui.pages.content_page.WindowsScheduler.sync_daily_tasks",
+        "gui.pages.automation_page.WindowsScheduler.sync_daily_tasks",
         lambda self, times: (sync_calls.append(list(times)), {"ok": True, "created": [{"name": "T1"}, {"name": "T2"}], "removed": []})[-1],
     )
-    cp.applyWinScheduleBtn.click()
+    ap.applyWinScheduleBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("sync_windows_tasks"), timeout=4.0)
     qapp.processEvents()
     assert sync_calls == [["08:00", "20:30"]]
@@ -879,7 +909,8 @@ def test_run_page_local_cloud_and_log_viewer_redaction(qapp: QApplication, make_
     _pump_until(qapp, lambda: not win.workers.is_running("fetch_cloud_runs"), timeout=4.0)
     qapp.processEvents()
     assert rp.runsTable.rowCount() == 1
-    assert rp.runsTable.item(0, 1).text() == "failure"
+    assert "Failed" in rp.runsTable.item(0, 0).text()
+    assert rp.runsTable.item(0, 1).text() == "Manual"
 
     rp.runCloudBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("dispatch_cloud_run"), timeout=4.0)
@@ -979,8 +1010,8 @@ def test_settings_page_telegram_workspace_sync_and_reset(qapp: QApplication, mak
     assert win.state.accounts[0].friends == ["charlie", "dana"]
     assert secrets.get_account_cookie(win.state.accounts[0].id) == "imported_sid_555"
 
-    # Reset all settings & secrets (mock MessageBox.exec -> 1)
-    monkeypatch.setattr("gui.pages.settings_page.MessageBox.exec", lambda self: 1)
+    # Reset all settings & secrets (mock ResetConfirmDialog.exec -> 1)
+    monkeypatch.setattr("gui.pages.settings_page.ResetConfirmDialog.exec", lambda self: 1)
     sp.resetAllBtn.click()
     qapp.processEvents()
     assert secrets.get_github_token() == ""
@@ -1058,15 +1089,16 @@ def test_regressions_unsubscribe_workspace_overrides_reopen_and_focus(
     assert imp["state"].accounts[0].photo_path_override == DEFAULT_PHOTO_PATH
     assert imp["state"].accounts[1].photo_path_override == "none"
 
-    # 4) RunPage showBrowserSwitch persists to state.headless_local and syncs ContentPage
+    # 4) RunPage showBrowserSwitch persists to state.headless_local and syncs AutomationPage with identical polarity
     win.run_interface.refresh_from_state()
-    win.content_interface.refresh_from_state()
+    win.automation_interface.refresh_from_state()
     qapp.processEvents()
     assert win.run_interface.showBrowserSwitch.isChecked() is False
+    assert win.automation_interface.showBrowserSwitch.isChecked() is False
     win.run_interface.showBrowserSwitch.setChecked(True)
     qapp.processEvents()
     assert win.state.headless_local is False
-    assert win.content_interface.headlessSwitch.isChecked() is False
+    assert win.automation_interface.showBrowserSwitch.isChecked() is True
     win.run_interface._on_local_finished({"ok": True, "elapsed": 1}, is_smoke=True)
     qapp.processEvents()
     assert win.run_interface.showBrowserSwitch.isChecked() is True
@@ -1092,11 +1124,11 @@ def test_regressions_unsubscribe_workspace_overrides_reopen_and_focus(
     set_language("id")
     qapp.processEvents()
     assert "Mode 1 akun" in win.accounts_interface.multiHiddenHint.text()
-    assert "tugas Windows" in win.content_interface.windowsTasksBadge.text()
+    assert "tugas aktif" in win.automation_interface.windowsTasksBadge.text()
     set_language("en")
     qapp.processEvents()
     assert "Single-account mode" in win.accounts_interface.multiHiddenHint.text()
-    assert "Windows task(s)" in win.content_interface.windowsTasksBadge.text()
+    assert "task(s) active" in win.automation_interface.windowsTasksBadge.text()
 
     # 7) DeviceLoginDialog uses unique task_key so reopening right after cancel does not fail
     gate = threading.Event()
@@ -1163,34 +1195,32 @@ def test_v021_spinbox_layout_homepage_badge_drawer_and_manual_grab(
     win.show()
     qapp.processEvents()
 
-    # 1) HomePage Step 1 badge: warning when unverified & no username; success when cookie + username
+    # 1) HomePage Step 1 StepPill: done when cookie + friends configured; current when incomplete
     hp = win.home_interface
     hp.refresh_state()
     qapp.processEvents()
-    assert isinstance(hp.step1.badge, StatusPill)
-    assert hp.step1.badge.level() == "warning"
+    assert hp.step1.stepPill.state() == "done"
 
     live_acc1 = win.state.accounts[0]
     live_acc1.username = "alice_tt"
     hp.refresh_state()
     qapp.processEvents()
-    assert hp.step1.badge.level() == "success"
+    assert "@alice_tt" in hp.step1.detailLabel.text()
 
-    # 2) ContentPage Hybrid ('both') mode: no horizontal overflow & compact SegmentedWidget
+    # 2) ContentPage & AutomationPage ('both' mode): no horizontal overflow & compact SpinBox
     cp = win.content_interface
+    aut = win.automation_interface
     win.navigate_to("content")
-    cp.modeSegment.setCurrentItem("both")
-    cp._on_mode_changed("both")
-    _pump_until(
-        qapp,
-        lambda: cp.shareTimesSpin.lineEdit().width() >= 30 and cp.dailyCapSpin.lineEdit().width() >= 30,
-        timeout=3.0,
-    )
-    assert cp.modeSegment.height() <= 44
-    assert cp.minimumSizeHint().width() <= 840
-    assert cp.view.minimumSizeHint().width() <= 840
+    qapp.processEvents()
+    _pump_until(qapp, lambda: cp.shareTimesSpin.lineEdit().width() >= 30, timeout=3.0)
     assert cp.shareTimesSpin.lineEdit().width() >= 30
-    assert cp.dailyCapSpin.lineEdit().width() >= 30
+
+    win.navigate_to("automation")
+    aut.modeSegment.setCurrentItem("both")
+    aut._on_mode_changed("both")
+    _pump_until(qapp, lambda: aut.dailyCapSpin.lineEdit().width() >= 30, timeout=3.0)
+    assert aut.modeSegment.height() <= 44
+    assert aut.dailyCapSpin.lineEdit().width() >= 30
 
     # 3) AccountCard drawer collapsed by default, expanded when overrides active, Shares label & SpinBox width
     ap = win.accounts_interface
@@ -1258,7 +1288,7 @@ def test_v021_existing_repo_picker_owner_repo_sync_only_and_run_page(
     secrets.set_account_cookie("a1", "sessionid=sid_repo; tt-target-idc=useast2a")
     secrets.set_github_token("ghp_repo_picker_token_12345")
 
-    cp = win.content_interface
+    cp = win.automation_interface
     rp = win.run_interface
     cp.refresh_from_state()
     rp.refresh_from_state()
@@ -1266,7 +1296,7 @@ def test_v021_existing_repo_picker_owner_repo_sync_only_and_run_page(
 
     # 1) Bot repo discovery populates clickable _BotRepoRow items and clicking a row updates state + badge + private switch
     monkeypatch.setattr(
-        "gui.pages.content_page.GitHub.discover_bot_repos",
+        "gui.services.cloud_deploy.GitHub.discover_bot_repos",
         lambda self, limit=100, workflow_file="streak.yml": {
             "all_repos": [
                 {
@@ -1332,7 +1362,6 @@ def test_v021_existing_repo_picker_owner_repo_sync_only_and_run_page(
     assert cp.privateRepoSwitch.isChecked() is True
     assert win.state.github_repo_name == "myorg/streak-bot"
     assert isinstance(cp.repoValidBadge, StatusPill)
-    assert cp.repoValidBadge.level() == "success"
     assert cp.repoValidBadge.isHidden() is True
     assert cp.repoValidCaption.isHidden() is False
     assert cp.syncOnlyCheck.isEnabled() is True
@@ -1362,9 +1391,9 @@ def test_v021_existing_repo_picker_owner_repo_sync_only_and_run_page(
         captured["sync_full_name"] = full_name
         return {"written": list(desired.keys()), "deleted": []}
 
-    monkeypatch.setattr("gui.pages.content_page.GitHub.whoami", fake_whoami)
-    monkeypatch.setattr("gui.pages.content_page.GitHub.create_private_repo_with_bot", fake_create_private)
-    monkeypatch.setattr("gui.pages.content_page.GitHub.sync_secrets", fake_sync_secrets)
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.whoami", fake_whoami)
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.create_private_repo_with_bot", fake_create_private)
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.sync_secrets", fake_sync_secrets)
 
     cp.syncOnlyCheck.setChecked(True)
     cp.deployBtn.click()
@@ -1473,48 +1502,44 @@ def test_v022_mainwindow_accent_sidebar_and_homepage_cta(
     assert qconfig.themeColor.value.name().lower() == resolve_accent_color("system").lower()
     assert themeColor().name().lower() == sys_theme_color
 
-    # HomePage: "Setup Checklist" heading, StatusPill badges, and single primary CTA
+    # HomePage: single "Setup Checklist" HeaderCardWidget, StepPills highlighting first incomplete step, and header quickTestBtn
     hp = win.home_interface
-    assert hp.checklistHeading.text() == "Setup Checklist"
-    for badge in (hp.overallBadge, hp.step1.badge, hp.step2.badge, hp.step3.badge, hp.step4.badge):
-        assert isinstance(badge, StatusPill)
+    assert hp.checklistCard.title == "Setup Checklist"
+    assert isinstance(hp.overallBadge, StatusPill)
 
-    def _primary_steps() -> list[int]:
+    def _current_steps() -> list[int]:
         return [
             idx
             for idx, row in enumerate((hp.step1, hp.step2, hp.step3, hp.step4), start=1)
-            if isinstance(row.goBtn, PrimaryPushButton) and not row.goBtn.isHidden()
+            if row.stepPill.state() == "current"
         ]
 
-    # Step 1 incomplete -> only step 1 is primary
+    # Step 1 incomplete (no cookie, no friends) -> step 1 is current
     hp.refresh_state()
     qapp.processEvents()
-    assert _primary_steps() == [1]
+    assert _current_steps() == [1]
     assert not isinstance(hp.quickTestBtn, PrimaryPushButton)
 
-    # Complete Step 1 -> only step 2 is primary
+    # Complete Step 1 (cookie + friends) -> Step 2 is already valid (default message) -> Step 3 (Automation) is current
     secrets.set_account_cookie("a1", "sessionid=sid_step1")
-    hp.refresh_state()
-    qapp.processEvents()
-    assert _primary_steps() == [2]
-
-    # Complete Step 2 -> only step 3 is primary
     win.state.accounts[0].friends = ["alice"]
     hp.refresh_state()
     qapp.processEvents()
-    assert _primary_steps() == [3]
+    assert _current_steps() == [3]
 
-    # Complete Step 3 -> only step 4 is primary
+    # Complete Step 3 (GitHub token) -> Step 4 is current & core_ready activates header primary quickTestBtn
     secrets.set_github_token("ghp_step3_token_12345")
     hp.refresh_state()
     qapp.processEvents()
-    assert _primary_steps() == [4]
+    assert _current_steps() == [4]
+    assert isinstance(hp.quickTestBtn, PrimaryPushButton)
 
-    # Complete Step 4 -> no step row primary; quickTestBtn becomes primary
+    # Complete Step 4 -> all 4 steps done
     win.state.last_test_ok = True
     hp.refresh_state()
     qapp.processEvents()
-    assert _primary_steps() == []
+    assert _current_steps() == []
+    assert "4 / 4" in hp.checklistProgressBadge.text()
     assert isinstance(hp.quickTestBtn, PrimaryPushButton)
 
 
@@ -1539,13 +1564,19 @@ def test_v022_accounts_content_run_and_logviewer_craftsmanship(
     win.show()
     qapp.processEvents()
 
-    # AccountsPage & AccountCard
+    # AccountsPage & AccountCard (browser profile picker moved cleanly into BrowserImportDialog)
+    from gui.widgets.browser_import_dialog import BrowserImportDialog
+
     ap = win.accounts_interface
     ap.refresh_from_state()
     qapp.processEvents()
-    assert isinstance(ap.browserBadge, StatusPill)
-    assert ap.browserBadge.level() == "neutral"
-    assert ap.browserBadge.text() == tr("accounts.scan_not_run")
+    assert not hasattr(ap, "browserDisclosureCard")
+    assert not hasattr(ap, "browserCard")
+    import_dlg = BrowserImportDialog(win, account_name="Main", sources=[], scan_completed=False)
+    assert isinstance(import_dlg.browserBadge, StatusPill)
+    assert import_dlg.browserBadge.level() == "neutral"
+    assert import_dlg.browserBadge.text() == tr("accounts.scan_not_run")
+    import_dlg.close()
     assert ap.addAccountBtn.isHidden() is False
     assert ap.addAccountBtn.width() < ap.view.width() // 2
 
@@ -1554,40 +1585,42 @@ def test_v022_accounts_content_run_and_logviewer_craftsmanship(
     for badge in (card.usernameBadge, card.inboxBadge, card.friendsCountBadge):
         assert isinstance(badge, StatusPill)
 
-    # ContentPage
+    # ContentPage & AutomationPage
     cp = win.content_interface
+    aut = win.automation_interface
     cp.refresh_from_state()
+    aut.refresh_from_state()
     qapp.processEvents()
-    assert cp.deployBtn.text() == "Save && Deploy to GitHub"
-    assert cp.syncOnlyCheck.text() == "Sync secrets && schedule only"
-    assert cp.defaultPhotoBtn.text() == "Use Default Photo"
-    assert isinstance(cp.timesList, ListWidget)
-    assert cp.timesList.count() == 1
-    assert cp.patContainer.isHidden() is True
+    assert aut.deployBtn.text() == "Deploy to GitHub"
+    assert aut.syncOnlyCheck.text() == "Sync secrets && schedule only (keep repo commits)"
+    assert cp.resetPhotoBtn.text() == "Reset to Default"
+    assert isinstance(aut.timesList, ListWidget)
+    assert aut.timesList.count() == 1
+    assert aut.advancedContainer.isHidden() is True
 
     # Single cloud primary CTA in "both" / "cloud" mode (Windows sync stays secondary)
-    assert isinstance(cp.deployBtn, PrimaryPushButton)
-    assert cp._applyWinPrimaryBtn.isHidden() is True
-    assert cp._applyWinSecondaryBtn.isHidden() is False
-    assert cp.applyWinScheduleBtn is cp._applyWinSecondaryBtn
+    assert isinstance(aut.deployBtn, PrimaryPushButton)
+    assert aut._applyWinPrimaryBtn.isHidden() is True
+    assert aut._applyWinSecondaryBtn.isHidden() is False
+    assert aut.applyWinScheduleBtn is aut._applyWinSecondaryBtn
 
     # repoValidBadge hidden when valid, shown when invalid
-    assert cp.repoValidBadge.isHidden() is True
-    assert cp.repoValidCaption.isHidden() is False
-    cp.repoNameEdit.setText("bad repo name!")
+    assert aut.repoValidBadge.isHidden() is True
+    assert aut.repoValidCaption.isHidden() is False
+    aut.repoNameEdit.setText("bad repo name!")
     qapp.processEvents()
-    assert cp.repoValidBadge.isHidden() is False
-    assert cp.repoValidCaption.isHidden() is True
-    cp.repoNameEdit.setText("tiktok-streak")
+    assert aut.repoValidBadge.isHidden() is False
+    assert aut.repoValidCaption.isHidden() is True
+    aut.repoNameEdit.setText("tiktok-streak")
     qapp.processEvents()
-    assert cp.repoValidBadge.isHidden() is True
+    assert aut.repoValidBadge.isHidden() is True
 
     # RunPage & LogViewer
     rp = win.run_interface
     rp.refresh_from_state()
     qapp.processEvents()
     assert rp.runsTable.rowCount() == 0
-    assert rp.runEmptyLabel.isHidden() is False
+    assert rp.runEmptyBox.isHidden() is False
     assert rp.runsTable.isHidden() is True
 
     rp._populate_runs_table([
@@ -1600,10 +1633,10 @@ def test_v022_accounts_content_run_and_logviewer_craftsmanship(
         }
     ])
     qapp.processEvents()
-    assert rp.runEmptyLabel.isHidden() is True
+    assert rp.runEmptyBox.isHidden() is True
     assert rp.runsTable.isHidden() is False
 
-    created_font = rp.runsTable.item(0, 3).font()
+    created_font = rp.runsTable.item(0, 2).font()
     assert created_font.fixedPitch() is True
     assert created_font.families()[0] == "Cascadia Mono"
 
@@ -1628,16 +1661,16 @@ def test_v110_account_card_verify_ux_and_accounts_page_cookie_upgrade(
     qapp.processEvents()
 
     card = ap._cards[0]
-    assert card.verifyInboxBtn.text() == "Verify"
+    assert card.verifyInboxBtn.text() == "Verify Session"
     assert card.verifySpinner.isHidden() is True
 
-    # Language switch updates Verify label cleanly
+    # Language switch updates Verify Session label cleanly
     set_language("id")
     qapp.processEvents()
-    assert card.verifyInboxBtn.text() == "Verifikasi"
+    assert card.verifyInboxBtn.text() == "Verifikasi Sesi"
     set_language("en")
     qapp.processEvents()
-    assert card.verifyInboxBtn.text() == "Verify"
+    assert card.verifyInboxBtn.text() == "Verify Session"
 
     # set_verifying(True/False) toggles spinner, status label, button, and badge
     card.set_verifying(True, "Opening headless browser...")
@@ -1650,7 +1683,7 @@ def test_v110_account_card_verify_ux_and_accounts_page_cookie_upgrade(
 
     card.set_verifying(False)
     assert card.verifySpinner.isHidden() is True
-    assert card.verifyInboxBtn.text() == "Verify"
+    assert card.verifyInboxBtn.text() == "Verify Session"
 
     # Paste bare cookie -> _check_pasted_cookie hydrates regional cookie and persists it
     monkeypatch.setattr(CookieDialog, "exec", lambda self: (
@@ -1730,7 +1763,7 @@ def test_v110_account_card_verify_ux_and_accounts_page_cookie_upgrade(
     assert live_acc.inbox_verified is True
     assert live_acc.username == "verified_user"
     assert "tt-target-idc=useast2a" in secrets.get_account_cookie("a1")
-    assert card.inboxBadge.text() == tr("accounts.inbox_verified")
+    assert card.inboxBadge.text() == tr("accounts.cloud_ready_badge")
     assert card.inboxBadge.level() == "success"
     assert tr("accounts.cookies_cloud_ready", count=4) in card.authDetailLabel.text()
 
@@ -1757,94 +1790,93 @@ def test_v110_content_page_timezone_visual_cloud_schedule_and_bare_deploy_confir
     secrets.set_account_cookie("a1", "sessionid=bare_deploy_sid")
     secrets.set_github_token("ghp_v110_token_12345")
 
-    cp = win.content_interface
-    cp.refresh_from_state()
+    aut = win.automation_interface
+    sp = win.settings_interface
+    aut.refresh_from_state()
     qapp.processEvents()
 
-    # Raw cron drawer collapsed by default & delay note visible
-    assert cp.rawCronContainer.isHidden() is True
-    assert cp.cloudDelayNote.text() == tr("schedule.cloud_delay_note")
-    assert cp.cloudTimesList.count() == 1
-    assert "08:00 WIB" in cp.cloudTimesList.item(0).text()
+    # Unified Advanced drawer collapsed by default & delay note visible
+    assert aut.advancedContainer.isHidden() is True
+    assert aut.cloudDelayNote.text() == tr("schedule.cloud_delay_note")
+    assert aut.cloudTimesList.count() == 1
+    assert "08:00 WIB" in aut.cloudTimesList.item(0).text()
 
-    # Visual cloudTimePicker add + remove
-    cp.cloudTimePicker.setTime(QTime(20, 30))
-    cp.addCloudTimeBtn.click()
+    # Visual cloudTimePicker add + chip remove
+    aut.cloudTimePicker.setTime(QTime(20, 30))
+    aut.addCloudTimeBtn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["08:00", "20:30"]
     assert win.state.cloud_cron == "0 1 * * *\n30 13 * * *"
-    assert cp.cloudTimesList.count() == 2
+    assert aut.cloudTimesList.count() == 2
 
-    cp.cloudTimesList.setCurrentRow(0)
-    cp.removeCloudTimeBtn.click()
+    aut.cloudTimesChips.chip_at(0).removeBtn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["20:30"]
     assert win.state.cloud_cron == "30 13 * * *"
 
     # Quick-fill off-peak presets
-    cp.preset2Btn.click()
+    aut.preset2Btn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["08:15", "20:15"]
     assert win.state.cloud_cron == "15 1,13 * * *"
-    assert "08:15, 20:15 WIB" in cp.cronSummaryLabel.text()
+    assert "08:15, 20:15 WIB" in aut.cronSummaryLabel.text()
 
-    cp.preset3Btn.click()
+    aut.preset3Btn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["08:15", "14:15", "20:15"]
     assert win.state.cloud_cron == "15 1,7,13 * * *"
 
-    cp.preset1Btn.click()
+    aut.preset1Btn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["08:15"]
     assert win.state.cloud_cron == "15 1 * * *"
 
-    # Timezone switch updates labels, lists, summary, and non-dirty raw cron
-    idx_utc = cp.timezoneCombo.findData("UTC")
+    # Single-source Timezone switch in Settings updates Automation pill, chips, and non-dirty cron
+    idx_utc = sp.timezoneCombo.findData("UTC")
     assert idx_utc >= 0
-    cp.timezoneCombo.setCurrentIndex(idx_utc)
+    sp.timezoneCombo.setCurrentIndex(idx_utc)
     qapp.processEvents()
     assert win.state.timezone == "UTC"
-    assert "UTC" in cp.localTimesLabel.text()
-    assert "UTC" in cp.cloudTimeLabel.text()
-    assert "08:15 UTC" in cp.cloudTimesList.item(0).text()
-    assert win.state.cloud_cron == "15 8 * * *"
+    assert "UTC" in aut.tzValueLabel.text()
+    assert "08:15 UTC" in aut.cloudTimesList.item(0).text()
+    assert aut.customCronEdit.text() == "15 8 * * *"
 
-    # Raw cron toggle expands customCronEdit and edits mark custom cron dirty
-    cp.rawCronToggleBtn.click()
+    # Unified Advanced drawer expands customCronEdit and edits mark custom cron dirty
+    aut.advancedToggleBtn.click()
     qapp.processEvents()
-    assert cp.rawCronContainer.isHidden() is False
-    cp.customCronEdit.setText("15 2 * * *; 45 14 * * *")
+    assert aut.advancedContainer.isHidden() is False
+    aut.customCronEdit.setText("15 2 * * *; 45 14 * * *")
     qapp.processEvents()
-    assert cp._custom_cron_dirty is True
+    assert aut._custom_cron_dirty is True
     assert win.state.cloud_cron == "15 2 * * *\n45 14 * * *"
 
-    # Bare-session deploy confirmation: Cancel aborts before GitHub.whoami
+    # Bare-session deploy confirmation via single ConsolidatedDeployDialog: Cancel aborts before GitHub.whoami
     whoami_calls: list[str] = []
     deployed_crons: list[str] = []
     monkeypatch.setattr(
-        "gui.pages.content_page.GitHub.whoami",
+        "gui.services.cloud_deploy.GitHub.whoami",
         lambda self: (whoami_calls.append("whoami"), {"login": "octocat", "scopes_header_present": True, "scopes": ["repo", "workflow"]})[-1],
     )
     monkeypatch.setattr(
-        "gui.pages.content_page.GitHub.create_private_repo_with_bot",
+        "gui.services.cloud_deploy.GitHub.create_private_repo_with_bot",
         lambda self, owner, repo_name, source_dir=None, cron_expr=None, progress_cb=None: (
             deployed_crons.append(str(cron_expr)),
             {"full_name": f"{owner}/{repo_name}", "html_url": f"https://github.com/{owner}/{repo_name}"},
         )[-1],
     )
     monkeypatch.setattr(
-        "gui.pages.content_page.GitHub.sync_secrets",
+        "gui.services.cloud_deploy.GitHub.sync_secrets",
         lambda self, full_name, desired, managed_names=None: {"written": list(desired.keys()), "deleted": []},
     )
 
-    monkeypatch.setattr("gui.pages.content_page.MessageBox.exec", lambda self: 0)
-    cp.deployBtn.click()
+    monkeypatch.setattr("gui.pages.automation_page.ConsolidatedDeployDialog.exec", lambda self: 0)
+    aut.deployBtn.click()
     qapp.processEvents()
     assert whoami_calls == []
 
     # Continue proceeds and passes multi-line cron_expr
-    monkeypatch.setattr("gui.pages.content_page.MessageBox.exec", lambda self: 1)
-    cp.deployBtn.click()
+    monkeypatch.setattr("gui.pages.automation_page.ConsolidatedDeployDialog.exec", lambda self: 1)
+    aut.deployBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("deploy_github"), timeout=4.0)
     qapp.processEvents()
     assert whoami_calls == ["whoami"]
@@ -1872,6 +1904,7 @@ def test_v110_settings_timezone_runpage_timestamps_i18n_and_layout_bounds(
 
     sp = win.settings_interface
     cp = win.content_interface
+    aut = win.automation_interface
     rp = win.run_interface
 
     assert sp.timezoneCard.minimumSizeHint().width() <= 585
@@ -1886,9 +1919,11 @@ def test_v110_settings_timezone_runpage_timestamps_i18n_and_layout_bounds(
         }
     ])
     qapp.processEvents()
-    assert rp.runsTable.item(0, 3).text() == "2026-11-18 08:05 WIB"
+    assert "Passed" in rp.runsTable.item(0, 0).text()
+    assert rp.runsTable.item(0, 1).text() == "Scheduled"
+    assert rp.runsTable.item(0, 2).text() == "2026-11-18 08:05 WIB"
 
-    # Changing timezone in SettingsPage syncs RunPage timestamps and ContentPage combo
+    # Changing timezone in SettingsPage syncs RunPage timestamps and AutomationPage pill
     idx_ny = sp.timezoneCombo.findData("America/New_York")
     assert idx_ny >= 0
     sp.timezoneCombo.setCurrentIndex(idx_ny)
@@ -1896,27 +1931,29 @@ def test_v110_settings_timezone_runpage_timestamps_i18n_and_layout_bounds(
     assert win.state.timezone == "America/New_York"
 
     rp.refresh_from_state()
-    cp.refresh_from_state()
+    aut.sync_timezone_display()
     qapp.processEvents()
-    assert rp.runsTable.item(0, 3).text() == "2026-11-17 20:05 ET"
-    assert cp.timezoneCombo.currentData() == "America/New_York"
+    assert rp.runsTable.item(0, 2).text() == "2026-11-17 20:05 ET"
+    assert "ET" in aut.tzValueLabel.text()
+    assert not hasattr(aut, "timezoneCombo")
 
-    # Layout geometry check at 860x620 and 1080x760 (offscreen fallback font is wider on Home/Accounts)
+    # Layout geometry check at 1080x760 with expanded sidebar across ALL 6 pages
     win.show()
-    for w, h in ((860, 620), (1080, 760)):
-        win.resize(w, h)
+    win.resize(1080, 760)
+    win.navigationInterface.expand(useAni=False)
+    qapp.processEvents()
+    for route, page in (
+        ("home", win.home_interface),
+        ("accounts", win.accounts_interface),
+        ("content", cp),
+        ("automation", aut),
+        ("run", rp),
+        ("settings", sp),
+    ):
+        win.navigate_to(route)
         qapp.processEvents()
-        for route, page in (("content", cp), ("settings", sp)):
-            win.navigate_to(route)
-            qapp.processEvents()
-            assert page.horizontalScrollBar().maximum() == 0, f"{route} overflowed at {w}x{h}"
-        if w >= 1080:
-            win.navigate_to("run")
-            qapp.processEvents()
-            assert rp.horizontalScrollBar().maximum() == 0, f"run overflowed at {w}x{h}"
-        assert cp.view.minimumSizeHint().width() <= 840
-        assert sp.timezoneCard.minimumSizeHint().width() <= 585
-        assert rp.openRunBtn.geometry().right() <= rp.cloudCard.width()
+        assert page.horizontalScrollBar().maximum() == 0, f"{route} overflowed at 1080x760"
+    assert sp.timezoneCard.minimumSizeHint().width() <= 585
 
     # Programmatic i18n parity check (EN == ID keys)
     assert set(TRANSLATIONS["en"].keys()) == set(TRANSLATIONS["id"].keys())
@@ -2001,55 +2038,55 @@ def test_winui3_badges_friend_chips_time_chips_and_security_dialog(
     assert card.profile.friends == ["alice", "carol"]
     assert card.friendsChipBox.keys() == ["alice", "carol"]
 
-    # 3) ContentPage removable time chips & progressive disclosure drawer
-    assert cp.timesList.isHidden() is True
-    assert cp.cloudTimesList.isHidden() is True
-    assert cp.localTimesChips.keys() == ["08:00", "20:00"]
-    assert cp.cloudTimesChips.keys() == ["08:15", "20:15"]
-    assert cp.cloudTimesChips.labels() == ["08:15 WIB", "20:15 WIB"]
+    # 3) AutomationPage removable time chips & unified Advanced disclosure drawer
+    aut = win.automation_interface
+    aut.refresh_from_state()
+    qapp.processEvents()
+    assert aut.timesList.isHidden() is True
+    assert aut.cloudTimesList.isHidden() is True
+    assert aut.localTimesChips.keys() == ["08:00", "20:00"]
+    assert aut.cloudTimesChips.keys() == ["08:15", "20:15"]
+    assert aut.cloudTimesChips.labels() == ["08:15 WIB", "20:15 WIB"]
 
     # Remove second cloud time chip via its X button
-    cp.cloudTimesChips.chip_at(1).removeBtn.click()
+    aut.cloudTimesChips.chip_at(1).removeBtn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["08:15"]
-    assert cp.cloudTimesChips.keys() == ["08:15"]
+    assert aut.cloudTimesChips.keys() == ["08:15"]
 
     # Attempting to remove the last remaining cloud time chip keeps it intact
-    cp.cloudTimesChips.chip_at(0).removeBtn.click()
+    aut.cloudTimesChips.chip_at(0).removeBtn.click()
     qapp.processEvents()
     assert win.state.cloud_times == ["08:15"]
-    assert cp.cloudTimesChips.count() == 1
+    assert aut.cloudTimesChips.count() == 1
 
     # Remove second local time chip via its X button
-    cp.localTimesChips.chip_at(1).removeBtn.click()
+    aut.localTimesChips.chip_at(1).removeBtn.click()
     qapp.processEvents()
     assert win.state.local_times == ["08:00"]
-    assert cp.localTimesChips.keys() == ["08:00"]
+    assert aut.localTimesChips.keys() == ["08:00"]
 
-    # Advanced Repo/Sync-Only/PAT drawer collapsed by default and toggles open
-    assert cp.cloudAdvancedContainer.isHidden() is True
-    cp.cloudAdvancedToggleBtn.click()
+    # Unified Advanced (PAT, secrets-only, raw cron) drawer collapsed by default and toggles open
+    assert aut.advancedContainer.isHidden() is True
+    aut.advancedToggleBtn.click()
     qapp.processEvents()
-    assert cp.cloudAdvancedContainer.isHidden() is False
+    assert aut.advancedContainer.isHidden() is False
 
-    # Static container cards use non-hoverable SimpleCardWidget
-    assert isinstance(cp.cloudSection, SimpleCardWidget)
-    assert isinstance(cp.localSection, SimpleCardWidget)
-    assert isinstance(ap.browserCard, SimpleCardWidget)
+    # Static container cards use non-hoverable SimpleCardWidget / HeaderCardWidget
+    assert not hasattr(ap, "browserDisclosureCard")
+    assert not hasattr(ap, "browserCard")
     assert isinstance(hp.privacyCard, SimpleCardWidget)
 
-    # Single-line Video Share header title, header videoBadge, Verify Link wording, matched Accounts header button heights, and collapsed CLI drawer
+    # Single-line Video Share header title, header videoBadge, Check Link wording, and collapsed CLI drawer
     assert cp.videoCard.headerLabel.wordWrap() is False
     assert cp.videoBadge.parentWidget() is cp.videoCard.headerView
-    assert cp.resolveShortBtn.text() == "Verify Link"
+    assert cp.resolveShortBtn.text() == "Check Link"
     win.show()
     qapp.processEvents()
-    assert ap.privacyBtn.height() == ap.modeSegment.height()
     set_language("id")
     qapp.processEvents()
-    assert ap.privacyBtn.height() == ap.modeSegment.height()
     assert cp.videoCard.headerLabel.wordWrap() is False
-    assert cp.resolveShortBtn.text() == "Verifikasi Link"
+    assert cp.resolveShortBtn.text() == "Cek Link"
     set_language("en")
     qapp.processEvents()
 
@@ -2059,7 +2096,7 @@ def test_winui3_badges_friend_chips_time_chips_and_security_dialog(
     assert sp.cliExportCard.isExpand is True
     assert sp.workspaceDirEdit.minimumWidth() >= 200
 
-    # 4) SecurityPrivacyDialog instantiates & opens cleanly from Home, Accounts, and Settings
+    # 4) SecurityPrivacyDialog instantiates & opens cleanly from Home and Settings (Accounts duplicate removed)
     opened: list[str] = []
     monkeypatch.setattr(
         SecurityPrivacyDialog,
@@ -2067,10 +2104,9 @@ def test_winui3_badges_friend_chips_time_chips_and_security_dialog(
         lambda self: (opened.append(self.titleLabel.text()), 1)[-1],
     )
     hp.privacyBtn.click()
-    ap.privacyBtn.click()
     sp.openSecurityBtn.click()
     qapp.processEvents()
-    assert len(opened) == 3
+    assert len(opened) == 2
     assert all(title == tr("security.dialog_title") for title in opened)
 
 
@@ -2168,24 +2204,26 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
 
     hp = win.home_interface
     cp = win.content_interface
+    aut = win.automation_interface
     rp = win.run_interface
     sp = win.settings_interface
 
-    # 1) HomePage shows Cloud Bot Needs Re-Deploy reminder when last_deployed_version < APP_VERSION
+    # 1) HomePage shows Cloud Bot update banner when last_deployed_version < APP_VERSION
     hp.refresh_state()
     qapp.processEvents()
     assert hp.cloudSyncBannerCard.isHidden() is False
     assert "v1.2.0" in hp.cloudSyncBannerDesc.text()
     assert APP_VERSION in hp.cloudSyncBannerDesc.text()
 
-    # 2) RunPage headful hint toggles with showBrowserSwitch & translates cleanly
-    assert rp.showBrowserHintLabel.isHidden() is True
+    # 2) RunPage decoupled headful hint stays visible & translates cleanly
+    assert rp.showBrowserHintLabel.isHidden() is False
     rp.showBrowserSwitch.setChecked(True)
     qapp.processEvents()
-    assert rp.showBrowserHintLabel.isHidden() is False
+    assert win.state.headless_local is False
+    assert aut.showBrowserSwitch.isChecked() is True
     set_language("id")
     qapp.processEvents()
-    assert "dikunci" in rp.showBrowserHintLabel.text().lower()
+    assert "dikunci" in rp.showBrowserHintLabel.text().lower() or "mengunci" in rp.showBrowserHintLabel.text().lower()
     set_language("en")
     qapp.processEvents()
 
@@ -2236,7 +2274,7 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     qapp.processEvents()
     assert paused_calls == ["octocat/tiktok-streak"]
     assert rp.cloudWorkflowBadge.text() == tr("cloud.repo_state_paused")
-    assert rp.toggleCloudScheduleBtn.text() == tr("cloud.resume_schedule")
+    assert rp.toggleCloudScheduleBtn.text() == tr("cloud.resume_short")
 
     rp.toggleCloudScheduleBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("toggle_cloud_schedule"), timeout=4.0)
@@ -2244,7 +2282,7 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     assert resumed_calls == ["octocat/tiktok-streak"]
     assert rp.cloudWorkflowBadge.text() == tr("cloud.repo_state_active")
 
-    # 4) ContentPage Detected Bot Repos: duplicate banner, non-bot warning, anti-duplicate deploy dialog
+    # 4) AutomationPage Detected Bot Repos & Inline Pre-Deploy Readiness + ConsolidatedDeployDialog
     fake_discovery = {
         "all_repos": [
             {"full_name": "octocat/tiktok-streak", "name": "tiktok-streak", "owner": "octocat", "private": True, "archived": False, "fork": False, "default_branch": "main", "html_url": ""},
@@ -2262,47 +2300,45 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
         "has_duplicates": True,
         "scanned_count": 3,
     }
-    monkeypatch.setattr("gui.pages.content_page.GitHub.discover_bot_repos", lambda self, **kw: fake_discovery)
-    cp.scan_bot_repos()
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.discover_bot_repos", lambda self, **kw: fake_discovery)
+    aut.scan_bot_repos()
     _pump_until(qapp, lambda: not win.workers.is_running("discover_bot_repos"), timeout=4.0)
     qapp.processEvents()
 
-    assert cp.botReposPanel.isHidden() is False
-    assert cp.duplicateBotBanner.isHidden() is False
-    assert len(cp._bot_repo_row_widgets) == 2
-    assert isinstance(cp.scanBotReposBtn, TransparentToolButton)
-    assert (cp.scanBotReposBtn.width(), cp.scanBotReposBtn.height()) == (32, 32)
-    assert isinstance(cp._bot_repo_row_widgets[0].openBtn, TransparentToolButton)
-    assert (
-        cp._bot_repo_row_widgets[0].openBtn.width(),
-        cp._bot_repo_row_widgets[0].openBtn.height(),
-    ) == (32, 32)
+    assert aut.botReposPanel.isHidden() is False
+    assert aut.preflightIssuesBox.isHidden() is False
+    assert aut.preflightRowDups.fixBtn.isHidden() is False
+    assert len(aut._bot_repo_row_widgets) == 2
+    assert isinstance(aut.scanBotReposBtn, TransparentToolButton)
+    assert isinstance(aut._bot_repo_row_widgets[0].openBtn, TransparentToolButton)
     assert isinstance(rp.refreshRunsBtn, TransparentToolButton)
-    assert (rp.refreshRunsBtn.width(), rp.refreshRunsBtn.height()) == (32, 32)
-    assert not isinstance(cp.cloudRepoBox, QFrame)
-    assert not isinstance(cp.botReposPanel, QFrame)
-    assert not isinstance(cp.cloudScheduleBox, QFrame)
-    assert not hasattr(cp, "cloudDelayBox")
-    assert "Existing bot repo" in cp.repoValidCaption.text()
+    assert "Updates" in aut.repoValidCaption.text()
 
-    cp.repoNameEdit.setText("website")
+    aut.repoNameEdit.setText("website")
     qapp.processEvents()
-    assert cp.repoValidBadge.isHidden() is False
+    assert aut.repoValidBadge.isHidden() is False
+    assert aut.preflightRowRepo.fixBtn.isHidden() is False
 
-    cp.repoNameEdit.setText("brand-new-bot")
+    # Inline Allow Existing fix clears non-bot repo warning without popup
+    aut.preflightRowRepo.fixBtn.click()
     qapp.processEvents()
-    assert cp.repoValidBadge.isHidden() is True
-    assert "New repository" in cp.repoValidCaption.text()
+    assert aut._allow_existing_non_bot is True
+    assert aut._last_preflight["checks"][1]["status"] == "pass"
 
-    # Deploy to brand-new-bot while 2 active bots exist triggers anti-duplicate dialog; accept => pauses old repos
-    monkeypatch.setattr(MessageBox, "exec", lambda self: 1)
+    aut.repoNameEdit.setText("brand-new-bot")
+    qapp.processEvents()
+    assert aut.repoValidBadge.isHidden() is True
+    assert "New repository" in aut.repoValidCaption.text()
+
+    # Deploy to brand-new-bot while 2 active bots exist triggers single ConsolidatedDeployDialog; accept => pauses old repos
+    monkeypatch.setattr("gui.pages.automation_page.ConsolidatedDeployDialog.exec", lambda self: 1)
     paused_during_deploy: list[str] = []
-    monkeypatch.setattr("gui.pages.content_page.GitHub.whoami", lambda self: {"login": "octocat", "scopes_header_present": True, "scopes": ["repo", "workflow"]})
-    monkeypatch.setattr("gui.pages.content_page.GitHub.pause_workflow", lambda self, fn, wf, cancel_running=True: paused_during_deploy.append(fn) or {"paused": True})
-    monkeypatch.setattr("gui.pages.content_page.GitHub.create_private_repo_with_bot", lambda self, **kw: {"full_name": "octocat/brand-new-bot", "html_url": "https://github.com/octocat/brand-new-bot"})
-    monkeypatch.setattr("gui.pages.content_page.GitHub.sync_secrets", lambda self, fn, d, managed_names=None: {"written": list(d.keys()), "deleted": []})
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.whoami", lambda self: {"login": "octocat", "scopes_header_present": True, "scopes": ["repo", "workflow"]})
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.pause_workflow", lambda self, fn, wf, cancel_running=True: paused_during_deploy.append(fn) or {"paused": True})
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.create_private_repo_with_bot", lambda self, **kw: {"full_name": "octocat/brand-new-bot", "html_url": "https://github.com/octocat/brand-new-bot"})
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.sync_secrets", lambda self, fn, d, managed_names=None: {"written": list(d.keys()), "deleted": []})
 
-    cp.deployBtn.click()
+    aut.deployBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("deploy_github"), timeout=4.0)
     qapp.processEvents()
     assert set(paused_during_deploy) == {"octocat/tiktok-streak", "octocat/tiktok-streak-2"}
@@ -2311,7 +2347,7 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     qapp.processEvents()
     assert hp.cloudSyncBannerCard.isHidden() is True
 
-    # Test 1-click Pause Others button on duplicate banner
+    # Test 1-click inline Pause Old button on preflightRowDups
     fresh_dup = {
         "all_repos": list(fake_discovery["all_repos"]),
         "bot_repos": [
@@ -2325,27 +2361,27 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
         "has_duplicates": True,
         "scanned_count": 3,
     }
-    monkeypatch.setattr("gui.pages.content_page.GitHub.discover_bot_repos", lambda self, **kw: fresh_dup)
-    cp.scan_bot_repos()
+    monkeypatch.setattr("gui.services.cloud_deploy.GitHub.discover_bot_repos", lambda self, **kw: fresh_dup)
+    aut.scan_bot_repos()
     _pump_until(qapp, lambda: not win.workers.is_running("discover_bot_repos"), timeout=4.0)
     qapp.processEvents()
-    QTest.mouseClick(cp._bot_repo_row_widgets[0], Qt.LeftButton)
+    QTest.mouseClick(aut._bot_repo_row_widgets[0], Qt.LeftButton)
     qapp.processEvents()
-    assert cp.duplicateBotBanner.isHidden() is False
+    assert aut.preflightIssuesBox.isHidden() is False
 
     paused_others: list[str] = []
     monkeypatch.setattr(
-        "gui.pages.content_page.GitHub.pause_workflow",
+        "gui.services.cloud_deploy.GitHub.pause_workflow",
         lambda self, fn, wf, cancel_running=True: paused_others.append(fn) or {"paused": True},
     )
-    cp.pauseOtherBotsBtn.click()
+    aut.preflightRowDups.fixBtn.click()
     _pump_until(qapp, lambda: not win.workers.is_running("pause_other_bot_repos"), timeout=4.0)
     qapp.processEvents()
     assert paused_others == ["octocat/tiktok-streak-2"]
-    assert cp.duplicateBotBanner.isHidden() is True
-    assert len([r for r in cp._discovered_bot_repos if r.get("active")]) == 1
-    assert len(cp._bot_repo_row_widgets) == 2
-    assert cp._bot_repo_row_widgets[0].toggleBtn.width() == cp._bot_repo_row_widgets[1].toggleBtn.width()
+    assert aut.preflightPassBox.isHidden() is False
+    assert len([r for r in aut._discovered_bot_repos if r.get("active")]) == 1
+    assert len(aut._bot_repo_row_widgets) == 2
+    assert aut._bot_repo_row_widgets[0].toggleBtn.width() == aut._bot_repo_row_widgets[1].toggleBtn.width()
 
     # Honest video verification badge states (disabled -> neutral while unverified -> green live -> red unavailable -> warning offline)
     assert cp.videoBadge._level == "neutral"
@@ -2414,16 +2450,28 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     assert cp.videoBadge._level == "neutral"
     assert cp.videoBadge.text() == tr("content.video_unverified")
 
-    # Ensure redesigned HomePage banner, ContentPage & RunPage cloud surfaces respect <= 840px in both EN and ID
+    # Ensure redesigned HomePage banner, ContentPage, AutomationPage & RunPage respect viewport bounds in both EN and ID
     assert not hasattr(hp, "updateBannerCard")
+    win.resize(1080, 760)
+    win.navigationInterface.expand(useAni=False)
+    win.show()
     for lang in ("en", "id"):
         set_language(lang)
         qapp.processEvents()
-        assert cp._bot_repo_row_widgets[0].toggleBtn.width() == cp._bot_repo_row_widgets[1].toggleBtn.width()
-        assert hp.cloudSyncBannerCard.minimumSizeHint().width() <= 840, f"cloudSyncBannerCard too wide in {lang}: {hp.cloudSyncBannerCard.minimumSizeHint().width()}"
-        assert cp.view.minimumSizeHint().width() <= 840, f"ContentPage too wide in {lang}: {cp.view.minimumSizeHint().width()}"
-        assert rp.cloudCard.minimumSizeHint().width() <= 840, f"RunPage cloudCard too wide in {lang}: {rp.cloudCard.minimumSizeHint().width()}"
-        assert rp.cloudHeaderRow.minimumSizeHint().width() <= 840, f"RunPage cloudHeaderRow too wide in {lang}: {rp.cloudHeaderRow.minimumSizeHint().width()}"
+        win.navigate_to("automation")
+        qapp.processEvents()
+        assert aut._bot_repo_row_widgets[0].toggleBtn.width() == aut._bot_repo_row_widgets[1].toggleBtn.width()
+        for route, page in (
+            ("home", hp),
+            ("accounts", win.accounts_interface),
+            ("content", cp),
+            ("automation", aut),
+            ("run", rp),
+            ("settings", sp),
+        ):
+            win.navigate_to(route)
+            qapp.processEvents()
+            assert page.horizontalScrollBar().maximum() == 0, f"{page.objectName()} overflowed in {lang}"
     set_language("en")
     qapp.processEvents()
 
@@ -2478,7 +2526,7 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
         total_bytes=1048576,
     )
     assert "9.9.9" in dlg.titleLabel.text()
-    assert "1.0 MB" in dlg.subtitleLabel.text()
+    assert "1.0 MB" in dlg.statusLabel.text()
     plain = dlg.notesEdit.toPlainText()
     assert "What's New" in plain and "Recipient Safety" in plain
     assert '<p data-e2e="chat-uniqueid">@friend_one</p>' in plain
@@ -2547,3 +2595,295 @@ def test_cloud_control_bot_discovery_headful_hint_and_updater_ui(
     assert win.state.skipped_update_version == "9.9.9"
     assert upd_nav.isHidden() is True
     assert win._update_nav_badge.isHidden() is True
+
+
+# ---------------------------------------------------------------------------
+# 14. Fluent Redesign IA, DM Preview, Modals, Pivot, Alignment & Bounds
+# ---------------------------------------------------------------------------
+
+def test_fluent_redesign_preview_preflight_modals_pivot_and_bounds(
+    qapp: QApplication,
+    make_window,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from gui.widgets.fluent_redesign import ConsolidatedDeployDialog, DMPreviewPanel, ResetConfirmDialog
+    from gui.widgets.security_dialog import SecurityPrivacyDialog
+
+    acc = AccountProfile(
+        id="a1",
+        name="Main",
+        friends=["alice", "bob"],
+        username="main_user",
+        inbox_verified=True,
+    )
+    state = AppState(
+        accounts=[acc],
+        mode="both",
+        timezone="Asia/Jakarta",
+        github_login="octocat",
+        github_repo_name="tiktok-streak",
+        message="Halo 🔥",
+        video_enabled=False,
+        share_times=2,
+        photo_enabled=False,
+        last_deployed_version="1.0.0",
+    )
+    win, _store, secrets, _mem, tmp = make_window(state=state, smoke_test=True)
+    secrets.set_account_cookie("a1", "sessionid=sid_redesign; tt-target-idc=useast2a")
+    secrets.set_github_token("ghp_redesign_token_12345")
+
+    win.resize(1080, 760)
+    win.navigationInterface.expand(useAni=False)
+    win.show()
+    qapp.processEvents()
+
+    hp = win.home_interface
+    ap = win.accounts_interface
+    cp = win.content_interface
+    aut = win.automation_interface
+    rp = win.run_interface
+    sp = win.settings_interface
+
+    # 1) HomePage: 1:1 checklist routing, cloud drift -> automation, Telegram -> settings:general, quick_run_requested
+    nav_seen: list[str] = []
+    hp.navigate_requested.connect(nav_seen.append)
+    hp.step1.goBtn.click()
+    hp.step2.goBtn.click()
+    hp.step3.goBtn.click()
+    hp.step4.goBtn.click()
+    hp.cloudSyncGoBtn.click()
+    hp.telegramSettingsBtn.click()
+    qapp.processEvents()
+    assert nav_seen == [
+        "accounts",
+        "content",
+        "automation",
+        "run",
+        "automation",
+        "settings:general",
+    ]
+    assert win.stackedWidget.currentWidget() is sp
+    assert sp.tabStack.currentWidget() is sp.generalTab
+
+    quick_runs: list[str] = []
+    hp.quick_run_requested.connect(quick_runs.append)
+    monkeypatch.setattr(rp, "start_smoke_test", lambda: None)
+    monkeypatch.setattr(rp, "start_full_run", lambda: None)
+    win.navigate_to("home")
+    qapp.processEvents()
+    hp.quickTestBtn.click()
+    hp.runAllBtn.click()
+    qapp.processEvents()
+    assert quick_runs == ["smoke", "full"]
+
+    # 1b) HomePage Local-First Privacy bar must not collapse horizontally (EN & ID)
+    assert hp.privacyTitle.width() >= 150
+    assert hp.privacyDesc.width() >= 150
+    assert hp.privacyCard.height() <= 115
+
+    # 2) AccountsPage: BrowserImportDialog replaces disconnected bottom disclosure;
+    #    both BrowserImportDialog and CookieDialog offer 1-click Guided Browser Login escape hatch
+    from gui.widgets.browser_import_dialog import BrowserImportDialog
+
+    win.navigate_to("accounts")
+    qapp.processEvents()
+    assert not hasattr(ap, "browserDisclosureCard")
+    assert not hasattr(ap, "browserCard")
+
+    guided_calls: list[str] = []
+    monkeypatch.setattr(ap, "_start_guided_login", lambda aid: guided_calls.append(aid))
+
+    def _fake_browser_import_escape(self):
+        self.switch_to_browser_login = True
+        return 0
+
+    monkeypatch.setattr(BrowserImportDialog, "exec", _fake_browser_import_escape)
+    ap._cards[0].importBrowserBtn.click()
+    qapp.processEvents()
+    assert guided_calls == ["a1"]
+
+    dlg_cookie = CookieDialog(win)
+    dlg_cookie.textEdit.setPlainText("sessionid=bare_only_token")
+    qapp.processEvents()
+    assert dlg_cookie.bareWarningBanner.isHidden() is False
+    assert dlg_cookie.switch_to_browser_login is False
+    dlg_cookie.useBrowserLoginBtn.click()
+    qapp.processEvents()
+    assert dlg_cookie.switch_to_browser_login is True
+    dlg_cookie.close()
+
+    def _fake_exec_escape(self):
+        self.switch_to_browser_login = True
+        return 0
+
+    monkeypatch.setattr(CookieDialog, "exec", _fake_exec_escape)
+    ap._open_paste_dialog("a1")
+    qapp.processEvents()
+    assert guided_calls == ["a1", "a1"]
+
+    # 3) ContentPage: 1:1 TikTok Web DMPreviewPanel, real cover rendering, cramped stacking & Pet points
+    win.navigate_to("content")
+    qapp.processEvents()
+    assert cp.dmPreviewPanel.previewFriendChip.text() == "@alice"
+    assert cp.dmPreviewPanel.chatHeaderHandle.text() == "@alice"
+    assert "+1" in cp.petGrowthBadge.text()
+    assert "+1" in cp.dmPreviewPanel.petTotalBadge.text()
+
+    setTheme(Theme.DARK, save=False)
+    qapp.processEvents()
+    assert "#00a2c9" in cp.dmPreviewPanel.msgBubble.styleSheet().lower()
+    setTheme(Theme.LIGHT, save=False)
+    qapp.processEvents()
+    assert "rgba(22, 24, 35, 0.06)" in cp.dmPreviewPanel.msgBubble.styleSheet().lower()
+    setTheme(Theme.DARK, save=False)
+    qapp.processEvents()
+
+    cp.videoSwitch.setChecked(True)
+    cp.shareTimesSpin.setValue(2)
+    qapp.processEvents()
+    assert "+3" in cp.petGrowthBadge.text()
+    assert "+3" in cp.dmPreviewPanel.petTotalBadge.text()
+    assert cp.dmPreviewPanel.videoCard._share_times == 2
+
+    from PySide6.QtGui import QImage
+    from PySide6.QtCore import QBuffer, QIODevice
+    img = QImage(32, 48, QImage.Format_RGB32)
+    img.fill(0xFE2C55)
+    buf = QBuffer()
+    buf.open(QIODevice.WriteOnly)
+    img.save(buf, "PNG")
+    cp.dmPreviewPanel.set_video_media(cover_bytes=bytes(buf.data()), author_nickname="DuneMovie")
+    assert not cp.dmPreviewPanel.videoCard._cover.isNull()
+
+    cp.photoSwitch.setChecked(True)
+    qapp.processEvents()
+    assert "+7" in cp.petGrowthBadge.text()
+    assert "+7" in cp.dmPreviewPanel.petTotalBadge.text()
+
+    cp.shareTimesSpin.setValue(1)
+    qapp.processEvents()
+    assert "+5" in cp.petGrowthBadge.text()
+    assert "+5" in cp.dmPreviewPanel.petTotalBadge.text()
+
+    # Cramped resize switches preview cleanly without horizontal overflow
+    standalone_dm = DMPreviewPanel()
+    standalone_dm.resize(210, 350)
+    standalone_dm.show()
+    qapp.processEvents()
+    assert standalone_dm._density_tier == "cramped"
+    assert standalone_dm.chatComposer.isHidden() is True
+    assert standalone_dm.msgAvatar.isHidden() is True
+    standalone_dm.close()
+
+    # Narrow window stacks DMPreviewPanel below the editor cleanly
+    win.resize(740, 680)
+    _pump_until(qapp, lambda: cp._is_stacked and cp.horizontalScrollBar().maximum() == 0, timeout=1.5)
+    assert cp._is_stacked is True
+    assert cp.horizontalScrollBar().maximum() == 0
+    win.resize(1080, 760)
+    _pump_until(qapp, lambda: not cp._is_stacked, timeout=1.5)
+    assert cp._is_stacked is False
+
+    cp.nextAutomationBtn.click()
+    qapp.processEvents()
+    assert win.stackedWidget.currentWidget() is aut
+
+    # 4) AutomationPage: single-source timezone pill, unified Show Browser switch, no GitHub Sign Out, ConsolidatedDeployDialog
+    assert not hasattr(aut, "timezoneCombo")
+    assert not hasattr(aut, "signOutGithubBtn")
+    aut.showBrowserSwitch.setChecked(True)
+    qapp.processEvents()
+    assert win.state.headless_local is False
+    assert rp.showBrowserSwitch.isChecked() is True
+    aut.showBrowserSwitch.setChecked(False)
+    qapp.processEvents()
+    assert win.state.headless_local is True
+    assert rp.showBrowserSwitch.isChecked() is False
+
+    aut.changeTzBtn.click()
+    qapp.processEvents()
+    assert win.stackedWidget.currentWidget() is sp
+    assert sp.tabStack.currentWidget() is sp.generalTab
+
+    cdlg = ConsolidatedDeployDialog(
+        win,
+        [{"code": "duplicates", "text": "2 active bots"}],
+        has_duplicates=True,
+    )
+    assert cdlg.choice == "pause"
+    assert cdlg.keepBtn is not None
+    cdlg._on_keep_clicked()
+    assert cdlg.choice == "keep"
+    cdlg.close()
+
+    # 5) SettingsPage: Pivot tabs, no 'Single Source' copy, strict L->R Input->Action ordering, dialogs
+    from qfluentwidgets import StrongBodyLabel
+
+    assert not hasattr(sp, "tzSingleSourcePill")
+    win.navigate_to("run")
+    qapp.processEvents()
+    assert isinstance(rp.repoTargetLabel, StrongBodyLabel)
+    assert rp.cloudInfoBox.isHidden() is False
+    assert rp.cloudScheduleLabel.text().strip() != ""
+
+    win.navigate_to("settings:general")
+    qapp.processEvents()
+    assert sp.tabStack.currentWidget() is sp.generalTab
+    assert sp.tgTokenEdit.x() < sp.botFatherLink.x()
+    assert sp.tgChatEdit.x() < sp.tgDetectBtn.x() < sp.tgTestBtn.x()
+
+    win.navigate_to("settings:accounts")
+    qapp.processEvents()
+    assert sp.tabStack.currentWidget() is sp.accountsTab
+    assert sp.ghSignoutBtn.isEnabled() is True
+
+    sec_dlg = SecurityPrivacyDialog(win, config_dir=tmp)
+    assert len(sec_dlg.pointCards) == 4
+    assert sec_dlg.techDetailsBox.isHidden() is True
+    sec_dlg.techToggleBtn.click()
+    qapp.processEvents()
+    assert sec_dlg.techDetailsBox.isHidden() is False
+    tech_txt = sec_dlg.techDetailsLabel.text()
+    assert "DPAPI" in tech_txt
+    assert "SealedBox" in tech_txt
+    assert "?mode=ro" in tech_txt
+    sec_dlg.close()
+
+    reset_dlg = ResetConfirmDialog(win)
+    scope_texts = " ".join(lbl.text() for lbl in reset_dlg.scopeLabels)
+    assert "GitHub" in scope_texts
+    assert reset_dlg.scopeLabels[-1].text().startswith("✓")
+    reset_dlg.close()
+
+    # 6) Exhaustive zero horizontal overflow across all 6 pages x EN/ID x 3 Automation modes x 2 Settings Pivot tabs
+    for lang in ("en", "id"):
+        set_language(lang)
+        qapp.processEvents()
+        for route, page in (
+            ("home", hp),
+            ("accounts", ap),
+            ("content", cp),
+            ("run", rp),
+        ):
+            win.navigate_to(route)
+            qapp.processEvents()
+            assert page.horizontalScrollBar().maximum() == 0, f"{route} overflowed in {lang}"
+
+        win.navigate_to("automation")
+        for mode_key in ("local", "cloud", "both"):
+            aut.modeSegment.setCurrentItem(mode_key)
+            aut._on_mode_changed(mode_key)
+            qapp.processEvents()
+            assert aut.horizontalScrollBar().maximum() == 0, (
+                f"automation ({mode_key}) overflowed in {lang}"
+            )
+
+        for tab_key in ("general", "accounts"):
+            win.navigate_to(f"settings:{tab_key}")
+            qapp.processEvents()
+            assert sp.horizontalScrollBar().maximum() == 0, (
+                f"settings:{tab_key} overflowed in {lang}"
+            )
+
+    set_language("en")
+    qapp.processEvents()

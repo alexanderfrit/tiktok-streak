@@ -31,6 +31,7 @@ from qfluentwidgets import (
 )
 
 from gui.pages.accounts_page import AccountsPage
+from gui.pages.automation_page import AutomationPage
 from gui.pages.content_page import ContentPage
 from gui.pages.home_page import HomePage
 from gui.pages.run_page import RunPage
@@ -92,7 +93,7 @@ def _resolve_app_icon(accent_mode: str = "system") -> QIcon:
 
 
 class MainWindow(FluentWindow):
-    """Main FluentWindow hosting the 5 desktop pages."""
+    """Main FluentWindow hosting the 6 redesigned desktop pages."""
 
     _language_changed_sig = Signal(str)
 
@@ -201,6 +202,14 @@ class MainWindow(FluentWindow):
             smoke_test=self.smoke_test,
             parent=self,
         )
+        self.automation_interface = AutomationPage(
+            state=self.state,
+            config_store=self.config_store,
+            secret_store=self.secret_store,
+            worker_controller=self.workers,
+            smoke_test=self.smoke_test,
+            parent=self,
+        )
         self.run_interface = RunPage(
             state=self.state,
             config_store=self.config_store,
@@ -221,6 +230,7 @@ class MainWindow(FluentWindow):
             "home": self.home_interface,
             "accounts": self.accounts_interface,
             "content": self.content_interface,
+            "automation": self.automation_interface,
             "run": self.run_interface,
             "settings": self.settings_interface,
         }
@@ -240,7 +250,13 @@ class MainWindow(FluentWindow):
         self._nav_items["content"] = self.addSubInterface(
             self.content_interface,
             FIF.EDIT,
-            tr("nav.content_schedule"),
+            tr("nav.content"),
+            NavigationItemPosition.TOP,
+        )
+        self._nav_items["automation"] = self.addSubInterface(
+            self.automation_interface,
+            FIF.CLOUD,
+            tr("nav.automation"),
             NavigationItemPosition.TOP,
         )
         self._nav_items["run"] = self.addSubInterface(
@@ -276,32 +292,59 @@ class MainWindow(FluentWindow):
 
         # Wire cross-page interactions
         self.home_interface.navigate_requested.connect(self.navigate_to)
+        self.home_interface.quick_run_requested.connect(self._on_home_quick_run)
+        self.content_interface.navigate_requested.connect(self.navigate_to)
+        self.automation_interface.navigate_requested.connect(self.navigate_to)
+
         self.accounts_interface.state_changed.connect(self._on_state_changed)
         self.content_interface.state_changed.connect(self._on_state_changed)
+        self.automation_interface.state_changed.connect(self._on_state_changed)
         self.run_interface.state_changed.connect(self._on_state_changed)
         self.settings_interface.state_changed.connect(self._on_state_changed)
 
-        self.content_interface.cloud_repos_updated.connect(self._on_cloud_repos_updated)
-        self.run_interface.cloud_schedule_toggled.connect(self.content_interface.set_repo_workflow_state)
+        self.automation_interface.cloud_repos_updated.connect(self._on_cloud_repos_updated)
+        self.run_interface.cloud_schedule_toggled.connect(
+            self.automation_interface.set_repo_workflow_state
+        )
 
         self.settings_interface.theme_changed.connect(self.set_theme)
         if hasattr(self.settings_interface, "accent_changed"):
             self.settings_interface.accent_changed.connect(self.set_accent_mode)
         self.settings_interface.workspace_reloaded.connect(self._on_workspace_reloaded)
-        self.settings_interface.check_updates_requested.connect(lambda: self.check_for_app_updates(manual=True))
+        self.settings_interface.github_signed_out.connect(
+            self.automation_interface.clear_github_session_ui
+        )
+        self.settings_interface.check_updates_requested.connect(
+            lambda: self.check_for_app_updates(manual=True)
+        )
 
         self.accounts_interface.log_emitted.connect(self.run_interface.append_log)
         self.content_interface.log_emitted.connect(self.run_interface.append_log)
+        self.automation_interface.log_emitted.connect(self.run_interface.append_log)
         self.stackedWidget.currentChanged.connect(self._on_tab_changed)
+
+    def _on_home_quick_run(self, kind: str) -> None:
+        self.navigate_to("run")
+        if kind == "full":
+            self.run_interface.start_full_run()
+        else:
+            self.run_interface.start_smoke_test()
 
     def _on_tab_changed(self, _index: int) -> None:
         self.accounts_interface.flush_edits()
         self.content_interface.flush_edits()
+        self.automation_interface.flush_edits()
         self.settings_interface.flush_edits()
         self.home_interface.refresh_state(self.state)
         self.run_interface.refresh_from_state(self.state)
-        if self.stackedWidget.currentWidget() is self.content_interface:
-            self.content_interface.maybe_auto_scan_bot_repos()
+        cur = self.stackedWidget.currentWidget()
+        if cur is self.content_interface:
+            self.content_interface.refresh_from_state(self.state)
+        elif cur is self.automation_interface:
+            self.automation_interface.sync_timezone_display()
+            self.automation_interface.refresh_preflight()
+            self.automation_interface.maybe_auto_scan_bot_repos()
+            self.automation_interface.maybe_refresh_windows_tasks()
 
     def _on_cloud_repos_updated(self, repos: Any) -> None:
         if not isinstance(repos, list):
@@ -608,9 +651,17 @@ class MainWindow(FluentWindow):
         self._on_state_changed()
 
     def navigate_to(self, route_key: str) -> None:
-        target = self._routes.get(route_key)
+        raw = str(route_key or "").strip()
+        subtab = ""
+        if ":" in raw:
+            base, subtab = raw.split(":", 1)
+        else:
+            base = raw
+        target = self._routes.get(base)
         if target is not None:
             self.switchTo(target)
+            if base == "settings" and subtab:
+                self.settings_interface.select_tab(subtab)
 
     def _refresh_app_icon(self) -> None:
         accent_mode = getattr(self.state, "accent_mode", "system")
@@ -679,7 +730,8 @@ class MainWindow(FluentWindow):
         nav_labels = {
             "home": tr("nav.dashboard"),
             "accounts": tr("nav.accounts"),
-            "content": tr("nav.content_schedule"),
+            "content": tr("nav.content"),
+            "automation": tr("nav.automation"),
             "run": tr("nav.run_logs"),
             "settings": tr("nav.settings"),
         }
@@ -692,6 +744,7 @@ class MainWindow(FluentWindow):
             self.home_interface,
             self.accounts_interface,
             self.content_interface,
+            self.automation_interface,
             self.run_interface,
             self.settings_interface,
         ):
@@ -706,7 +759,9 @@ class MainWindow(FluentWindow):
             except Exception as exc:
                 logger.warning("Failed saving AppState: %s", exc)
         self.home_interface.refresh_state(self.state)
-        self.content_interface.sync_headless()
+        self.automation_interface.sync_headless()
+        self.automation_interface.sync_timezone_display()
+        self.automation_interface.refresh_preflight()
         self.run_interface.refresh_from_state(self.state)
         self.settings_interface.refresh_from_state(self.state)
 
@@ -720,6 +775,7 @@ class MainWindow(FluentWindow):
                 logger.warning("Failed saving reloaded AppState: %s", exc)
         self.accounts_interface.refresh_from_state(self.state)
         self.content_interface.refresh_from_state(self.state)
+        self.automation_interface.refresh_from_state(self.state)
         self.run_interface.refresh_from_state(self.state)
         self.settings_interface.refresh_from_state(self.state)
         self.home_interface.refresh_state(self.state)
@@ -730,6 +786,7 @@ class MainWindow(FluentWindow):
         try:
             self.accounts_interface.flush_edits()
             self.content_interface.flush_edits()
+            self.automation_interface.flush_edits()
             self.settings_interface.flush_edits()
             self.config_store.save(self.state)
         except Exception as exc:
@@ -788,6 +845,7 @@ def main(
             window.home_interface,
             window.accounts_interface,
             window.content_interface,
+            window.automation_interface,
             window.run_interface,
             window.settings_interface,
         )

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +29,7 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
+    TransparentPushButton,
     TransparentToolButton,
 )
 
@@ -118,25 +120,31 @@ class AccountCard(HeaderCardWidget):
         )
 
     def _build_ui(self) -> None:
-        # Header badges & remove action inside HeaderCardWidget headerLayout
-        # usernameBadge is a quiet neutral identity chip (no dot when handle is shown),
-        # while inboxBadge is the single semantic status indicator.
+        # Header: Title left, identity/status badges + Verify Session + Remove right
+        self.headerView.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.usernameBadge = StatusPill("", "neutral", self, show_dot=False)
         self.inboxBadge = StatusPill("", "neutral", self)
+        self.verifyInboxBtn = PushButton(
+            FIF.CHECKBOX, escape_qt_mnemonic(tr("accounts.verify_inbox")), self
+        )
+        self.verifyInboxBtn.setFixedHeight(30)
+        self.verifyInboxBtn.clicked.connect(lambda: self.request_verify_inbox.emit(self.profile.id))
         self.removeBtn = TransparentToolButton(FIF.DELETE, self)
         self.removeBtn.setToolTip(tr("common.delete"))
         self.removeBtn.clicked.connect(lambda: self.request_remove.emit(self.profile.id))
 
-        self.headerLayout.addStretch(1)
-        self.headerLayout.addWidget(self.usernameBadge, 0, Qt.AlignVCenter)
         self.headerLayout.addSpacing(8)
+        self.headerLayout.addWidget(self.usernameBadge, 0, Qt.AlignVCenter)
+        self.headerLayout.addSpacing(6)
         self.headerLayout.addWidget(self.inboxBadge, 0, Qt.AlignVCenter)
+        self.headerLayout.addStretch(1)
+        self.headerLayout.addWidget(self.verifyInboxBtn, 0, Qt.AlignVCenter)
         self.headerLayout.addSpacing(6)
         self.headerLayout.addWidget(self.removeBtn, 0, Qt.AlignVCenter)
 
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(14)
+        body.setSpacing(12)
 
         # Account label row
         name_row = QHBoxLayout()
@@ -169,8 +177,8 @@ class AccountCard(HeaderCardWidget):
         name_row.addLayout(detail_row, 1)
         body.addLayout(name_row)
 
-        # Auth actions flow layout (wraps cleanly without overflowing 840px)
-        auth_flow = FlowLayout()
+        # Crisp 3-button Auth action row (Verify Session moved cleanly to card header)
+        auth_flow = FlowLayout(isTight=True)
         auth_flow.setContentsMargins(0, 0, 0, 0)
         auth_flow.setHorizontalSpacing(8)
         auth_flow.setVerticalSpacing(8)
@@ -183,19 +191,14 @@ class AccountCard(HeaderCardWidget):
         self.pasteCookieBtn = PushButton(
             FIF.PASTE, escape_qt_mnemonic(tr("accounts.paste_cookie")), self
         )
-        self.verifyInboxBtn = PushButton(
-            FIF.CHECKBOX, escape_qt_mnemonic(tr("accounts.verify_inbox")), self
-        )
 
         self.guidedLoginBtn.clicked.connect(lambda: self.request_guided_login.emit(self.profile.id))
         self.importBrowserBtn.clicked.connect(lambda: self.request_import_browser.emit(self.profile.id))
         self.pasteCookieBtn.clicked.connect(lambda: self.request_paste_cookie.emit(self.profile.id))
-        self.verifyInboxBtn.clicked.connect(lambda: self.request_verify_inbox.emit(self.profile.id))
 
         auth_flow.addWidget(self.guidedLoginBtn)
         auth_flow.addWidget(self.importBrowserBtn)
         auth_flow.addWidget(self.pasteCookieBtn)
-        auth_flow.addWidget(self.verifyInboxBtn)
         body.addLayout(auth_flow)
 
         # Friends section (tag/chip input bar + removable friend chips + CSV import/export)
@@ -203,21 +206,21 @@ class AccountCard(HeaderCardWidget):
         friends_header.setSpacing(8)
         self.friendsLabel = StrongBodyLabel(tr("content.friends_label"), self)
         self.friendsCountBadge = StatusPill("0", "neutral", self, show_dot=False)
-        self.importCsvBtn = PushButton(
+        self.importCsvBtn = TransparentPushButton(
             FIF.FOLDER_ADD, escape_qt_mnemonic(tr("content.import_csv")), self
         )
-        self.exportCsvBtn = PushButton(
+        self.exportCsvBtn = TransparentPushButton(
             FIF.SAVE_AS, escape_qt_mnemonic(tr("content.export_csv")), self
         )
 
         self.importCsvBtn.clicked.connect(self._import_csv)
         self.exportCsvBtn.clicked.connect(self._export_csv)
 
-        friends_header.addWidget(self.friendsLabel)
-        friends_header.addWidget(self.friendsCountBadge)
+        friends_header.addWidget(self.friendsLabel, 0, Qt.AlignVCenter)
+        friends_header.addWidget(self.friendsCountBadge, 0, Qt.AlignVCenter)
         friends_header.addStretch(1)
-        friends_header.addWidget(self.importCsvBtn)
-        friends_header.addWidget(self.exportCsvBtn)
+        friends_header.addWidget(self.importCsvBtn, 0, Qt.AlignVCenter)
+        friends_header.addWidget(self.exportCsvBtn, 0, Qt.AlignVCenter)
         body.addLayout(friends_header)
 
         friend_input_row = QHBoxLayout()
@@ -493,6 +496,8 @@ class AccountCard(HeaderCardWidget):
             state_key, level = _inbox_badge_state(self.profile, self._has_cookie)
             if state_key == "verified" and self._cookie_cloud_ready is False:
                 self.inboxBadge.setState(InfoLevel.WARNING, tr("accounts.local_only_badge"), show_dot=True)
+            elif state_key == "verified" and self._cookie_cloud_ready is True:
+                self.inboxBadge.setState(InfoLevel.SUCCESS, tr("accounts.cloud_ready_badge"), show_dot=True)
             else:
                 inbox_key = {
                     "verified": "accounts.inbox_verified",

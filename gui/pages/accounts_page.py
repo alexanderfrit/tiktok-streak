@@ -6,18 +6,16 @@ import inspect
 import threading
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
-    ComboBox,
     FluentIcon as FIF,
     IndeterminateProgressRing,
     InfoBar,
     InfoBarPosition,
-    InfoLevel,
     PrimaryPushButton,
     PushButton,
     SegmentedWidget,
@@ -25,6 +23,7 @@ from qfluentwidgets import (
     SmoothScrollArea,
     StrongBodyLabel,
     TitleLabel,
+    TransparentPushButton,
 )
 
 from gui.services.browsers import list_sources, read_source
@@ -37,6 +36,7 @@ from gui.services.tiktok_auth import (
     verify_inbox_headless,
 )
 from gui.widgets.account_card import AccountCard
+from gui.widgets.browser_import_dialog import BrowserImportDialog
 from gui.widgets.cookie_dialog import CookieDialog
 from gui.widgets.security_dialog import SecurityPrivacyDialog
 from gui.widgets.status_pill import StatusPill
@@ -118,7 +118,7 @@ class AccountsPage(SmoothScrollArea):
         self.view = QWidget(self)
         self.vBoxLayout = QVBoxLayout(self.view)
         self.vBoxLayout.setContentsMargins(*PAGE_MARGINS)
-        self.vBoxLayout.setSpacing(16)
+        self.vBoxLayout.setSpacing(14)
         self.setWidget(self.view)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -127,24 +127,21 @@ class AccountsPage(SmoothScrollArea):
         self._build_ui()
         self.refresh_from_state()
         if not smoke_test:
-            self.scan_browsers()
+            QTimer.singleShot(250, self.scan_browsers)
 
     def _build_ui(self) -> None:
-        # Page header + mode toggle
+        # Page header + mode toggle (clean, zero duplicate Privacy button)
         header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(12)
         title_col = QVBoxLayout()
-        title_col.setSpacing(4)
+        title_col.setContentsMargins(0, 0, 0, 0)
+        title_col.setSpacing(3)
         self.titleLabel = TitleLabel(tr("accounts.title"), self.view)
-        self.hintLabel = CaptionLabel(tr("accounts.guided_login_hint"), self.view)
+        self.hintLabel = BodyLabel(tr("accounts.subtitle"), self.view)
         self.hintLabel.setWordWrap(True)
         title_col.addWidget(self.titleLabel)
         title_col.addWidget(self.hintLabel)
-
-        self.privacyBtn = PushButton(
-            FIF.INFO, escape_qt_mnemonic(tr("security.how_protected_btn")), self.view
-        )
-        self.privacyBtn.clicked.connect(self._open_security_dialog)
 
         self.modeSegment = SegmentedWidget(self.view)
         self.modeSegment.addItem("single", tr("accounts.single_mode"))
@@ -152,46 +149,14 @@ class AccountsPage(SmoothScrollArea):
         self.modeSegment.currentItemChanged.connect(self._on_mode_changed)
 
         header_row.addLayout(title_col, 1)
-        header_row.addWidget(self.privacyBtn, 0, Qt.AlignTop)
         header_row.addWidget(self.modeSegment, 0, Qt.AlignTop)
         self.vBoxLayout.addLayout(header_row)
         self._sync_header_control_heights()
 
-        # Browser selector card
-        self.browserCard = SimpleCardWidget(self.view)
-        b_lay = QVBoxLayout(self.browserCard)
-        b_lay.setContentsMargins(16, 14, 16, 14)
-        b_lay.setSpacing(8)
-
-        b_top = QHBoxLayout()
-        b_top.setSpacing(10)
-        self.browserTitle = StrongBodyLabel(tr("accounts.browser_profile"), self.browserCard)
-        self.browserCombo = ComboBox(self.browserCard)
-        self.browserCombo.setMinimumWidth(0)
-        self.browserCombo.currentIndexChanged.connect(self._update_browser_badge)
-
-        self.refreshBrowsersBtn = PushButton(FIF.SYNC, escape_qt_mnemonic(tr("common.refresh")), self.browserCard)
-        self.refreshBrowsersBtn.clicked.connect(self.scan_browsers)
-
-        b_top.addWidget(self.browserTitle)
-        b_top.addWidget(self.browserCombo, 1)
-        b_top.addWidget(self.refreshBrowsersBtn)
-        b_lay.addLayout(b_top)
-
-        b_status = QHBoxLayout()
-        b_status.setSpacing(8)
-        self.browserBadge = StatusPill(tr("accounts.scan_not_run"), "neutral", self.browserCard)
-        self.browserNote = CaptionLabel(tr("accounts.guided_login_hint"), self.browserCard)
-        self.browserNote.setWordWrap(True)
-        b_status.addWidget(self.browserBadge, 0, Qt.AlignLeft)
-        b_status.addWidget(self.browserNote, 1, Qt.AlignVCenter)
-        b_lay.addLayout(b_status)
-        self.vBoxLayout.addWidget(self.browserCard)
-
         # Active guided login progress banner (hidden when idle)
         self.activeTaskCard = SimpleCardWidget(self.view)
         t_lay = QHBoxLayout(self.activeTaskCard)
-        t_lay.setContentsMargins(16, 12, 16, 12)
+        t_lay.setContentsMargins(16, 11, 16, 11)
         t_lay.setSpacing(10)
         self.taskSpinner = IndeterminateProgressRing(self.activeTaskCard)
         self.taskSpinner.setFixedSize(20, 20)
@@ -210,21 +175,23 @@ class AccountsPage(SmoothScrollArea):
         self.activeTaskCard.hide()
         self.vBoxLayout.addWidget(self.activeTaskCard)
 
-        # Toolbar for multi-account / hidden-account reminder
-        toolbar = QHBoxLayout()
+        # Toolbar for multi-account / hidden-account reminder (collapses to 0px when unused)
+        self.multiToolbarBox = QWidget(self.view)
+        toolbar = QHBoxLayout(self.multiToolbarBox)
+        toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(10)
-        self.multiHiddenHint = CaptionLabel("", self.view)
-        self.multiHiddenHint.setWordWrap(True)
-        self._toolbarSpacer = QWidget(self.view)
-        self._toolbarSpacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.addAccountBtn = PushButton(FIF.ADD, escape_qt_mnemonic(tr("accounts.add_account")), self.view)
+        self.addAccountBtn = PushButton(FIF.ADD, escape_qt_mnemonic(tr("accounts.add_account")), self.multiToolbarBox)
         self.addAccountBtn.clicked.connect(self._add_account)
-        toolbar.addWidget(self.multiHiddenHint, 1)
-        toolbar.addWidget(self._toolbarSpacer, 1)
-        toolbar.addWidget(self.addAccountBtn, 0, Qt.AlignRight | Qt.AlignVCenter)
-        self.vBoxLayout.addLayout(toolbar)
+        self.multiHiddenHint = CaptionLabel("", self.multiToolbarBox)
+        self.multiHiddenHint.setWordWrap(True)
+        self.savedAccountsBadge = StatusPill("", "info", self.multiToolbarBox)
+        toolbar.addWidget(self.addAccountBtn, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        toolbar.addWidget(self.multiHiddenHint, 1, Qt.AlignVCenter)
+        toolbar.addStretch(1)
+        toolbar.addWidget(self.savedAccountsBadge, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.vBoxLayout.addWidget(self.multiToolbarBox)
 
-        # Container for AccountCard items
+        # AccountCard items lead immediately above the fold
         self.cardsHost = QWidget(self.view)
         self.cardsLayout = QVBoxLayout(self.cardsHost)
         self.cardsLayout.setContentsMargins(0, 0, 0, 0)
@@ -273,7 +240,8 @@ class AccountsPage(SmoothScrollArea):
         visible_accounts = list(self._state.accounts) if is_multi else [self._state.accounts[0]]
 
         self.addAccountBtn.setVisible(is_multi)
-        self._toolbarSpacer.setVisible(is_multi)
+        self.savedAccountsBadge.setVisible(is_multi)
+        self.savedAccountsBadge.setState("info", tr("accounts.saved_count", count=len(self._state.accounts)))
         self._update_multi_hidden_hint()
 
         can_remove = is_multi and len(self._state.accounts) > 1
@@ -330,13 +298,10 @@ class AccountsPage(SmoothScrollArea):
         self._rebuild_cards()
         self.state_changed.emit()
 
-    # -- Browser scanning ------------------------------------------------
+    # -- Browser scanning (silent background cache for BrowserImportDialog) --
     def scan_browsers(self) -> None:
         if self._workers.is_running("scan_browsers"):
             return
-        self.refreshBrowsersBtn.setEnabled(False)
-        self.browserBadge.setState("info", tr("common.loading"))
-        self.browserBadge.adjustSize()
         self._workers.start_task(
             list_sources,
             enrich=True,
@@ -346,59 +311,11 @@ class AccountsPage(SmoothScrollArea):
         )
 
     def _on_browsers_scanned(self, sources: list[dict[str, Any]]) -> None:
-        self.refreshBrowsersBtn.setEnabled(True)
         self._scan_completed = True
         self._sources = list(sources or [])
-        prev_id = self.browserCombo.currentData()
-        self.browserCombo.blockSignals(True)
-        self.browserCombo.clear()
-        for src in self._sources:
-            suffix = ""
-            if src.get("v20_blocked"):
-                suffix = " [v20]"
-            elif src.get("locked"):
-                suffix = " [Locked]"
-            elif src.get("has_tiktok"):
-                suffix = " [TikTok]"
-            self.browserCombo.addItem(f"{src['label']}{suffix}", userData=src)
-        if prev_id and isinstance(prev_id, dict):
-            for i in range(self.browserCombo.count()):
-                d = self.browserCombo.itemData(i)
-                if isinstance(d, dict) and d.get("id") == prev_id.get("id"):
-                    self.browserCombo.setCurrentIndex(i)
-                    break
-        self.browserCombo.blockSignals(False)
-        self._update_browser_badge()
 
-    def _on_browser_scan_error(self, err_msg: str) -> None:
-        self.refreshBrowsersBtn.setEnabled(True)
+    def _on_browser_scan_error(self, _err_msg: str) -> None:
         self._scan_completed = True
-        self.browserBadge.setState(InfoLevel.WARNING, tr("common.warning"))
-        self.browserBadge.adjustSize()
-        self.browserNote.setText(err_msg)
-
-    def _update_browser_badge(self, *_args: Any) -> None:
-        src = self.browserCombo.currentData()
-        if not isinstance(src, dict):
-            badge_key = "accounts.no_tiktok_badge" if self._scan_completed else "accounts.scan_not_run"
-            self.browserBadge.setState("neutral", tr(badge_key))
-            self.browserBadge.adjustSize()
-            self.browserNote.setText(tr("accounts.guided_login_hint"))
-            return
-
-        if src.get("v20_blocked"):
-            self.browserBadge.setState(InfoLevel.WARNING, tr("accounts.v20_badge"))
-            self.browserNote.setText(tr("err.v20"))
-        elif src.get("locked"):
-            self.browserBadge.setState(InfoLevel.ERROR, tr("accounts.browser_locked_badge"))
-            self.browserNote.setText(tr("err.browser_locked"))
-        elif src.get("has_tiktok", 0) > 0:
-            self.browserBadge.setState(InfoLevel.SUCCESS, tr("accounts.has_tiktok_badge"))
-            self.browserNote.setText(src.get("cookies_path", ""))
-        else:
-            self.browserBadge.setState("neutral", tr("accounts.no_tiktok_badge"))
-            self.browserNote.setText(src.get("cookies_path", ""))
-        self.browserBadge.adjustSize()
 
     # -- Auth flows ------------------------------------------------------
     def _start_guided_login(self, account_id: str) -> None:
@@ -533,24 +450,25 @@ class AccountsPage(SmoothScrollArea):
         )
 
     def _start_import_browser(self, account_id: str) -> None:
-        src = self.browserCombo.currentData()
-        if not isinstance(src, dict):
-            InfoBar.warning(
-                tr("common.warning"),
-                tr("accounts.no_tiktok_badge"),
-                duration=3500,
-                position=InfoBarPosition.TOP_RIGHT,
-                parent=self.window(),
-            )
+        acc = self._find_account(account_id)
+        if acc is None:
             return
-        if src.get("v20_blocked"):
-            InfoBar.warning(
-                tr("common.warning"),
-                tr("err.v20"),
-                duration=6000,
-                position=InfoBarPosition.TOP_RIGHT,
-                parent=self.window(),
-            )
+        dlg = BrowserImportDialog(
+            self.window(),
+            account_name=acc.name,
+            sources=self._sources,
+            scan_completed=self._scan_completed,
+            workers=self._workers,
+        )
+        accepted = dlg.exec()
+        if dlg.scan_completed:
+            self._sources = list(dlg.latest_sources)
+            self._scan_completed = True
+        if getattr(dlg, "switch_to_browser_login", False):
+            self._start_guided_login(account_id)
+            return
+        src = dlg.selected_source
+        if not accepted or not isinstance(src, dict):
             return
 
         self._workers.start_task(
@@ -632,6 +550,8 @@ class AccountsPage(SmoothScrollArea):
             return
         dlg = CookieDialog(self.window())
         if not dlg.exec():
+            if getattr(dlg, "switch_to_browser_login", False):
+                self._start_guided_login(account_id)
             return
 
         cookie_payload = dlg.cookie_payload
@@ -847,23 +767,18 @@ class AccountsPage(SmoothScrollArea):
     def _update_multi_hidden_hint(self) -> None:
         is_multi = bool(self._state.multi_account)
         extra_count = max(0, len(self._state.accounts) - 1)
-        if not is_multi and extra_count > 0:
+        show_hint = not is_multi and extra_count > 0
+        if show_hint:
             self.multiHiddenHint.setText(tr("accounts.multi_hidden_hint", extra=extra_count))
             self.multiHiddenHint.show()
         else:
             self.multiHiddenHint.hide()
+        self.multiToolbarBox.setVisible(is_multi or show_hint)
 
     def _sync_header_control_heights(self) -> None:
-        self.privacyBtn.setMinimumHeight(0)
-        self.privacyBtn.setMaximumHeight(16777215)
         self.modeSegment.setMinimumHeight(0)
         self.modeSegment.setMaximumHeight(16777215)
-        target_h = max(
-            self.privacyBtn.sizeHint().height(),
-            self.modeSegment.sizeHint().height(),
-            33,
-        )
-        self.privacyBtn.setFixedHeight(target_h)
+        target_h = max(self.modeSegment.sizeHint().height(), 34)
         self.modeSegment.setFixedHeight(target_h)
         for item in self.modeSegment.items.values():
             item.setFixedHeight(target_h)
@@ -874,18 +789,15 @@ class AccountsPage(SmoothScrollArea):
 
     def retranslate(self) -> None:
         self.titleLabel.setText(tr("accounts.title"))
-        self.hintLabel.setText(tr("accounts.guided_login_hint"))
-        self.privacyBtn.setText(escape_qt_mnemonic(tr("security.how_protected_btn")))
+        self.hintLabel.setText(tr("accounts.subtitle"))
         self.modeSegment.items["single"].setText(tr("accounts.single_mode"))
         self.modeSegment.items["multi"].setText(tr("accounts.multi_mode"))
         self._sync_header_control_heights()
-        self.browserTitle.setText(tr("accounts.browser_profile"))
-        self.refreshBrowsersBtn.setText(escape_qt_mnemonic(tr("common.refresh")))
         self.addAccountBtn.setText(escape_qt_mnemonic(tr("accounts.add_account")))
+        self.savedAccountsBadge.setState("info", tr("accounts.saved_count", count=len(self._state.accounts)))
         self.taskGrabBtn.setText(escape_qt_mnemonic(tr("accounts.grab_session_now")))
         self.taskCancelBtn.setText(escape_qt_mnemonic(tr("common.cancel")))
         self._update_multi_hidden_hint()
-        self._update_browser_badge()
         for card in self._cards:
             card.retranslate()
 

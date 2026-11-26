@@ -238,11 +238,20 @@ def download_update_asset(
         raise
 
 
+def _is_compiled_executable() -> bool:
+    """True when running under PyInstaller (sys.frozen) or Nuitka (__compiled__)."""
+    return bool(
+        getattr(sys, "frozen", False)
+        or "__compiled__" in globals()
+        or hasattr(sys, "__compiled__")
+    )
+
+
 def can_self_update_executable() -> bool:
-    """True when running as a frozen Windows PyInstaller executable."""
+    """True when running as a frozen/compiled Windows single-file executable."""
     return bool(
         sys.platform == "win32"
-        and getattr(sys, "frozen", False)
+        and _is_compiled_executable()
         and Path(sys.executable).is_file()
     )
 
@@ -255,7 +264,7 @@ def _assert_safe_cmd_path(path: Path) -> str:
 
 
 def _sanitize_relaunch_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Strip PyInstaller/Qt _MEI runtime variables so a relaunched onefile .exe boots cleanly."""
+    """Strip PyInstaller/Nuitka/Qt temp runtime variables so a relaunched onefile .exe boots cleanly."""
     src_env = dict(os.environ if env is None else env)
     out: dict[str, str] = {}
     mei_path_keys = {
@@ -268,7 +277,11 @@ def _sanitize_relaunch_env(env: dict[str, str] | None = None) -> dict[str, str]:
     }
     for key, val in src_env.items():
         upper = key.upper()
-        if upper in ("_MEIPASS", "_MEIPASS2") or upper.startswith("_PYI_"):
+        if (
+            upper in ("_MEIPASS", "_MEIPASS2")
+            or upper.startswith("_PYI_")
+            or upper.startswith("NUITKA_ONEFILE_")
+        ):
             continue
         if upper in mei_path_keys and "_MEI" in str(val).upper():
             continue
@@ -293,7 +306,7 @@ def launch_windows_self_update(
     cur_pid = int(pid or os.getpid())
     if parent_pid is not None:
         ppid = int(parent_pid) if int(parent_pid) > 4 and int(parent_pid) != cur_pid else 0
-    elif getattr(sys, "frozen", False):
+    elif _is_compiled_executable():
         raw_ppid = os.getppid()
         ppid = int(raw_ppid) if raw_ppid > 4 and raw_ppid != cur_pid else 0
     else:

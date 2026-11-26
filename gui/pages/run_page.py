@@ -1,17 +1,18 @@
-"""Run & Logs page: local smoke test, full local run, GitHub monitor, and log console."""
+"""Run & Logs page: equal-height Local/Cloud command cards and Master-Detail runs + live logs."""
 from __future__ import annotations
 
 import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QGridLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QSizePolicy,
     QTableWidgetItem,
     QVBoxLayout,
@@ -31,37 +32,24 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     SmoothScrollArea,
+    StrongBodyLabel,
     SwitchButton,
     TableWidget,
     TitleLabel,
+    TransparentPushButton,
     TransparentToolButton,
+    isDarkTheme,
+    qconfig,
 )
 
 from gui.services.github_api import WORKFLOW_FILE, GitHub, GitHubError
 from gui.services.i18n import tr
 from gui.services.local_runner import LocalRunner
 from gui.services.storage import AppState, ConfigStore, SecretStore
-from gui.services.theme import escape_qt_mnemonic, tabular_mono_font
-from gui.widgets.split_row import ResponsiveSplitRow
-from gui.widgets.status_pill import StatusPill
-try:
-    from gui.services.validators import format_utc_timestamp
-except ImportError:  # pragma: no cover
-    from datetime import datetime, timezone, timedelta
-
-    def format_utc_timestamp(iso_str: str, tz_id: str = "Asia/Jakarta") -> str:  # type: ignore[misc]
-        raw = str(iso_str or "").strip()
-        if not raw:
-            return ""
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            dt_wib = dt.astimezone(timezone(timedelta(hours=7)))
-            return f"{dt_wib.strftime('%Y-%m-%d %H:%M')} WIB"
-        except Exception:
-            return raw.replace("T", " ").replace("Z", " UTC")
+from gui.services.theme import INNER_RADIUS, PAGE_MARGINS, escape_qt_mnemonic, tabular_mono_font
+from gui.services.validators import format_utc_timestamp, get_timezone_info
 from gui.widgets.log_viewer import LogViewer
+from gui.widgets.status_pill import StatusPill
 from gui.workers import WorkerController
 
 
@@ -189,61 +177,34 @@ def _download_artifacts_task(token: str, full_name: str, run_id: int, dest_dir: 
     return [str(p) for p in paths]
 
 
-class _FlowBox(QWidget):
-    """Container widget exposing FlowLayout heightForWidth and sizeHint accurately."""
+def _human_run_result(run: dict[str, Any]) -> tuple[str, str]:
+    """Translate raw GitHub Actions status/conclusion into calm human-readable label & level."""
+    status = str(run.get("status") or "").strip().lower()
+    conclusion = str(run.get("conclusion") or "").strip().lower()
+    if status in ("in_progress",):
+        return tr("run.result_running"), "info"
+    if status in ("queued", "waiting", "pending", "requested"):
+        return tr("run.result_queued"), "info"
+    if conclusion == "success":
+        return tr("run.result_passed"), "success"
+    if conclusion in ("failure", "timed_out", "action_required"):
+        return tr("run.result_failed"), "error"
+    if conclusion in ("cancelled", "skipped"):
+        return tr("run.result_cancelled"), "warning"
+    return (conclusion or status or "-").capitalize(), "neutral"
 
-    def __init__(
-        self,
-        parent: QWidget | None = None,
-        *,
-        h_spacing: int = 8,
-        v_spacing: int = 6,
-    ) -> None:
-        super().__init__(parent)
-        self.flow = FlowLayout(self, isTight=False)
-        self.flow.setContentsMargins(0, 0, 0, 0)
-        self.flow.setHorizontalSpacing(h_spacing)
-        self.flow.setVerticalSpacing(v_spacing)
-        policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        policy.setHeightForWidth(True)
-        self.setSizePolicy(policy)
 
-    def addWidget(self, widget: QWidget) -> None:
-        self.flow.addWidget(widget)
-
-    def hasHeightForWidth(self) -> bool:
-        return True
-
-    def heightForWidth(self, width: int) -> int:
-        return self.flow.heightForWidth(max(width, 1))
-
-    def _effective_width(self) -> int:
-        if self.width() > 100:
-            return self.width()
-        total = sum(
-            item.sizeHint().width()
-            for i in range(self.flow.count())
-            if (item := self.flow.itemAt(i)) is not None
-        )
-        spacing = max(self.flow.count() - 1, 0) * self.flow.horizontalSpacing()
-        return max(total + spacing, self.flow.minimumSize().width(), 1)
-
-    def sizeHint(self) -> QSize:
-        width = self._effective_width()
-        return QSize(self.flow.minimumSize().width(), self.heightForWidth(width))
-
-    def minimumSizeHint(self) -> QSize:
-        if self.width() > 100:
-            return QSize(self.flow.minimumSize().width(), self.heightForWidth(self.width()))
-        return self.flow.minimumSize()
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self.updateGeometry()
+def _human_run_trigger(event: str) -> str:
+    ev = str(event or "").strip().lower()
+    if ev == "schedule":
+        return tr("run.trigger_scheduled")
+    if ev == "workflow_dispatch":
+        return tr("run.trigger_manual")
+    return ev or "-"
 
 
 class RunPage(SmoothScrollArea):
-    """Execute local smoke tests / full runs, monitor GitHub runs, and inspect logs."""
+    """Execute local tests/runs, monitor GitHub Cloud runs, and inspect live logs side-by-side."""
 
     state_changed = Signal()
     cloud_schedule_toggled = Signal(str, str)
@@ -272,8 +233,8 @@ class RunPage(SmoothScrollArea):
 
         self.view = QWidget(self)
         self.vBoxLayout = QVBoxLayout(self.view)
-        self.vBoxLayout.setContentsMargins(28, 22, 28, 28)
-        self.vBoxLayout.setSpacing(16)
+        self.vBoxLayout.setContentsMargins(*PAGE_MARGINS)
+        self.vBoxLayout.setSpacing(14)
         self.setWidget(self.view)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -283,132 +244,201 @@ class RunPage(SmoothScrollArea):
         self.refresh_from_state()
 
     def _build_ui(self) -> None:
-        self.titleLabel = TitleLabel(tr("nav.run_logs"), self.view)
-        self.vBoxLayout.addWidget(self.titleLabel)
+        # Header
+        hdr = QVBoxLayout()
+        hdr.setContentsMargins(0, 0, 0, 0)
+        hdr.setSpacing(3)
+        self.titleLabel = TitleLabel(tr("run.title"), self.view)
+        self.subtitleLabel = BodyLabel(tr("run.subtitle"), self.view)
+        self.subtitleLabel.setWordWrap(True)
+        self.subtitleLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        hdr.addWidget(self.titleLabel)
+        hdr.addWidget(self.subtitleLabel)
+        self.vBoxLayout.addLayout(hdr)
 
-        # 1. Local Test & Run card
+        # 1. Top Equal-Height Command Split (Local Run [stretch 3] | GitHub Cloud [stretch 2])
+        top_split = QHBoxLayout()
+        top_split.setContentsMargins(0, 0, 0, 0)
+        top_split.setSpacing(14)
+
+        # 1a. Local Run card
         self.localCard = HeaderCardWidget(self.view)
         self.localCard.setTitle(tr("run.local_title"))
+        self.localCard.headerView.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.localCard.setMinimumWidth(0)
+        self.localCard.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         local_body = QVBoxLayout()
         local_body.setContentsMargins(0, 0, 0, 0)
         local_body.setSpacing(10)
 
-        friend_grid = QGridLayout()
-        friend_grid.setContentsMargins(0, 0, 0, 0)
-        friend_grid.setHorizontalSpacing(10)
-        friend_grid.setVerticalSpacing(6)
-        friend_grid.setColumnStretch(0, 1)
-        self.friendPromptLabel = BodyLabel(tr("schedule.test_friend_prompt"), self.localCard)
-        self.friendPromptLabel.setWordWrap(True)
+        cmd_row = FlowLayout(isTight=True)
+        cmd_row.setContentsMargins(0, 0, 0, 0)
+        cmd_row.setHorizontalSpacing(6)
+        cmd_row.setVerticalSpacing(6)
         self.friendCombo = ComboBox(self.localCard)
-        self.friendCombo.setMinimumWidth(0)
-        self.showBrowserSwitch = SwitchButton(self.localCard)
-        self.showBrowserSwitch.checkedChanged.connect(self._on_show_browser_changed)
-        self.showBrowserLabel = BodyLabel(tr("run.show_browser"), self.localCard)
-        browser_opt = QHBoxLayout()
-        browser_opt.setSpacing(8)
-        browser_opt.addWidget(self.showBrowserLabel)
-        browser_opt.addWidget(self.showBrowserSwitch)
-        self.showBrowserHintLabel = CaptionLabel(tr("run.show_browser_hint"), self.localCard)
-        self.showBrowserHintLabel.setWordWrap(True)
-        self.showBrowserHintLabel.hide()
-        friend_grid.addWidget(self.friendPromptLabel, 0, 0, 1, 2)
-        friend_grid.addWidget(self.friendCombo, 1, 0)
-        friend_grid.addLayout(browser_opt, 1, 1)
-        friend_grid.addWidget(self.showBrowserHintLabel, 2, 0, 1, 2)
-
-        btn_row = _FlowBox(self.localCard, h_spacing=10, v_spacing=6)
+        self.friendCombo.setMinimumWidth(120)
+        self.friendCombo.setMaximumWidth(175)
         self.quickTestBtn = PrimaryPushButton(
-            FIF.PLAY, escape_qt_mnemonic(tr("run.quick_test")), btn_row
+            FIF.PLAY, escape_qt_mnemonic(tr("run.quick_test")), self.localCard
         )
         self.fullRunBtn = PushButton(
-            FIF.PLAY_SOLID, escape_qt_mnemonic(tr("run.full_run")), btn_row
+            FIF.PLAY_SOLID, escape_qt_mnemonic(tr("run.full_run")), self.localCard
         )
         self.stopBtn = PushButton(
-            FIF.PAUSE, escape_qt_mnemonic(tr("schedule.stop_run")), btn_row
+            FIF.PAUSE, escape_qt_mnemonic(tr("run.stop_short")), self.localCard
         )
         self.stopBtn.setEnabled(False)
-
         self.quickTestBtn.clicked.connect(self._start_quick_test)
         self.fullRunBtn.clicked.connect(self._start_full_run)
         self.stopBtn.clicked.connect(self._stop_local_run)
 
-        btn_row.addWidget(self.quickTestBtn)
-        btn_row.addWidget(self.fullRunBtn)
-        btn_row.addWidget(self.stopBtn)
+        cmd_row.addWidget(self.friendCombo)
+        cmd_row.addWidget(self.quickTestBtn)
+        cmd_row.addWidget(self.fullRunBtn)
+        cmd_row.addWidget(self.stopBtn)
+        local_body.addLayout(cmd_row)
+
+        # Cleanly decoupled Show browser window bar (2-row layout so hint reads full-width)
+        self.browserOptBar = QFrame(self.localCard)
+        self.browserOptBar.setObjectName("RunBrowserOptBar")
+        opt_lay = QVBoxLayout(self.browserOptBar)
+        opt_lay.setContentsMargins(10, 8, 10, 8)
+        opt_lay.setSpacing(4)
+        opt_top = QHBoxLayout()
+        opt_top.setContentsMargins(0, 0, 0, 0)
+        opt_top.setSpacing(8)
+        self.showBrowserLabel = StrongBodyLabel(tr("run.show_browser"), self.browserOptBar)
+        self.showBrowserSwitch = SwitchButton(self.browserOptBar)
+        self.showBrowserSwitch.checkedChanged.connect(self._on_show_browser_changed)
+        opt_top.addWidget(self.showBrowserLabel, 1, Qt.AlignVCenter)
+        opt_top.addWidget(self.showBrowserSwitch, 0, Qt.AlignVCenter)
+        self.showBrowserHintLabel = CaptionLabel(tr("run.show_browser_hint"), self.browserOptBar)
+        self.showBrowserHintLabel.setWordWrap(True)
+        self.showBrowserHintLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        opt_lay.addLayout(opt_top)
+        opt_lay.addWidget(self.showBrowserHintLabel)
+        local_body.addWidget(self.browserOptBar)
 
         self.localProgress = IndeterminateProgressBar(self.localCard)
         self.localProgress.stop()
         self.localProgress.hide()
         self.localStatusLabel = CaptionLabel("", self.localCard)
         self.localStatusLabel.setWordWrap(True)
-
-        local_body.addLayout(friend_grid)
-        local_body.addWidget(btn_row)
+        self.localStatusLabel.hide()
         local_body.addWidget(self.localProgress)
         local_body.addWidget(self.localStatusLabel)
-        self.localCard.viewLayout.addLayout(local_body)
-        self.vBoxLayout.addWidget(self.localCard)
 
-        # 2. Cloud Monitor card
+        self.localCard.viewLayout.addLayout(local_body)
+
+        # 1b. GitHub Cloud card (matches exact height of Local Run card)
         self.cloudCard = HeaderCardWidget(self.view)
         self.cloudCard.setTitle(tr("run.cloud_title"))
+        self.cloudCard.headerView.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.cloudCard.setMinimumWidth(0)
+        self.cloudCard.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.cloudWorkflowBadge = StatusPill("", "neutral", self.cloudCard)
+        self.cloudWorkflowBadge.hide()
+        self.cloudCard.headerLayout.addStretch(1)
+        self.cloudCard.headerLayout.addWidget(self.cloudWorkflowBadge, 0, Qt.AlignVCenter)
+
         cloud_body = QVBoxLayout()
         cloud_body.setContentsMargins(0, 0, 0, 0)
         cloud_body.setSpacing(10)
 
-        cloud_left = QWidget(self.cloudCard)
-        cloud_left.setFixedHeight(32)
-        cloud_left_lay = QHBoxLayout(cloud_left)
-        cloud_left_lay.setContentsMargins(0, 0, 0, 0)
-        cloud_left_lay.setSpacing(8)
-        self.repoTargetLabel = BodyLabel("", cloud_left)
-        self.repoTargetLabel.setMinimumWidth(0)
-        self.cloudWorkflowBadge = StatusPill("", "neutral", cloud_left)
-        self.cloudWorkflowBadge.hide()
-        cloud_left_lay.addWidget(self.repoTargetLabel, 0, Qt.AlignVCenter)
-        cloud_left_lay.addWidget(self.cloudWorkflowBadge, 0, Qt.AlignVCenter)
+        self.cloudInfoBox = QFrame(self.cloudCard)
+        self.cloudInfoBox.setObjectName("RunCloudInfoBox")
+        ci_lay = QVBoxLayout(self.cloudInfoBox)
+        ci_lay.setContentsMargins(12, 10, 12, 10)
+        ci_lay.setSpacing(4)
 
-        cloud_ctrl_row = QWidget(self.cloudCard)
-        cloud_ctrl_row.setFixedHeight(32)
-        ctrl_lay = QHBoxLayout(cloud_ctrl_row)
-        ctrl_lay.setContentsMargins(0, 0, 0, 0)
-        ctrl_lay.setSpacing(8)
-        self.toggleCloudScheduleBtn = PushButton(
-            FIF.PAUSE, escape_qt_mnemonic(tr("cloud.pause_schedule")), cloud_ctrl_row
+        ci_top = QHBoxLayout()
+        ci_top.setContentsMargins(0, 0, 0, 0)
+        ci_top.setSpacing(8)
+        self.cloudRepoIcon = QLabel(self.cloudInfoBox)
+        self.cloudRepoIcon.setFixedSize(16, 16)
+        self.cloudRepoIcon.setAlignment(Qt.AlignCenter)
+        self.repoTargetLabel = StrongBodyLabel("", self.cloudInfoBox)
+        self.repoTargetLabel.setWordWrap(True)
+        self.repoTargetLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        ci_top.addWidget(self.cloudRepoIcon, 0, Qt.AlignVCenter)
+        ci_top.addWidget(self.repoTargetLabel, 1, Qt.AlignVCenter)
+
+        self.cloudScheduleLabel = BodyLabel("", self.cloudInfoBox)
+        self.cloudScheduleLabel.setWordWrap(True)
+        self.cloudScheduleLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+        ci_lay.addLayout(ci_top)
+        ci_lay.addWidget(self.cloudScheduleLabel)
+        cloud_body.addWidget(self.cloudInfoBox)
+        cloud_body.addStretch(1)
+
+        cloud_btns = FlowLayout(isTight=True)
+        cloud_btns.setContentsMargins(0, 0, 0, 0)
+        cloud_btns.setHorizontalSpacing(6)
+        cloud_btns.setVerticalSpacing(6)
+        self.runCloudBtn = PrimaryPushButton(
+            FIF.CLOUD, escape_qt_mnemonic(tr("run.run_cloud_btn")), self.cloudCard
         )
-        self.refreshRunsBtn = TransparentToolButton(FIF.SYNC, cloud_ctrl_row)
+        self.toggleCloudScheduleBtn = PushButton(
+            FIF.PAUSE, escape_qt_mnemonic(tr("cloud.pause_short")), self.cloudCard
+        )
+        self.refreshRunsBtn = TransparentToolButton(FIF.SYNC, self.cloudCard)
         self.refreshRunsBtn.setFixedSize(32, 32)
         self.refreshRunsBtn.setToolTip(tr("common.refresh"))
-        self.runCloudBtn = PrimaryPushButton(
-            FIF.CLOUD, escape_qt_mnemonic(tr("run.run_cloud_btn")), cloud_ctrl_row
-        )
         self.runCloudBtn.clicked.connect(self._run_on_github_now)
         self.toggleCloudScheduleBtn.clicked.connect(self._toggle_cloud_schedule)
         self.refreshRunsBtn.clicked.connect(self.refresh_cloud_runs)
-        ctrl_lay.addWidget(self.toggleCloudScheduleBtn, 0, Qt.AlignVCenter)
-        ctrl_lay.addWidget(self.refreshRunsBtn, 0, Qt.AlignVCenter)
-        ctrl_lay.addWidget(self.runCloudBtn, 0, Qt.AlignVCenter)
+        cloud_btns.addWidget(self.runCloudBtn)
+        cloud_btns.addWidget(self.toggleCloudScheduleBtn)
+        cloud_btns.addWidget(self.refreshRunsBtn)
+        cloud_body.addLayout(cloud_btns)
 
-        self.cloudHeaderRow = ResponsiveSplitRow(
-            cloud_left, cloud_ctrl_row, h_spacing=12, v_spacing=8, parent=self.cloudCard
-        )
-        cloud_body.addWidget(self.cloudHeaderRow)
+        self.cloudCard.viewLayout.addLayout(cloud_body)
 
-        self.cloudDelayHintLabel = CaptionLabel(tr("run.cloud_delay_hint"), self.cloudCard)
-        self.cloudDelayHintLabel.setWordWrap(True)
-        cloud_body.addWidget(self.cloudDelayHintLabel)
+        top_split.addWidget(self.localCard, 3)
+        top_split.addWidget(self.cloudCard, 2)
+        self.vBoxLayout.addLayout(top_split)
 
-        self.runEmptyLabel = CaptionLabel(tr("run.empty_runs"), self.cloudCard)
+        # 2. Bottom Equal-Height Master-Detail Split (Recent Cloud Runs | Live Logs)
+        bottom_split = QHBoxLayout()
+        bottom_split.setContentsMargins(0, 0, 0, 0)
+        bottom_split.setSpacing(14)
+
+        # 2a. Master: Recent Cloud Runs card
+        self.recentRunsCard = HeaderCardWidget(self.view)
+        self.recentRunsCard.setTitle(tr("run.recent_runs_title"))
+        self.recentRunsCard.headerView.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.recentRunsCard.setMinimumWidth(0)
+        self.recentRunsCard.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        runs_body = QVBoxLayout()
+        runs_body.setContentsMargins(0, 0, 0, 0)
+        runs_body.setSpacing(10)
+
+        # Actionable Empty State
+        self.runEmptyBox = QWidget(self.recentRunsCard)
+        empty_lay = QVBoxLayout(self.runEmptyBox)
+        empty_lay.setContentsMargins(12, 24, 12, 24)
+        empty_lay.setSpacing(8)
+        empty_lay.setAlignment(Qt.AlignCenter)
+        self.runEmptyTitle = StrongBodyLabel(tr("run.no_runs"), self.runEmptyBox)
+        self.runEmptyTitle.setAlignment(Qt.AlignCenter)
+        self.runEmptyLabel = CaptionLabel(tr("run.empty_runs"), self.runEmptyBox)
         self.runEmptyLabel.setWordWrap(True)
         self.runEmptyLabel.setAlignment(Qt.AlignCenter)
-        self.runEmptyLabel.setContentsMargins(12, 18, 12, 18)
-        cloud_body.addWidget(self.runEmptyLabel)
+        self.emptyRunCloudBtn = PrimaryPushButton(
+            FIF.CLOUD, escape_qt_mnemonic(tr("run.run_cloud_btn")), self.runEmptyBox
+        )
+        self.emptyRunCloudBtn.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.emptyRunCloudBtn.clicked.connect(self._run_on_github_now)
+        empty_lay.addWidget(self.runEmptyTitle, 0, Qt.AlignHCenter)
+        empty_lay.addWidget(self.runEmptyLabel, 0, Qt.AlignHCenter)
+        empty_lay.addWidget(self.emptyRunCloudBtn, 0, Qt.AlignHCenter)
+        runs_body.addWidget(self.runEmptyBox, 1)
 
-        self.runsTable = TableWidget(self.cloudCard)
-        self.runsTable.setColumnCount(4)
+        # Compact 3-column human-readable runs table
+        self.runsTable = TableWidget(self.recentRunsCard)
+        self.runsTable.setColumnCount(3)
         self.runsTable.setHorizontalHeaderLabels([
-            tr("run.col_status"),
             tr("run.col_conclusion"),
             tr("run.col_event"),
             tr("run.col_created"),
@@ -420,77 +450,122 @@ class RunPage(SmoothScrollArea):
         self.runsTable.setTextElideMode(Qt.ElideRight)
         self.runsTable.verticalHeader().hide()
         header = self.runsTable.horizontalHeader()
-        header.setMinimumSectionSize(90)
-        for col in (0, 1, 2):
-            header.setSectionResizeMode(col, QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.runsTable.setMinimumHeight(170)
-        self.runsTable.setMaximumHeight(220)
+        header.setMinimumSectionSize(56)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        self.runsTable.setMinimumHeight(180)
+        self.runsTable.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.runsTable.itemSelectionChanged.connect(self._sync_selected_run_buttons)
         self.runsTable.itemDoubleClicked.connect(lambda _item: self._open_selected_run_url())
-        cloud_body.addWidget(self.runsTable)
+        runs_body.addWidget(self.runsTable, 1)
 
-        self.runHintLabel = CaptionLabel(tr("run.select_run_hint"), self.cloudCard)
-        self.runHintLabel.setWordWrap(True)
-        cloud_body.addWidget(self.runHintLabel)
-
-        run_actions = _FlowBox(self.cloudCard, h_spacing=8, v_spacing=6)
-        self.openRunBtn = PushButton(
-            FIF.GLOBE, escape_qt_mnemonic(tr("run.open_run")), run_actions
-        )
+        # Clean action bar below runs table (wraps cleanly on narrow half-split widths)
+        run_actions = FlowLayout(isTight=True)
+        run_actions.setContentsMargins(0, 0, 0, 0)
+        run_actions.setHorizontalSpacing(6)
+        run_actions.setVerticalSpacing(6)
         self.viewLogsBtn = PushButton(
-            FIF.DOCUMENT, escape_qt_mnemonic(tr("cloud.view_logs")), run_actions
+            FIF.DOCUMENT, escape_qt_mnemonic(tr("cloud.view_logs")), self.recentRunsCard
         )
         self.downloadDiagBtn = PushButton(
-            FIF.CLOUD_DOWNLOAD, escape_qt_mnemonic(tr("cloud.download_diagnostics")), run_actions
+            FIF.CLOUD_DOWNLOAD, escape_qt_mnemonic(tr("cloud.download_diagnostics")), self.recentRunsCard
+        )
+        self.openRunBtn = TransparentPushButton(
+            FIF.LINK, escape_qt_mnemonic(tr("run.open_run")), self.recentRunsCard
         )
         self.cancelCloudRunBtn = PushButton(
-            FIF.CANCEL, escape_qt_mnemonic(tr("cloud.stop_run")), run_actions
+            FIF.CANCEL, escape_qt_mnemonic(tr("cloud.stop_run")), self.recentRunsCard
         )
-        self.openRunBtn.clicked.connect(self._open_selected_run_url)
+        self.cancelCloudRunBtn.hide()
         self.viewLogsBtn.clicked.connect(self._view_selected_run_logs)
         self.downloadDiagBtn.clicked.connect(self._download_selected_diagnostics)
+        self.openRunBtn.clicked.connect(self._open_selected_run_url)
         self.cancelCloudRunBtn.clicked.connect(self._cancel_selected_cloud_run)
-        run_actions.addWidget(self.openRunBtn)
+
         run_actions.addWidget(self.viewLogsBtn)
         run_actions.addWidget(self.downloadDiagBtn)
+        run_actions.addWidget(self.openRunBtn)
         run_actions.addWidget(self.cancelCloudRunBtn)
-        cloud_body.addWidget(run_actions)
+        runs_body.addLayout(run_actions)
 
-        # Diagnostics screenshot preview container (hidden until downloaded)
-        self.diagPreviewBox = QWidget(self.cloudCard)
+        # Stacked non-overflowing Failure Screenshot Preview container
+        self.diagPreviewBox = QFrame(self.recentRunsCard)
+        self.diagPreviewBox.setObjectName("RunDiagPreviewBox")
         dp_lay = QVBoxLayout(self.diagPreviewBox)
-        dp_lay.setContentsMargins(0, 6, 0, 0)
+        dp_lay.setContentsMargins(10, 8, 10, 10)
         dp_lay.setSpacing(8)
+        self.diagPreviewTitle = StrongBodyLabel(tr("run.diag_preview_title"), self.diagPreviewBox)
         dp_bar = QHBoxLayout()
+        dp_bar.setContentsMargins(0, 0, 0, 0)
+        dp_bar.setSpacing(8)
         self.diagCombo = ComboBox(self.diagPreviewBox)
+        self.diagCombo.setMinimumWidth(0)
         self.diagCombo.currentIndexChanged.connect(self._on_diag_image_selected)
         self.openDiagFolderBtn = PushButton(
             FIF.FOLDER, escape_qt_mnemonic(tr("run.open_folder")), self.diagPreviewBox
         )
         self.openDiagFolderBtn.clicked.connect(self._open_diag_folder)
         dp_bar.addWidget(self.diagCombo, 1)
-        dp_bar.addWidget(self.openDiagFolderBtn)
+        dp_bar.addWidget(self.openDiagFolderBtn, 0)
 
         self.diagImageLabel = ImageLabel(self.diagPreviewBox)
         self.diagImageLabel.setBorderRadius(8, 8, 8, 8)
+        dp_lay.addWidget(self.diagPreviewTitle)
         dp_lay.addLayout(dp_bar)
-        dp_lay.addWidget(self.diagImageLabel, 0, Qt.AlignLeft)
+        dp_lay.addWidget(self.diagImageLabel, 0, Qt.AlignHCenter)
         self.diagPreviewBox.hide()
-        cloud_body.addWidget(self.diagPreviewBox)
+        runs_body.addWidget(self.diagPreviewBox)
 
         self._sync_runs_empty_state()
+        self.recentRunsCard.viewLayout.addLayout(runs_body)
 
-        self.cloudCard.viewLayout.addLayout(cloud_body)
-        self.vBoxLayout.addWidget(self.cloudCard)
-
-        # 3. Bottom LogViewer
+        # 2b. Detail: Live Logs console (matches exact height of Recent Cloud Runs card)
         self.logViewer = LogViewer(
             parent=self.view,
             secrets_provider=self._collect_extra_secrets,
             summary_provider=self._build_diag_summary,
         )
-        self.vBoxLayout.addWidget(self.logViewer)
+
+        bottom_split.addWidget(self.recentRunsCard, 11)
+        bottom_split.addWidget(self.logViewer, 10)
+        self.vBoxLayout.addLayout(bottom_split, 1)
+
+        self._apply_styles()
+        try:
+            qconfig.themeChanged.connect(self._apply_styles)
+        except Exception:
+            pass
+
+    def _apply_styles(self, _theme=None) -> None:
+        dark = isDarkTheme()
+        bar_bg = "rgba(255, 255, 255, 0.04)" if dark else "#f4f6fa"
+        bar_border = "rgba(255, 255, 255, 0.08)" if dark else "#e2e6ee"
+        muted_fg = "#9a9a9a" if dark else "#616161"
+        sched_fg = "#c8c8c8" if dark else "#4a5058"
+
+        self.browserOptBar.setStyleSheet(
+            f"QFrame#RunBrowserOptBar {{ background-color: {bar_bg}; border: 1px solid {bar_border}; "
+            f"border-radius: {INNER_RADIUS}px; }}"
+        )
+        self.cloudInfoBox.setStyleSheet(
+            f"QFrame#RunCloudInfoBox {{ background-color: {bar_bg}; border: 1px solid {bar_border}; "
+            f"border-radius: {INNER_RADIUS}px; }}"
+        )
+        self.diagPreviewBox.setStyleSheet(
+            f"QFrame#RunDiagPreviewBox {{ background-color: {bar_bg}; border: 1px solid {bar_border}; "
+            f"border-radius: {INNER_RADIUS}px; }}"
+        )
+        fg_primary = "#ffffff" if dark else "#1a1a1a"
+        self.showBrowserLabel.setStyleSheet(f"color: {fg_primary}; background: transparent;")
+        self.showBrowserHintLabel.setStyleSheet(f"color: {muted_fg}; background: transparent;")
+        self.repoTargetLabel.setStyleSheet(f"color: {fg_primary}; background: transparent;")
+        self.cloudScheduleLabel.setStyleSheet(f"color: {sched_fg}; background: transparent;")
+        self.diagPreviewTitle.setStyleSheet(f"color: {fg_primary}; background: transparent;")
+        try:
+            self.cloudRepoIcon.setPixmap(FIF.GITHUB.icon().pixmap(16, 16))
+        except Exception:
+            pass
 
     def _collect_extra_secrets(self) -> list[str]:
         return LocalRunner._collect_secrets(self._state, self._secrets)
@@ -506,6 +581,12 @@ class RunPage(SmoothScrollArea):
     def append_log(self, line: str) -> None:
         self.logViewer.append_log(line)
 
+    def start_smoke_test(self) -> None:
+        self._start_quick_test()
+
+    def start_full_run(self) -> None:
+        self._start_full_run()
+
     def refresh_from_state(self, state: AppState | None = None) -> None:
         if state is not None:
             self._state = state
@@ -515,7 +596,6 @@ class RunPage(SmoothScrollArea):
             self.showBrowserSwitch.setChecked(not st.headless_local)
         finally:
             self._loading = False
-        self.showBrowserHintLabel.setVisible(not st.headless_local)
 
         # Populate friend dropdown from active accounts
         prev_data = self.friendCombo.currentData()
@@ -536,27 +616,43 @@ class RunPage(SmoothScrollArea):
         full_name = self._full_repo_name()
         has_tok = bool(self._secrets.get_github_token())
         if full_name and has_tok:
-            self.repoTargetLabel.setText(f"GitHub: {full_name}")
             self.runCloudBtn.setEnabled(True)
+            self.emptyRunCloudBtn.setEnabled(True)
             self.refreshRunsBtn.setEnabled(True)
             self.toggleCloudScheduleBtn.setEnabled(True)
         else:
-            self.repoTargetLabel.setText(tr("schedule.not_signed_in"))
             self.runCloudBtn.setEnabled(False)
+            self.emptyRunCloudBtn.setEnabled(False)
             self.refreshRunsBtn.setEnabled(False)
             self.toggleCloudScheduleBtn.setEnabled(False)
             self._cloud_workflow_state = None
+        self._sync_cloud_info_labels()
         self._sync_cloud_workflow_controls()
 
         if self._runs:
-            tz_id = getattr(self._state, "timezone", "Asia/Jakarta")
-            for row_idx, r in enumerate(self._runs):
-                if row_idx < self.runsTable.rowCount():
-                    item = self.runsTable.item(row_idx, 3)
-                    if item is not None:
-                        item.setText(format_utc_timestamp(str(r.get("created_at") or ""), tz_id=tz_id))
+            self._populate_runs_table(self._runs)
 
         self._sync_selected_run_buttons()
+
+    def _sync_cloud_info_labels(self) -> None:
+        st = self._state
+        full_name = self._full_repo_name()
+        has_tok = bool(self._secrets.get_github_token())
+        tz_short = get_timezone_info(getattr(st, "timezone", None))["short"]
+        times_str = ", ".join(list(getattr(st, "cloud_times", None) or [])[:3])
+        sched_txt = (
+            tr("run.cloud_schedule_line", times=times_str, tz=tz_short)
+            if times_str
+            else tr("run.cloud_schedule_none")
+        )
+        if full_name and has_tok:
+            self.repoTargetLabel.setText(full_name)
+            if self._runs:
+                res_lbl, _lvl = _human_run_result(self._runs[0])
+                sched_txt = f"{sched_txt} · {tr('run.cloud_last_run', result=res_lbl)}"
+        else:
+            self.repoTargetLabel.setText(tr("schedule.not_signed_in"))
+        self.cloudScheduleLabel.setText(sched_txt)
 
     def _full_repo_name(self) -> str:
         owner = self._state.github_login.strip()
@@ -568,7 +664,6 @@ class RunPage(SmoothScrollArea):
         return f"{owner}/{repo}" if owner else ""
 
     def _on_show_browser_changed(self, checked: bool) -> None:
-        self.showBrowserHintLabel.setVisible(bool(checked))
         if self._loading:
             return
         new_headless = not bool(checked)
@@ -590,6 +685,9 @@ class RunPage(SmoothScrollArea):
             self.localProgress.hide()
         if status_text:
             self.localStatusLabel.setText(status_text)
+            self.localStatusLabel.show()
+        elif not running:
+            self.localStatusLabel.hide()
 
     def _start_quick_test(self) -> None:
         if self._workers.is_running("local_run"):
@@ -659,11 +757,13 @@ class RunPage(SmoothScrollArea):
         if self._local_cancel is not None:
             self._local_cancel.set()
             self.localStatusLabel.setText(tr("common.cancel") + "...")
+            self.localStatusLabel.show()
             self.stopBtn.setEnabled(False)
 
     def _on_local_progress(self, payload: Any) -> None:
         if isinstance(payload, dict) and payload.get("message"):
             self.localStatusLabel.setText(str(payload["message"]))
+            self.localStatusLabel.show()
 
     def _on_local_finished(self, res: dict[str, Any], is_smoke: bool) -> None:
         ok = bool(res.get("ok"))
@@ -708,29 +808,44 @@ class RunPage(SmoothScrollArea):
     def _sync_runs_empty_state(self) -> None:
         has_rows = self.runsTable.rowCount() > 0
         self.runsTable.setVisible(has_rows)
-        self.runEmptyLabel.setVisible(not has_rows)
-        self.runHintLabel.setVisible(has_rows)
+        self.runEmptyBox.setVisible(not has_rows)
 
     def _populate_runs_table(self, runs: list[dict[str, Any]]) -> None:
+        prev_row = self.runsTable.currentRow()
         self._runs = list(runs or [])
         self.runsTable.setRowCount(len(self._runs))
         mono_font = tabular_mono_font(10)
         tz_id = getattr(self._state, "timezone", "Asia/Jakarta")
+        dark = isDarkTheme()
+
+        color_map = {
+            "success": QColor("#6ccb5f" if dark else "#0f7b0f"),
+            "error": QColor("#ff99a4" if dark else "#b42318"),
+            "warning": QColor("#fce100" if dark else "#9d5d00"),
+            "info": QColor("#4cc2ff" if dark else "#005fb8"),
+        }
+
         for row_idx, r in enumerate(self._runs):
-            vals = [
-                str(r.get("status") or ""),
-                str(r.get("conclusion") or "-"),
-                str(r.get("event") or ""),
-                format_utc_timestamp(str(r.get("created_at") or ""), tz_id=tz_id),
-            ]
-            for col_idx, val in enumerate(vals):
-                item = QTableWidgetItem(val)
-                if col_idx == 3:
-                    item.setFont(mono_font)
-                self.runsTable.setItem(row_idx, col_idx, item)
+            result_lbl, level = _human_run_result(r)
+            trigger_lbl = _human_run_trigger(str(r.get("event") or ""))
+            created_lbl = format_utc_timestamp(str(r.get("created_at") or ""), tz_id=tz_id)
+
+            res_item = QTableWidgetItem(f"● {result_lbl}")
+            if level in color_map:
+                res_item.setForeground(color_map[level])
+            trig_item = QTableWidgetItem(trigger_lbl)
+            time_item = QTableWidgetItem(created_lbl)
+            time_item.setFont(mono_font)
+
+            self.runsTable.setItem(row_idx, 0, res_item)
+            self.runsTable.setItem(row_idx, 1, trig_item)
+            self.runsTable.setItem(row_idx, 2, time_item)
+
         if self._runs:
-            self.runsTable.selectRow(0)
+            target_row = prev_row if 0 <= prev_row < len(self._runs) else 0
+            self.runsTable.selectRow(target_row)
         self._sync_runs_empty_state()
+        self._sync_cloud_info_labels()
         self._sync_selected_run_buttons()
 
     def _selected_run(self) -> dict[str, Any] | None:
@@ -747,7 +862,9 @@ class RunPage(SmoothScrollArea):
         self.viewLogsBtn.setEnabled(has_sel)
         self.downloadDiagBtn.setEnabled(has_sel)
         run_status = str((run or {}).get("status") or "").strip().lower()
-        self.cancelCloudRunBtn.setEnabled(has_sel and run_status in _ACTIVE_RUN_STATUSES)
+        is_active = has_sel and run_status in _ACTIVE_RUN_STATUSES
+        self.cancelCloudRunBtn.setEnabled(is_active)
+        self.cancelCloudRunBtn.setVisible(is_active)
 
     def _is_cloud_workflow_paused(self) -> bool:
         return bool(self._cloud_workflow_state and self._cloud_workflow_state != "active")
@@ -755,17 +872,17 @@ class RunPage(SmoothScrollArea):
     def _sync_cloud_workflow_controls(self) -> None:
         if not self._cloud_workflow_state:
             self.cloudWorkflowBadge.hide()
-            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.pause_schedule")))
+            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.pause_short")))
             self.toggleCloudScheduleBtn.setIcon(FIF.PAUSE)
             return
         paused = self._is_cloud_workflow_paused()
         if paused:
             self.cloudWorkflowBadge.setState("warning", tr("cloud.repo_state_paused"))
-            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.resume_schedule")))
+            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.resume_short")))
             self.toggleCloudScheduleBtn.setIcon(FIF.PLAY)
         else:
             self.cloudWorkflowBadge.setState("success", tr("cloud.repo_state_active"))
-            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.pause_schedule")))
+            self.toggleCloudScheduleBtn.setText(escape_qt_mnemonic(tr("cloud.pause_short")))
             self.toggleCloudScheduleBtn.setIcon(FIF.PAUSE)
         self.cloudWorkflowBadge.show()
         self.cloudWorkflowBadge.adjustSize()
@@ -809,6 +926,7 @@ class RunPage(SmoothScrollArea):
         if not token or not full_name:
             return
         self.runCloudBtn.setEnabled(False)
+        self.emptyRunCloudBtn.setEnabled(False)
         self._workers.start_task(
             _dispatch_run_task,
             token,
@@ -822,6 +940,7 @@ class RunPage(SmoothScrollArea):
 
     def _on_cloud_dispatched(self, payload: dict[str, Any]) -> None:
         self.runCloudBtn.setEnabled(True)
+        self.emptyRunCloudBtn.setEnabled(True)
         if payload.get("workflow_state"):
             self._cloud_workflow_state = str(payload["workflow_state"]).strip().lower()
             self._sync_cloud_workflow_controls()
@@ -905,6 +1024,7 @@ class RunPage(SmoothScrollArea):
         ready = bool(self._secrets.get_github_token() and self._full_repo_name())
         self.refreshRunsBtn.setEnabled(ready)
         self.runCloudBtn.setEnabled(ready)
+        self.emptyRunCloudBtn.setEnabled(ready)
         self.toggleCloudScheduleBtn.setEnabled(ready)
         self._sync_selected_run_buttons()
         InfoBar.error(
@@ -1013,7 +1133,7 @@ class RunPage(SmoothScrollArea):
         path = self.diagCombo.currentData()
         if path and Path(str(path)).is_file():
             self.diagImageLabel.setImage(str(path))
-            self.diagImageLabel.scaledToHeight(220)
+            self.diagImageLabel.scaledToWidth(320)
         else:
             self.diagImageLabel.setImage(None)
 
@@ -1022,22 +1142,22 @@ class RunPage(SmoothScrollArea):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_diag_dir)))
 
     def retranslate(self) -> None:
-        self.titleLabel.setText(tr("nav.run_logs"))
+        self.titleLabel.setText(tr("run.title"))
+        self.subtitleLabel.setText(tr("run.subtitle"))
         self.localCard.setTitle(tr("run.local_title"))
-        self.friendPromptLabel.setText(tr("schedule.test_friend_prompt"))
         self.showBrowserLabel.setText(tr("run.show_browser"))
         self.showBrowserHintLabel.setText(tr("run.show_browser_hint"))
         self.quickTestBtn.setText(escape_qt_mnemonic(tr("run.quick_test")))
         self.fullRunBtn.setText(escape_qt_mnemonic(tr("run.full_run")))
-        self.stopBtn.setText(escape_qt_mnemonic(tr("schedule.stop_run")))
+        self.stopBtn.setText(escape_qt_mnemonic(tr("run.stop_short")))
         self.cloudCard.setTitle(tr("run.cloud_title"))
-        self.cloudDelayHintLabel.setText(tr("run.cloud_delay_hint"))
         self.runCloudBtn.setText(escape_qt_mnemonic(tr("run.run_cloud_btn")))
+        self.emptyRunCloudBtn.setText(escape_qt_mnemonic(tr("run.run_cloud_btn")))
         self.refreshRunsBtn.setToolTip(tr("common.refresh"))
+        self.recentRunsCard.setTitle(tr("run.recent_runs_title"))
+        self.runEmptyTitle.setText(tr("run.no_runs"))
         self.runEmptyLabel.setText(tr("run.empty_runs"))
-        self.runHintLabel.setText(tr("run.select_run_hint"))
         self.runsTable.setHorizontalHeaderLabels([
-            tr("run.col_status"),
             tr("run.col_conclusion"),
             tr("run.col_event"),
             tr("run.col_created"),
@@ -1046,6 +1166,7 @@ class RunPage(SmoothScrollArea):
         self.viewLogsBtn.setText(escape_qt_mnemonic(tr("cloud.view_logs")))
         self.downloadDiagBtn.setText(escape_qt_mnemonic(tr("cloud.download_diagnostics")))
         self.cancelCloudRunBtn.setText(escape_qt_mnemonic(tr("cloud.stop_run")))
+        self.diagPreviewTitle.setText(tr("run.diag_preview_title"))
         self.openDiagFolderBtn.setText(escape_qt_mnemonic(tr("run.open_folder")))
         self._sync_cloud_workflow_controls()
         self.logViewer.retranslate()

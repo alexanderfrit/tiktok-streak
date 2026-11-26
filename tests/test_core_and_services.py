@@ -2967,3 +2967,224 @@ class TestUpdaterService:
         assert "#1f1f1f" in light_html and "#f3f3f3" in dark_html
 
 
+class TestRedesignServicesAndPackaging:
+    """Unit tests for inline preflight engine, EN/ID i18n parity, and Nuitka updater support."""
+
+    def test_cloud_deploy_evaluate_preflight_all_states(self, tmp_path):
+        from gui.services.cloud_deploy import evaluate_deploy_preflight
+        from gui.services.storage import AccountProfile, AppState, SecretStore
+
+        secrets = SecretStore(tmp_path)
+        acc = AccountProfile(name="Main", username="demo_creator", friends=["friend_one"])
+        state = AppState(
+            accounts=[acc],
+            github_login="demo_user",
+            github_repo_name="tiktok-streak",
+            video_enabled=False,
+        )
+        secrets.set_github_token("ghp_test_token_1234567890")
+        secrets.set_account_cookie(acc.id, "sessionid=abc123456789; tt-target-idc=alisg; ttwid=xyz")
+
+        # 1. All-pass state
+        pf_ok = evaluate_deploy_preflight(
+            state,
+            secrets,
+            "tiktok-streak",
+            discovered_bot_repos=[{"full_name": "demo_user/tiktok-streak", "active": True}],
+            discovered_all_repos={"demo_user/tiktok-streak": {}},
+        )
+        assert pf_ok["ready"] is True
+        assert pf_ok["has_blocking"] is False
+        assert pf_ok["issue_count"] == 0
+        assert pf_ok["warnings"] == []
+
+        # 2. Bare sessionid error (inline browser_login fix, non-blocking overrideable)
+        secrets.set_account_cookie(acc.id, "bare_session_value_only_12345")
+        pf_bare = evaluate_deploy_preflight(
+            state,
+            secrets,
+            "tiktok-streak",
+            discovered_bot_repos=[{"full_name": "demo_user/tiktok-streak", "active": True}],
+            discovered_all_repos={"demo_user/tiktok-streak": {}},
+        )
+        checks = {c["id"]: c for c in pf_bare["checks"]}
+        assert checks["session"]["status"] == "error"
+        assert checks["session"]["fix"] == "browser_login"
+        assert pf_bare["has_blocking"] is False
+        assert len(pf_bare["warnings"]) == 1
+
+        # 3. Existing non-bot repo warning + allow_existing_non_bot=True inline override
+        secrets.set_account_cookie(acc.id, "sessionid=abc123456789; tt-target-idc=alisg")
+        pf_nonbot = evaluate_deploy_preflight(
+            state,
+            secrets,
+            "my-existing-repo",
+            discovered_bot_repos=[],
+            discovered_all_repos={"demo_user/my-existing-repo": {}},
+            allow_existing_non_bot=False,
+        )
+        checks_nb = {c["id"]: c for c in pf_nonbot["checks"]}
+        assert checks_nb["repo"]["status"] == "warn"
+        assert checks_nb["repo"]["fix"] == "allow_existing"
+
+        pf_allowed = evaluate_deploy_preflight(
+            state,
+            secrets,
+            "my-existing-repo",
+            discovered_bot_repos=[],
+            discovered_all_repos={"demo_user/my-existing-repo": {}},
+            allow_existing_non_bot=True,
+        )
+        assert pf_allowed["ready"] is True
+        assert {c["id"]: c for c in pf_allowed["checks"]}["repo"]["status"] == "pass"
+
+        # 4. Combined multi-warning state (bare sessionid + non-bot repo + duplicate active bot)
+        secrets.set_account_cookie(acc.id, "bare_session_value_only_12345")
+        pf_multi = evaluate_deploy_preflight(
+            state,
+            secrets,
+            "my-existing-repo",
+            discovered_bot_repos=[{"full_name": "demo_user/old-streak-bot", "active": True}],
+            discovered_all_repos={"demo_user/my-existing-repo": {}, "demo_user/old-streak-bot": {}},
+        )
+        assert pf_multi["issue_count"] == 3
+        assert len(pf_multi["warnings"]) == 3
+        assert pf_multi["other_active"] == ["demo_user/old-streak-bot"]
+        assert {c["id"]: c for c in pf_multi["checks"]}["dups"]["fix"] == "pause_others"
+
+        # 5. Missing cookie is a hard blocker
+        secrets.delete_account_cookie(acc.id)
+        pf_block = evaluate_deploy_preflight(state, secrets, "tiktok-streak")
+        assert pf_block["has_blocking"] is True
+        assert pf_block["ready"] is False
+
+    def test_i18n_en_id_strict_key_and_placeholder_parity(self):
+        import re
+        from gui.services.i18n import TRANSLATIONS
+
+        en = TRANSLATIONS["en"]
+        id_ = TRANSLATIONS["id"]
+        assert set(en.keys()) == set(id_.keys())
+        for key in en:
+            assert en[key].strip(), f"Empty EN string for {key}"
+            assert id_[key].strip(), f"Empty ID string for {key}"
+            en_vars = set(re.findall(r"\{([a-zA-Z0-9_]+)\}", en[key]))
+            id_vars = set(re.findall(r"\{([a-zA-Z0-9_]+)\}", id_[key]))
+            assert en_vars == id_vars, f"Placeholder mismatch for {key}: {en_vars} vs {id_vars}"
+
+    def test_updater_can_self_update_recognizes_pyinstaller_and_nuitka(self, monkeypatch, tmp_path):
+        from gui.services.updater import _sanitize_relaunch_env, can_self_update_executable
+
+        fake_exe = tmp_path / "TikTokStreakSetup.exe"
+        fake_exe.write_bytes(b"MZ")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sys, "executable", str(fake_exe))
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.delattr(sys, "__compiled__", raising=False)
+
+        assert can_self_update_executable() is False
+
+        # PyInstaller frozen flag
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        assert can_self_update_executable() is True
+        monkeypatch.delattr(sys, "frozen", raising=False)
+
+        # Nuitka compiled marker
+        monkeypatch.setattr(sys, "__compiled__", object(), raising=False)
+        assert can_self_update_executable() is True
+
+        # Relaunch env sanitization strips Nuitka onefile vars as well
+        sanitized = _sanitize_relaunch_env(
+            {
+                "NUITKA_ONEFILE_PARENT": "1234",
+                "NUITKA_ONEFILE_BINARY": str(fake_exe),
+                "_MEIPASS2": "C:\\Temp\\_MEI99",
+                "PATH": "C:\\Windows\\System32",
+            }
+        )
+        assert "NUITKA_ONEFILE_PARENT" not in sanitized
+        assert "NUITKA_ONEFILE_BINARY" not in sanitized
+        assert "_MEIPASS2" not in sanitized
+        assert sanitized["PATH"] == "C:\\Windows\\System32"
+
+    def test_validate_video_url_extracts_preview_meta_and_fetch_fallback(self):
+        from PIL import Image
+        from gui.services.validators import (
+            _download_preview_image_bytes,
+            fetch_tiktok_video_preview,
+            validate_video_url,
+        )
+
+        ssr_payload = {
+            "__DEFAULT_SCOPE__": {
+                "webapp.video-detail": {
+                    "statusCode": 0,
+                    "itemInfo": {
+                        "itemStruct": {
+                            "id": "7669608467589647629",
+                            "author": {
+                                "uniqueId": "proofwereokay",
+                                "nickname": "Proof Were Okay",
+                                "avatarThumb": "https://cdn.example.com/av.jpg",
+                            },
+                            "video": {
+                                "cover": "https://cdn.example.com/cover.webp",
+                            },
+                        }
+                    },
+                }
+            }
+        }
+        html_doc = (
+            '<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">'
+            + json.dumps(ssr_payload)
+            + "</script></html>"
+        ).encode("utf-8")
+
+        class _HtmlResp:
+            def __init__(self, payload: bytes, url: str) -> None:
+                self._payload = payload
+                self._url = url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def geturl(self):
+                return self._url
+
+            def read(self, _n=None):
+                return self._payload
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_HtmlResp(html_doc, "https://www.tiktok.com/@proofwereokay/video/7669608467589647629"),
+        ):
+            res = validate_video_url(
+                "https://www.tiktok.com/@proofwereokay/video/7669608467589647629",
+                verify_availability=True,
+            )
+        assert res["verified"] is True
+        assert res["author"] == "proofwereokay"
+        assert res["author_nickname"] == "Proof Were Okay"
+        assert res["cover_url"] == "https://cdn.example.com/cover.webp"
+        assert res["author_avatar_url"] == "https://cdn.example.com/av.jpg"
+
+        # Pillow normalizes WebP bytes -> PNG bytes so Qt displays covers reliably
+        webp_buf = io.BytesIO()
+        Image.new("RGB", (24, 40), (254, 44, 85)).save(webp_buf, format="WEBP")
+        webp_bytes = webp_buf.getvalue()
+        with patch("urllib.request.urlopen", return_value=_HtmlResp(webp_bytes, "https://cdn.example.com/cover.webp")):
+            norm = _download_preview_image_bytes("https://cdn.example.com/cover.webp")
+        assert norm is not None and norm[:8] == b"\x89PNG\r\n\x1a\n"
+
+        # Offline fetch fails gracefully without raising
+        with patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            prev = fetch_tiktok_video_preview("https://www.tiktok.com/@proofwereokay/video/7669608467589647629")
+        assert prev["cover_bytes"] is None
+        assert prev["ok"] is False
+
+
+
