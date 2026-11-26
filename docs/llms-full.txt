@@ -1,11 +1,11 @@
-# TikTok Streak Auto — Complete Technical & User Documentation (v1.3.3)
+# TikTok Streak Auto — Complete Technical & User Documentation (v1.4.0)
 
 Canonical URL: https://alexanderfrit.github.io/tiktok-streak/
 Repository: https://github.com/alexanderfrit/tiktok-streak
 Latest Release Download: https://github.com/alexanderfrit/tiktok-streak/releases/latest
 Author: alexanderfrit (https://github.com/alexanderfrit)
 License: MIT
-Last Updated: 2026-11-21
+Last Updated: 2026-11-26
 
 ---
 
@@ -62,17 +62,20 @@ Total daily Streak Pet growth per friend: **`+7` points/day**.
 Download `TikTokStreakSetup.exe` from GitHub Releases (`https://github.com/alexanderfrit/tiktok-streak/releases/latest`). Double-click to run (standalone single-file executable, no Python installation required; on Windows SmartScreen click **More info -> Run anyway** if unsigned). Or run from Python 3.10+ source with `pip install -r requirements.txt -r requirements-gui.txt && python run_gui.py`.
 
 ### Step 2: Connect Your TikTok Account & Add Friends
-1. Open the **Accounts** tab and click **Sign in via Browser (Recommended)**. This opens an un-flagged Chrome/Edge window so Windows App-Bound Encryption (`v20`) does not block cookies.
-2. Sign in to TikTok, wait for `/messages` to load, and click **I'm Logged In — Grab Now** (or wait for auto-capture). Click **Verify** to check inbox availability and hydrate regional routing cookies (`tt-target-idc`, `store-idc`) for US GitHub runners.
-3. Add mutual friend `@username` handles or import `friends.csv`. Enable **Multi-Account** for multiple TikTok profiles with optional per-account content overrides.
+1. Open the **Accounts** tab and click **Sign in via Browser (Recommended)** — or click **Import from Browser** to open the self-contained browser profile picker (`Chrome`, `Edge`, `Firefox`, `Zen`, with automatic `[v20]` detection and 1-click Guided Browser Login switch). Guided Browser Login opens an un-flagged Chrome/Edge window so Windows App-Bound Encryption (`v20`) does not block cookies.
+2. Sign in to TikTok, wait for `/messages` to load, and click **I'm Logged In — Grab Now** (or wait for auto-capture). Click **Verify Session** in the card header to check inbox availability and hydrate regional routing cookies (`tt-target-idc`, `store-idc`) for US GitHub runners.
+3. Add mutual friend `@username` handles or import CSV (`Import CSV`). Enable **Multi-Account** for multiple TikTok profiles with optional per-account content overrides.
 
-### Step 3: Customize Content & Choose Local / Cloud Schedule
-1. In **Content & Schedule**, customize the streak text message, TikTok video share URL (`vt.tiktok.com` short links resolved automatically), share count per friend, and optional custom photo.
-2. Pick your schedule timezone (`WIB UTC+7`, `WITA UTC+8`, `WIT UTC+9`, `UTC`, `ET`, `PT`, etc.).
-3. For **GitHub Cloud**, sign in with 1-click GitHub Device Flow, keep **Create Private Repository** enabled, review **Detected Bot Repositories** (select any existing bot row, pause/resume schedules individually, or click **Pause Others** if duplicate active bots are found), choose off-peak schedule minutes such as `:15` or `:17`, and click **Save & Deploy to GitHub**.
+### Step 3: Customize Content & Live 1:1 DM Preview (**Message & Media**)
+1. In **Message & Media**, customize the streak text message, TikTok video share URL (`vt.tiktok.com` short links resolved automatically, verified live via **Check Link**), share count per friend, and optional custom photo.
+2. Watch your exact payload and reactive Streak Pet points (`+7 pts/day`) update live inside the responsive **1:1 TikTok DM Preview** panel.
 
-### Step 4: Verify Safely with a 1-Friend Smoke Test
-In **Run & Logs**, pick one friend, optionally toggle **Show browser window** (which automatically enables `HEADFUL_GUARD_JS` inbox sidebar click-locking so accidental clicks never misdirect sends), and run **Quick Test (1 Friend)** before deploying or running full streaks.
+### Step 4: Configure Schedule & Deploy (**Automation**)
+1. Open **Automation**, confirm your single-source timezone badge (editable in **Settings -> General & Alerts**), and choose `Local PC`, `GitHub Cloud`, or `Hybrid`.
+2. For **GitHub Cloud**, sign in with 1-click GitHub Device Flow, keep **Private** enabled, review **Detected Bot Repositories** (select any existing bot row, pause/resume schedules, or pause duplicate active bots), choose off-peak schedule minutes such as `:15` or `:17`, confirm all 3 **Preflight** checks turn green, and click **Deploy to GitHub**.
+
+### Step 5: Verify Safely & Monitor (**Run & Logs**)
+In **Run & Logs**, pick one friend, optionally toggle **Show browser window** (automatically synced with **Automation** and enforcing `HEADFUL_GUARD_JS` inbox sidebar click-locking), click **Test 1 Friend**, and monitor **GitHub Cloud** status alongside **Recent Cloud Runs** and redacted **Live Logs**.
 
 ---
 
@@ -139,4 +142,4 @@ A: `v1.3.0` prevents misdelivery via right-pane `@username` header verification 
 A: The runner avoids public profiles and video watch pages (common `secsdk-captcha` triggers) and operates strictly inside `/messages` using stealth browser flags and human-like typing intervals.
 
 **Q: How do I stop duplicate messages if I deployed to two repositories?**
-A: Open **Content & Schedule -> Detected Bot Repositories**. Any repository containing `streak.yml` is listed with Active/Paused status. Click **Pause Others** (`Jeda Lainnya`) to pause extra schedules in one click, or manage individual schedules from **Run & Logs**.
+A: Open **Automation -> Detected Bot Repositories**. Any repository containing `streak.yml` is listed with Active/Paused status. Click **Pause Schedule** / pause extra schedules cleanly, or manage schedules directly from **Run & Logs**.

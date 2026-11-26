@@ -40,17 +40,17 @@ Beyond keeping daily streak days alive, sending all three message types complete
 
 ## Preview
 
-| Overview & Checklist | TikTok Accounts & Friends |
+| Home & Setup Checklist | Accounts & Friends |
 |---|---|
-| ![Dashboard overview](docs/screenshots/01-dashboard.png) | ![Accounts setup](docs/screenshots/02-accounts.png) |
+| ![Home & Setup Checklist](docs/screenshots/01-dashboard.png) | ![Accounts & Friends](docs/screenshots/02-accounts.png) |
 
-| Message & Media Cards | Cloud Schedule & Deployment |
+| Message & Media + Live DM Preview | Automation & Cloud Preflight |
 |---|---|
-| ![Content and media](docs/screenshots/03-content-schedule.png) | ![Cloud deployment](docs/screenshots/04-cloud-deploy.png) |
+| ![Message & Media and 1:1 DM Preview](docs/screenshots/03-content-schedule.png) | ![Automation and Cloud Preflight](docs/screenshots/04-cloud-deploy.png) |
 
-| Run History & Logs | Settings & Windows Theme Sync |
+| Run & Logs | Settings (Pivot Tabs & Theme Sync) |
 |---|---|
-| ![Run history and logs](docs/screenshots/05-run-logs.png) | ![Settings and personalization](docs/screenshots/06-settings.png) |
+| ![Run & Logs](docs/screenshots/05-run-logs.png) | ![Settings with Pivot Tabs and Theme Sync](docs/screenshots/06-settings.png) |
 
 ---
 
@@ -63,7 +63,7 @@ This tool handles sensitive credentials (TikTok session cookies, an optional Git
 - **GitHub Cloud storage (`gui/services/github_api.py`):** When you deploy to GitHub Cloud, secrets are encrypted client-side on your PC with **`PyNaCl` (`nacl.public.SealedBox`)** using your own repository's Actions public key before upload. Only GitHub Actions running in your own repository can decrypt them.
 - **Browser cookie import (`gui/services/browsers.py`):** Opens local browser cookie databases in read-only mode (`?mode=ro`), filters strictly to `host_key = 'tiktok.com'` / `%.tiktok.com` (never reads cookies for other sites), and deletes temporary WAL copy folders immediately in `finally`.
 - **Automatic log redaction (`gui/services/storage.py`, `run_gui.py`):** UI logs, diagnostic reports, and `scheduled_run.log` automatically strip `sessionid`, `Cookie:` headers, GitHub tokens (`ghp_` / `github_pat_`), and Telegram bot tokens before display or disk write.
-- **1-Click wipe:** Open **Settings -> Reset All Settings & Secrets** to delete all local config files, DPAPI blobs, and Credential Manager entries.
+- **1-Click wipe:** Open **Settings -> Accounts, Privacy & Updates -> Danger Zone -> Reset Local App Data** to delete all local config files, DPAPI blobs, and Credential Manager entries.
 
 ### Exact Network Hosts Contacted
 
@@ -92,42 +92,44 @@ Everything you need to set up and run daily streaks on Windows using `TikTokStre
 
 ### 2. Connect Your TikTok Account (**Accounts** tab)
 
-1. Click **Sign in via Browser (Recommended)** (uses Chrome or Edge on your PC).
+1. Click **Sign in via Browser (Recommended)** on your account card (uses Chrome or Edge on your PC).
    > **Why a new browser window opens:** Modern Chrome and Edge on Windows lock stored cookies with App-Bound Encryption (`v20`), so external apps cannot read `sessionid` straight off your disk. Guided Browser Login opens an isolated clean window without automation flags, lets you log in normally, and grabs your cookies as soon as `/messages` loads.
 2. Sign in to TikTok in that window. Once your inbox appears, click **I'm Logged In — Grab Now** (or wait for it to detect `/messages` automatically).
-   - You can also use **Import from Browser** (works on unlocked Chrome/Edge profiles and Firefox) or **Paste Cookie Manually**.
-   - Click **Verify** on an account card to confirm `/messages` inbox access in headless mode and auto-upgrade manual cookies with TikTok's regional routing cookies (`tt-target-idc`, `store-idc`) for GitHub Cloud compatibility. If TikTok blocks API hydration, use **Sign in via Browser (Recommended)** or paste the full `Cookie:` header.
+   - You can also click **Import from Browser** to open the self-contained profile picker modal (supports Chrome, Edge, Firefox, and Zen profiles, automatically flags `[v20]` encryption, and includes a 1-click **Sign in via Browser** switch) or use **Paste Cookie** to inspect and fix missing cookies cleanly.
+   - Click **Verify Session** in the card header to confirm `/messages` inbox access in headless mode and auto-upgrade manual cookies with TikTok's regional routing cookies (`tt-target-idc`, `store-idc`) for GitHub Cloud compatibility. If TikTok blocks API hydration, use **Sign in via Browser** or paste the full `Cookie:` header.
    - Business Suite accounts without `/messages` cannot send DM streaks and are flagged during verification.
-3. Add your friends' usernames under **Target Friends (`@usernames`)**, or click **Import friends.csv**.
+3. Add your friends' usernames under **Target Friends**, or click **Import CSV**.
 4. Switch **Multi-Account** on at the top right if you want to manage more than one TikTok account.
 
-### 3. Pick Your Message, Media, and Schedule (**Content & Schedule** tab)
+### 3. Pick Your Message & Media (**Message & Media** tab)
 
-- **Message:** Set the daily message text sent to each friend (default: `🔥 Daily Streak`).
-- **Video Share Card & Photo Card:** Keep the defaults, paste your own TikTok video URL or pick a custom photo, or toggle either switch off to send text only.
-- **Schedule Timezone:** Pick your local timezone at the top of **Schedule & Execution** (also available in **Settings**) so both Local and Cloud run times display and convert from your local clock.
-- **Delivery Mode:**
-  - **Local PC (Windows Task Scheduler):** Runs automatically on your PC at the times you add under **Local Schedule** (your PC needs to be turned on at those times).
-  - **Cloud (GitHub Actions):** Runs on GitHub's servers even while your PC is off.
+- **Streak Message:** Set the daily text message sent first per friend (default: `🔥 Daily Streak`).
+- **Video Share Card & Photo Card:** Keep the defaults, paste your own TikTok video URL (`vt.tiktok.com` short links resolved automatically) and click **Check Link** for live TikTok availability + thumbnail verification, pick a custom photo, or toggle either switch off.
+- **1:1 DM Preview & Streak Pet Tasks:** Inspect a live TikTok `/messages` dark/light preview alongside real-time daily **Streak Pet growth** points (`+1` text + `+2` video shares + `+4` photo = `+7 pts/day`).
+
+### 4. Choose Execution Mode & Schedule (**Automation** tab)
+
+- **Schedule Timezone:** Displays your single-source timezone at top right (with a **Change in Settings** shortcut to keep Local PC tasks, Cloud cron, and logs synchronized).
+- **Delivery Mode (`Local PC` | `GitHub Cloud` | `Hybrid`):**
+  - **Local PC (Windows Task Scheduler):** Runs automatically on your PC at the exact minutes added under **Local PC Schedule** (also syncs the **Show browser window** toggle directly with **Run & Logs**).
+  - **GitHub Cloud (GitHub Actions):** Runs 24/7 on GitHub's runners even while your PC is off.
     1. Click **Sign in with GitHub** and approve the browser login prompt (`repo` and `workflow` permissions).
-    2. Keep **Create Private Repository** switched on so your bot repository and action logs stay private. Existing bot repositories appear automatically under **Detected Bot Repositories** — click any row to select it, toggle **Pause / Resume** per repository, or click **Pause Others** if multiple active bots are detected.
-    3. Add your daily run times (or click an off-peak **Quick fill** preset like `08:15` / `20:15`) and click **Save & Deploy to GitHub**.
+    2. Keep **Private** switched on so your bot repository and action logs stay private. Existing bot repositories appear automatically under **Detected Bot Repositories** — select any row, pause/resume schedules, or pause duplicates cleanly.
+    3. Add daily run times (or click an off-peak **Quick preset** like `2x (08:15, 20:15)`), expand **Advanced** only if you need a custom PAT or raw cron override, verify all 3 **Preflight** checks (`TikTok Session`, `Target Repo`, `Active Schedules`) turn green, and click **Deploy to GitHub**.
   - **Hybrid:** Combines both Local PC scheduling and GitHub Cloud runs.
 
 > **GitHub Actions Schedule Delays:** GitHub Actions scheduled workflows run on a shared best-effort queue. Schedules set on the top of the hour (`:00`) often start **15 minutes to 1–4+ hours late** (for example, an `08:00` schedule firing around `11:00–12:00`). Pick off-peak minutes like `:15` or `:17` and leave buffer before midnight so your streak does not slip to the next day, or use **Local PC (Windows Task Scheduler)** when you need exact timing.
 
-### 4. Test With One Friend First (**Run & Logs** tab)
+### 5. Test & Monitor Runs (**Run & Logs** tab)
 
-1. Pick one friend under **Select friend for 1-friend smoke test**.
-2. Toggle **Show browser window** on if you want to watch the run live, or leave it off to run headless (while visible browser runs are active, inbox sidebar clicks are automatically locked and every target `@username` header is strictly verified to prevent misdelivery).
-3. Click **Quick Test (1 Friend)** to confirm your session and message flow work before running against everyone.
-4. For cloud runs, check **GitHub Cloud Monitor** to run workflows on demand (**Run on GitHub Now**), toggle **Pause / Resume Schedule**, cancel an active run (**Stop Run**), inspect job logs, or download `debug-diagnostics` screenshots if anything fails.
+1. Under **Local Run**, pick one friend, toggle **Show browser window** on if you want to watch live (inbox sidebar clicks are automatically locked and every target `@username` header is strictly verified to prevent misdelivery), and click **Test 1 Friend** before clicking **Run All**.
+2. Under **GitHub Cloud**, review your active repository, daily schedule summary, and last run status at a glance, trigger on-demand runs via **Run on GitHub**, or toggle **Pause / Resume** and **Refresh**.
+3. Under **Recent Cloud Runs & Live Logs**, view redacted console output side by side, inspect workflow job logs (**View Logs**), or download `debug-diagnostics` **Screenshots** if anything fails.
 
-### 5. Theme, Language, Updates & Telegram Alerts (**Settings** tab)
+### 6. Theme, Language, Updates & Telegram Alerts (**Settings** tab)
 
-- **Appearance & Language:** Syncs with Windows Dark/Light mode and Windows Personalization accent colors by default, with overrides for Light, Dark, or TikTok pink (`#fe2c55`), plus **English (`EN`)** and **Bahasa Indonesia (`ID`)** switching.
-- **About & Updates:** Checks GitHub Releases automatically on startup (or manually via **Check for Updates**) with SHA-256 verification and in-app install/restart, plus a Dashboard reminder when your app version is newer than your last Cloud deployment.
-- **Telegram Alerts (Optional):** Create a bot via [`@BotFather`](https://t.me/BotFather), paste your token, send `/start` to your bot, click **Detect Chat ID**, and click **Send Test Message**.
+- **General & Alerts tab:** Sync Windows Dark/Light mode and Windows Personalization accent colors (or override to TikTok pink `#fe2c55`), switch **English (`EN`)** / **Bahasa Indonesia (`ID`)**, pick your single-source **Timezone**, and configure optional [`@BotFather`](https://t.me/BotFather) **Telegram Alerts** (`Detect` chat ID & `Send Test`).
+- **Accounts, Privacy & Updates tab:** Manage your connected GitHub account (**Sign Out**), inspect local privacy details or config folder, expand **Developer CLI Export** if needed, check for SHA-256 verified Windows updates (**Updates**), or use the isolated **Danger Zone** (**Reset Local App Data**). Also includes a Home reminder banner whenever your desktop app version is newer than your last Cloud deployment.
 
 ### Troubleshooting
 
@@ -195,9 +197,11 @@ tiktok-streak/
 │   ├── app.py                   # FluentWindow shell, Windows theme listener, splash & nav
 │   ├── version.py               # Single source of truth APP_VERSION & release repo config
 │   ├── workers.py               # QThread worker bridge with threading.Event cancellation
-│   ├── pages/                   # Home, Accounts, Content & Schedule, Run & Logs, Settings
-│   ├── services/                # Pure-Python backend (storage, i18n, validators, browsers, tiktok_auth, github_api, updater, local_runner, scheduler, theme)
-│   └── widgets/                 # AccountCard, StatusPill, FluentSpinBox, ChipFlowWidget, ResponsiveSplitRow, SecurityPrivacyDialog, UpdateDialog, CookieDialog, DeviceLoginDialog, LogViewer
+│   ├── pages/                   # Home, Accounts, Message & Media, Automation, Run & Logs, Settings (Pivot)
+│   ├── services/                # Pure-Python backend (storage, i18n, validators, browsers, tiktok_auth, github_api, cloud_deploy, updater, local_runner, scheduler, theme)
+│   └── widgets/                 # AccountCard, BrowserImportDialog, DMPreviewPanel, Preflight/Deploy/Reset dialogs, StatusPill, FluentSpinBox, ChipFlowWidget, ResponsiveSplitRow, SecurityPrivacyDialog, UpdateDialog, CookieDialog, DeviceLoginDialog, LogViewer
+├── scripts/
+│   └── build_nuitka.py          # Optional Nuitka onefile build & startup benchmark harness
 ├── src/
 │   ├── actions.py               # Inbox navigation, typing pacing, send verification
 │   ├── browser.py               # Stealth Chrome/Edge launcher and session cookie injection
@@ -215,6 +219,7 @@ tiktok-streak/
 ├── capture_share.py             # Captures share-card WebSocket/HTTP traffic
 ├── probe_sender_ready.py        # Probes byted_acrawler & im-ws readiness
 ├── test_runner.py               # Core & workflow self-check suite
+├── TikTokStreakSetup.spec       # Surgical PyInstaller build spec (prunes unused Qt6/macOS/Linux assets -> ~52 MB)
 ├── requirements.txt             # Minimal CLI/CI runner dependencies
 └── requirements-gui.txt         # Desktop GUI dependencies (PySide6-Fluent-Widgets, Pillow, PyNaCl, pywin32, keyring)
 ```
@@ -357,41 +362,16 @@ $env:QT_QPA_PLATFORM="offscreen"; python -B run_gui.py --smoke-test
 $env:QT_QPA_PLATFORM="offscreen"; python -B -m pytest -p no:cacheprovider tests/ -v
 ```
 
-Build `dist/TikTokStreakSetup.exe` locally (same configuration as `.github/workflows/build-exe.yml`):
+Build `dist/TikTokStreakSetup.exe` locally (using the pruned `.spec` shared with `.github/workflows/build-exe.yml`, ~52 MB standalone binary):
 ```powershell
 pip install pyinstaller
-pyinstaller --noconfirm --clean --windowed --onefile --noupx `
-  --name TikTokStreakSetup `
-  --icon assets/app_icon.ico `
-  --add-data "assets;assets" `
-  --add-data "src;src" `
-  --add-data "main.py;." `
-  --add-data "requirements.txt;." `
-  --add-data "test_runner.py;." `
-  --add-data ".github/workflows/streak.yml;.github/workflows" `
-  --collect-all qfluentwidgets `
-  --collect-all qframelesswindow `
-  --collect-all keyring `
-  --collect-all nacl `
-  --collect-all selenium `
-  --hidden-import win32crypt `
-  --hidden-import win32cred `
-  --hidden-import pywintypes `
-  --hidden-import Crypto.Cipher.AES `
-  --hidden-import PIL `
-  --hidden-import dotenv `
-  --exclude-module PySide6.QtWebEngineCore `
-  --exclude-module PySide6.QtWebEngineWidgets `
-  --exclude-module PySide6.QtPdf `
-  --exclude-module PySide6.Qt3DCore `
-  --exclude-module PySide6.QtQuick `
-  run_gui.py
+pyinstaller --noconfirm --clean TikTokStreakSetup.spec
 ```
 
-Pushing a `v*` tag triggers `.github/workflows/build-exe.yml`, builds and smoke-tests the standalone binary on Windows, and attaches `TikTokStreakSetup.exe` to the GitHub Release:
+Pushing a `v*` tag triggers `.github/workflows/build-exe.yml`, syncs `APP_VERSION`, builds and verifies the pruned standalone binary on Windows, and attaches `TikTokStreakSetup.exe` to the GitHub Release:
 ```bash
-git tag -a v1.0.0 -m "Release v1.0.0"
-git push origin v1.0.0
+git tag -a v1.4.0 -m "Release v1.4.0"
+git push origin v1.4.0
 ```
 
 ---

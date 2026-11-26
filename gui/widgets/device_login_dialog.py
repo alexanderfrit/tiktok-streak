@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget
 from qfluentwidgets import (
-    BodyLabel,
     CaptionLabel,
     FluentIcon as FIF,
     IndeterminateProgressRing,
@@ -23,6 +22,8 @@ from qfluentwidgets import (
 
 from gui.services.github_api import GitHub, device_flow_poll, has_required_scopes
 from gui.services.i18n import tr
+from gui.services.theme import escape_qt_mnemonic
+from gui.widgets.fluent_redesign import StepPill, apply_fluent_dialog_footer
 from gui.workers import WorkerController, WorkerHandle
 
 
@@ -71,8 +72,18 @@ class DeviceLoginDialog(MessageBoxBase):
         self.result_user: dict[str, Any] = {}
 
         self.titleLabel = SubtitleLabel(tr("device_dlg.title"), self)
-        self.subtitleLabel = BodyLabel(tr("device_dlg.subtitle"), self)
-        self.subtitleLabel.setWordWrap(True)
+
+        # Evenly distributed 3-step strip
+        steps_row = QHBoxLayout()
+        steps_row.setContentsMargins(0, 0, 0, 0)
+        steps_row.setSpacing(8)
+        self.step1Pill = StepPill(tr("device_dlg.step_1"), "current", expanding=True, parent=self)
+        self.step2Pill = StepPill(tr("device_dlg.step_2"), "pending", expanding=True, parent=self)
+        self.step3Pill = StepPill(tr("device_dlg.step_3"), "pending", expanding=True, parent=self)
+        self.stepPills = [self.step1Pill, self.step2Pill, self.step3Pill]
+        steps_row.addWidget(self.step1Pill, 1)
+        steps_row.addWidget(self.step2Pill, 1)
+        steps_row.addWidget(self.step3Pill, 1)
 
         self.codeEdit = LineEdit(self)
         self.codeEdit.setReadOnly(True)
@@ -82,30 +93,36 @@ class DeviceLoginDialog(MessageBoxBase):
         code_font.setBold(True)
         code_font.setLetterSpacing(QFont.AbsoluteSpacing, 3)
         self.codeEdit.setFont(code_font)
-        self.codeEdit.setMinimumHeight(48)
+        self.codeEdit.setMinimumHeight(52)
 
-        self.copyOpenBtn = PrimaryPushButton(FIF.GLOBE, tr("device_dlg.copy_open"), self)
+        self.copyOpenBtn = PrimaryPushButton(
+            FIF.GLOBE, escape_qt_mnemonic(tr("device_dlg.copy_open")), self
+        )
+        self.copyOpenBtn.setFixedHeight(36)
         self.copyOpenBtn.clicked.connect(self._copy_and_open)
 
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 4, 0, 0)
-        status_row.setSpacing(10)
+        status_row.setSpacing(8)
         self.spinner = IndeterminateProgressRing(self)
-        self.spinner.setFixedSize(22, 22)
+        self.spinner.setFixedSize(18, 18)
         self.statusLabel = CaptionLabel(tr("device_dlg.waiting"), self)
         self.statusLabel.setWordWrap(True)
+        status_row.addStretch(1)
         status_row.addWidget(self.spinner, 0, Qt.AlignVCenter)
-        status_row.addWidget(self.statusLabel, 1, Qt.AlignVCenter)
+        status_row.addWidget(self.statusLabel, 0, Qt.AlignVCenter)
+        status_row.addStretch(1)
 
         self.viewLayout.addWidget(self.titleLabel)
-        self.viewLayout.addWidget(self.subtitleLabel)
+        self.viewLayout.addLayout(steps_row)
         self.viewLayout.addWidget(self.codeEdit)
         self.viewLayout.addWidget(self.copyOpenBtn)
         self.viewLayout.addLayout(status_row)
 
         self.hideYesButton()
-        self.cancelButton.setText(tr("common.cancel"))
+        self.cancelButton.setText(escape_qt_mnemonic(tr("common.cancel")))
         self.cancelButton.clicked.connect(self._on_cancel_clicked)
+        apply_fluent_dialog_footer(self, right_widgets=[self.cancelButton])
         self.widget.setMinimumWidth(460)
 
         self._start_polling()
@@ -114,6 +131,8 @@ class DeviceLoginDialog(MessageBoxBase):
         cb = QApplication.clipboard()
         if cb is not None:
             cb.setText(self.user_code)
+        self.step1Pill.set_state("done")
+        self.step2Pill.set_state("current")
         QDesktopServices.openUrl(QUrl(self.verification_uri))
         InfoBar.success(
             tr("common.copied"),
@@ -148,6 +167,9 @@ class DeviceLoginDialog(MessageBoxBase):
 
         self.result_token = token
         self.result_user = user
+        self.step1Pill.set_state("done")
+        self.step2Pill.set_state("done")
+        self.step3Pill.set_state("done")
         self.spinner.stop()
         self.spinner.hide()
         login = user.get("login", "")
@@ -161,7 +183,7 @@ class DeviceLoginDialog(MessageBoxBase):
         self.spinner.hide()
         self.statusLabel.setStyleSheet("color: #d13438;")
         self.statusLabel.setText(err_msg)
-        self.cancelButton.setText(tr("common.close"))
+        self.cancelButton.setText(escape_qt_mnemonic(tr("common.close")))
 
     def _on_cancel_clicked(self) -> None:
         self.cancel_event.set()

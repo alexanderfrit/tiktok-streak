@@ -324,7 +324,29 @@ def _check_tiktok_video_availability(
     status_code = vd.get("statusCode")
     status_msg = str(vd.get("statusMsg") or "").strip()
     item = ((vd.get("itemInfo") or {}).get("itemStruct")) or {}
-    author_uid = str(((item.get("author") or {}).get("uniqueId")) or "").strip() or None
+    author_obj = item.get("author") or {} if isinstance(item, dict) else {}
+    author_uid = str(author_obj.get("uniqueId") or "").strip() or None
+    author_nick = str(author_obj.get("nickname") or author_uid or "").strip() or None
+    author_avatar_url = (
+        str(author_obj.get("avatarThumb") or author_obj.get("avatarMedium") or "").strip() or None
+    )
+
+    video_obj = item.get("video") or {} if isinstance(item, dict) else {}
+    cover_url = (
+        str(
+            video_obj.get("cover")
+            or video_obj.get("originCover")
+            or video_obj.get("dynamicCover")
+            or ""
+        ).strip()
+        or None
+    )
+    if not cover_url and isinstance(item, dict):
+        imgs = (item.get("imagePost") or {}).get("images") or []
+        if imgs and isinstance(imgs[0], dict):
+            url_list = ((imgs[0].get("imageURL") or {}).get("urlList")) or []
+            if url_list:
+                cover_url = str(url_list[0] or "").strip() or None
 
     if status_code == 0 and isinstance(item, dict) and item:
         if item.get("privateItem") is True:
@@ -333,6 +355,9 @@ def _check_tiktok_video_availability(
                 "available": False,
                 "availability": "private",
                 "author": author_uid,
+                "author_nickname": author_nick,
+                "author_avatar_url": author_avatar_url,
+                "cover_url": cover_url,
                 "final_url": final_url,
                 "reason": "This TikTok video is private and cannot be shared.",
             }
@@ -342,6 +367,9 @@ def _check_tiktok_video_availability(
                 "available": False,
                 "availability": "share_disabled",
                 "author": author_uid,
+                "author_nickname": author_nick,
+                "author_avatar_url": author_avatar_url,
+                "cover_url": cover_url,
                 "final_url": final_url,
                 "reason": "Sharing is disabled on this TikTok video.",
             }
@@ -351,6 +379,9 @@ def _check_tiktok_video_availability(
             "available": True,
             "availability": "available",
             "author": author_uid,
+            "author_nickname": author_nick,
+            "author_avatar_url": author_avatar_url,
+            "cover_url": cover_url,
             "item_id": resolved_id,
             "final_url": final_url,
             "reason": None,
@@ -473,6 +504,9 @@ def validate_video_url(
     probe = _check_tiktok_video_availability(target_url, aweme_id)
     avail = probe.get("availability") or "unverified"
     author = probe.get("author")
+    author_nick = probe.get("author_nickname")
+    author_avatar_url = probe.get("author_avatar_url")
+    cover_url = probe.get("cover_url")
     eff_id = str(probe.get("item_id") or aweme_id)
     if probe.get("available") is True:
         canonical = _clean_tiktok_video_url(probe.get("final_url") or target_url, eff_id, author=author)
@@ -485,6 +519,9 @@ def validate_video_url(
             "verified": True,
             "availability": "available",
             "author": author,
+            "author_nickname": author_nick,
+            "author_avatar_url": author_avatar_url,
+            "cover_url": cover_url,
             "error": None,
         }
     if probe.get("available") is False:
@@ -497,6 +534,9 @@ def validate_video_url(
             "verified": True,
             "availability": avail,
             "author": author,
+            "author_nickname": author_nick,
+            "author_avatar_url": author_avatar_url,
+            "cover_url": cover_url,
             "error": probe.get("reason") or "This TikTok video is unavailable.",
         }
     return {
@@ -508,7 +548,78 @@ def validate_video_url(
         "verified": False,
         "availability": "unverified",
         "author": author,
+        "author_nickname": author_nick,
+        "author_avatar_url": author_avatar_url,
+        "cover_url": cover_url,
         "error": probe.get("reason") or "Could not verify video availability online.",
+    }
+
+
+def _download_preview_image_bytes(
+    url: str,
+    timeout: float = 6.0,
+    max_bytes: int = 3 * 1024 * 1024,
+) -> bytes | None:
+    """Download a remote preview image and normalize exotic formats (AVIF/WebP) to PNG."""
+    clean = str(url or "").strip()
+    if not clean or not clean.lower().startswith(("http://", "https://")):
+        return None
+    req = urllib.request.Request(
+        clean,
+        headers={
+            "User-Agent": _CHROME_UA,
+            "Referer": "https://www.tiktok.com/",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(max_bytes + 1)
+    except Exception:
+        return None
+    if not raw or len(raw) > max_bytes:
+        return None
+    if raw[:2] == b"\xff\xd8" or raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return raw
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as img:
+            out = io.BytesIO()
+            mode_img = img.convert("RGBA") if "A" in img.getbands() else img.convert("RGB")
+            mode_img.save(out, format="PNG")
+            return out.getvalue()
+    except Exception:
+        return raw
+
+
+def fetch_tiktok_video_preview(
+    url: str,
+    timeout: float = 8.0,
+    *,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fetch TikTok creator nickname/avatar and real video cover thumbnail bytes for live preview."""
+    raw = str(url or "").strip()
+    if isinstance(meta, dict) and meta.get("cover_url"):
+        info = meta
+    else:
+        info = validate_video_url(raw, resolve_short=True, verify_availability=True)
+    cover_url = str(info.get("cover_url") or "").strip()
+    avatar_url = str(info.get("author_avatar_url") or "").strip()
+    cover_bytes = _download_preview_image_bytes(cover_url, timeout=timeout) if cover_url else None
+    avatar_bytes = _download_preview_image_bytes(avatar_url, timeout=timeout) if avatar_url else None
+    author = str(info.get("author") or "").strip()
+    nick = str(info.get("author_nickname") or author).strip()
+    return {
+        "ok": bool(cover_bytes or nick),
+        "url": str(info.get("normalized_url") or raw).strip(),
+        "aweme_id": info.get("aweme_id"),
+        "author": author,
+        "author_nickname": nick,
+        "cover_bytes": cover_bytes,
+        "avatar_bytes": avatar_bytes,
     }
 
 
@@ -860,6 +971,7 @@ __all__ = [
     "crons_to_local_times",
     "detect_local_timezone",
     "export_friends_csv",
+    "fetch_tiktok_video_preview",
     "format_schedule_summary",
     "format_utc_timestamp",
     "get_timezone_info",

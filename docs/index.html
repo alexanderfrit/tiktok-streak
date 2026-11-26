@@ -105,7 +105,7 @@
           "height": 950
         },
         "datePublished": "2026-11-18",
-        "dateModified": "2026-11-21",
+        "dateModified": "2026-11-26",
         "inLanguage": "en",
         "speakable": {
           "@type": "SpeakableSpecification",
@@ -128,7 +128,7 @@
           {
             "@type": "ListItem",
             "position": 2,
-            "name": "TikTok Streak Setup v1.3.3",
+            "name": "TikTok Streak Setup v1.4.0",
             "item": "https://alexanderfrit.github.io/tiktok-streak/#download"
           }
         ]
@@ -141,15 +141,15 @@
         "applicationCategory": "UtilitiesApplication",
         "applicationSubCategory": "Social Media Automation",
         "operatingSystem": "Windows 10, Windows 11, GitHub Actions Ubuntu Linux",
-        "softwareVersion": "1.3.3",
+        "softwareVersion": "1.4.0",
         "datePublished": "2026-11-18",
-        "dateModified": "2026-11-21",
+        "dateModified": "2026-11-26",
         "isAccessibleForFree": true,
         "license": "https://opensource.org/licenses/MIT",
         "url": "https://alexanderfrit.github.io/tiktok-streak/",
         "codeRepository": "https://github.com/alexanderfrit/tiktok-streak",
-        "downloadUrl": "https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.3.3/TikTokStreakSetup.exe",
-        "fileSize": "95MB",
+        "downloadUrl": "https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.4.0/TikTokStreakSetup.exe",
+        "fileSize": "52MB",
         "softwareRequirements": "Windows 10/11 (standalone EXE) or Python 3.10+ with Chrome/Edge; optional free GitHub account for serverless cloud execution.",
         "author": {
           "@id": "https://alexanderfrit.github.io/tiktok-streak/#author"
@@ -169,13 +169,13 @@
           "https://alexanderfrit.github.io/tiktok-streak/screenshots/06-settings.png"
         ],
         "featureList": [
-          "Serverless daily execution via free GitHub Actions cron workflows",
-          "Automates text messages, 2 TikTok video share cards, and 1 photo per friend (+7 daily Streak Pet growth)",
-          "Guided native Chrome/Edge CDP browser login bypassing Windows v20 App-Bound Encryption",
+          "6-route Windows 11 Fluent desktop UI (Home, Accounts, Message & Media, Automation, Run & Logs, Pivot Settings) in a pruned ~52 MB standalone EXE",
+          "Live 1:1 TikTok Web DM Preview with thumbnail cover fetching and reactive +7 pts/day Streak Pet tracker",
+          "Serverless daily execution via free GitHub Actions cron workflows with 3-check inline deploy preflight",
+          "Guided native Chrome/Edge CDP browser login & self-contained Browser Import modal bypassing Windows v20 App-Bound Encryption",
           "Strict active chat @username verification and headful inbox sidebar click-lock",
-          "Detected Bot Repositories discovery with duplicate schedule Pause Others protection",
-          "Windows DPAPI local secret encryption and client-side PyNaCl SealedBox GitHub secrets",
-          "SHA-256 verified in-app Windows self-updater and Telegram run reports"
+          "Detected Bot Repositories discovery with duplicate schedule protection",
+          "Windows DPAPI local secret encryption, client-side PyNaCl SealedBox GitHub secrets, and SHA-256 verified Windows self-updater"
         ]
       },
       {
@@ -193,7 +193,7 @@
           "@id": "https://alexanderfrit.github.io/tiktok-streak/#webpage"
         },
         "datePublished": "2026-11-18",
-        "dateModified": "2026-11-21",
+        "dateModified": "2026-11-26",
         "image": "https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png"
       },
       {
@@ -216,28 +216,28 @@
             "position": 1,
             "name": "Download and launch TikTokStreakSetup.exe",
             "url": "https://alexanderfrit.github.io/tiktok-streak/#step-1",
-            "text": "Download the standalone Windows executable (v1.3.3) from GitHub Releases and double-click to launch without installing Python."
+            "text": "Download the standalone Windows executable (v1.4.0) from GitHub Releases and double-click to launch without installing Python."
           },
           {
             "@type": "HowToStep",
             "position": 2,
-            "name": "Sign in to TikTok via Guided Browser Login",
+            "name": "Sign in to TikTok via Guided Browser Login or Browser Import Modal",
             "url": "https://alexanderfrit.github.io/tiktok-streak/#step-2",
-            "text": "Open the Accounts tab, click Sign in via Browser (Recommended) to bypass Chrome v20 encryption, log into TikTok messages, verify the account, and add target @username friends."
+            "text": "Open the Accounts tab, click Sign in via Browser (Recommended) or Import from Browser to bypass Chrome v20 encryption, verify session access in the card header, and add target @username friends."
           },
           {
             "@type": "HowToStep",
             "position": 3,
-            "name": "Configure message content and Cloud or Local schedule",
+            "name": "Customize message with 1:1 DM Preview & deploy schedule on Automation",
             "url": "https://alexanderfrit.github.io/tiktok-streak/#step-3",
-            "text": "Customize your streak message, video URL, and photo, choose off-peak minutes like :15 or :17, sign in to GitHub, and click Save & Deploy to GitHub."
+            "text": "Configure your text message, live-verified TikTok video URL, and photo on Message & Media with the 1:1 DM Preview, then switch to Automation to pick off-peak :15 or :17 minutes, pass the 3-check preflight, and click Deploy to GitHub."
           },
           {
             "@type": "HowToStep",
             "position": 4,
-            "name": "Verify delivery with a 1-friend smoke test",
+            "name": "Verify delivery with Test 1 Friend on Run & Logs",
             "url": "https://alexanderfrit.github.io/tiktok-streak/#step-4",
-            "text": "Open Run & Logs, select one friend, click Quick Test (1 Friend) to verify header safety and delivery, then monitor scheduled cloud runs or optional Telegram alerts."
+            "text": "Open Run & Logs, select one friend, click Test 1 Friend to verify header safety and delivery, then monitor GitHub Cloud runs or optional Telegram alerts."
           }
         ]
       },
@@ -306,7 +306,7 @@
             "name": "How do I prevent duplicate messages if I deployed more than one bot repository?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Open Content & Schedule -> Detected Bot Repositories. All repositories on your GitHub account containing streak.yml are discovered automatically; click Pause Others to disable duplicate active schedules in one click, or toggle schedules from Run & Logs."
+              "text": "Open Automation -> Detected Bot Repositories. All repositories on your GitHub account containing streak.yml are discovered automatically; click Pause Schedule on extra repositories or toggle schedules from Run & Logs."
             }
           },
           {
@@ -322,7 +322,7 @@
             "name": "How do existing Windows EXE users receive new updates?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Starting with v1.3.0, TikTok Streak Setup checks GitHub Releases automatically on startup (or manually in Settings -> About & Updates), downloads the latest TikTokStreakSetup.exe over HTTPS, verifies the PE header and SHA-256 digest, swaps the binary, and restarts automatically."
+              "text": "Starting with v1.3.0, TikTok Streak Setup checks GitHub Releases automatically on startup (or manually in Settings -> Accounts, Privacy & Updates -> Updates), downloads the latest TikTokStreakSetup.exe over HTTPS, verifies the PE header and SHA-256 digest, swaps the binary, and restarts automatically."
             }
           }
         ]
@@ -351,8 +351,8 @@
                   <p>
                     <small>
                       By <a href="https://github.com/alexanderfrit" rel="author">alexanderfrit</a> &middot;
-                      Latest release: <strong id="release-version">v1.3.3</strong> &middot;
-                      Last updated: <time datetime="2026-11-21">November 21, 2026</time> &middot;
+                      Latest release: <strong id="release-version">v1.4.0</strong> &middot;
+                      Last updated: <time datetime="2026-11-26">November 26, 2026</time> &middot;
                       License: <a href="https://github.com/alexanderfrit/tiktok-streak/blob/main/LICENSE">MIT</a>
                     </small>
                   </p>
@@ -369,7 +369,7 @@
                 <td align="center">
                   <strong>Jump to:</strong>
                   <a href="#tldr">Quick Answer</a> &middot;
-                  <a href="#download">Download v1.3.3</a> &middot;
+                  <a href="#download">Download v1.4.0</a> &middot;
                   <a href="#comparison">Modes</a> &middot;
                   <a href="#pet-growth">Pet Growth (+7/day)</a> &middot;
                   <a href="#screenshots">Screenshots</a> &middot;
@@ -416,8 +416,8 @@
                     <td>
                       <p>
                         <strong>Standalone Windows Executable (No Python Needed):</strong>
-                        <a id="release-link" href="https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.3.3/TikTokStreakSetup.exe">
-                          <strong>Download TikTokStreakSetup.exe (v1.3.3)</strong>
+                        <a id="release-link" href="https://github.com/alexanderfrit/tiktok-streak/releases/download/v1.4.0/TikTokStreakSetup.exe">
+                          <strong>Download TikTokStreakSetup.exe (v1.4.0)</strong>
                         </a>
                         &nbsp;|&nbsp;
                         <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest">All GitHub Releases</a>
@@ -426,7 +426,7 @@
                       </p>
                       <p>
                         <small>
-                          Build details: <span id="release-meta">Standalone PyInstaller --noupx binary &middot; Built transparently via GitHub Actions</span><br>
+                          Build details: <span id="release-meta">Pruned ~52 MB PyInstaller --noupx binary &middot; Built transparently via GitHub Actions</span><br>
                           SHA-256 (<code>TikTokStreakSetup.exe</code>): <code id="release-sha256">Verified live via GitHub Releases API (or check release assets)</code>
                         </small>
                       </p>
@@ -441,7 +441,7 @@
               <section id="comparison">
                 <h2>Execution Mode Comparison: Cloud vs. Local PC vs. Hybrid</h2>
                 <p>
-                  Choose the delivery schedule that matches your uptime needs. According to the codebase architecture in <code>gui/pages/content_page.py</code>, all three modes share identical message templates, recipient verification, and media toggles.
+                  Choose the delivery schedule that matches your uptime needs. According to the codebase architecture in <code>gui/pages/automation_page.py</code> and <code>gui/pages/content_page.py</code>, all three modes share identical message templates, recipient verification, and media toggles.
                 </p>
                 <table width="100%" border="1" cellpadding="7" cellspacing="0">
                   <thead>
@@ -560,50 +560,50 @@
 
               <!-- DESKTOP APP SCREENSHOTS -->
               <section id="screenshots">
-                <h2>Windows Desktop GUI Screenshots (v1.3.3)</h2>
+                <h2>Windows Desktop GUI Screenshots (v1.4.0)</h2>
                 <p>
-                  Built natively on Windows with <code>PySide6</code> and <code>PySide6-Fluent-Widgets</code>, syncing automatically with Windows Light/Dark themes and Windows Personalization accent colors (in English and Bahasa Indonesia).
+                  Built natively on Windows with <code>PySide6</code> and <code>PySide6-Fluent-Widgets</code>, syncing automatically with Windows Light/Dark themes and Windows Personalization accent colors across a streamlined 6-route Windows 11 Fluent workspace (in English and Bahasa Indonesia).
                 </p>
                 <table width="100%" border="1" cellpadding="8" cellspacing="0" bgcolor="#f4f6f8">
                   <tr align="center" valign="top">
                     <td width="50%">
                       <figure>
-                        <img src="screenshots/01-dashboard.png" alt="TikTok Streak Setup Dashboard with account count, target friends, execution mode, and 4-step readiness checklist" width="380" height="267">
-                        <figcaption><small><strong>Dashboard &amp; Setup Checklist</strong> &mdash; live readiness summary and drift alerts.</small></figcaption>
+                        <img src="screenshots/01-dashboard.png" alt="TikTok Streak Setup Home showing All Systems Ready, 3 equal-height KPI tiles, 4-step Setup Checklist, and compact Local-First Privacy footer" width="380" height="267">
+                        <figcaption><small><strong>Home &amp; Setup Checklist</strong> &mdash; equal-height KPIs, 1:1 setup routing, and compact privacy footer.</small></figcaption>
                       </figure>
                     </td>
                     <td width="50%">
                       <figure>
-                        <img src="screenshots/02-accounts.png" alt="TikTok Accounts screen showing Chrome v20 status, Guided Browser Login button, @username chips, and Verified inbox badge" width="380" height="267">
-                        <figcaption><small><strong>Accounts &amp; Friends</strong> &mdash; v20-safe Guided Browser Login, multi-account toggle, and CSV import.</small></figcaption>
-                      </figure>
-                    </td>
-                  </tr>
-                  <tr align="center" valign="top">
-                    <td width="50%">
-                      <figure>
-                        <img src="screenshots/03-content-schedule.png" alt="Content configuration cards for daily text streak message, TikTok video URL verification, and photo card upload" width="380" height="267">
-                        <figcaption><small><strong>Message, Video &amp; Photo Cards</strong> &mdash; short-link resolver and per-friend share count.</small></figcaption>
-                      </figure>
-                    </td>
-                    <td width="50%">
-                      <figure>
-                        <img src="screenshots/04-cloud-deploy.png" alt="GitHub Cloud Deployment showing Target Repository, Detected Bot Repositories list, Daily Cloud Schedule, and Save &amp; Deploy CTA" width="380" height="267">
-                        <figcaption><small><strong>Cloud Deploy &amp; Bot Discovery</strong> &mdash; auto-detects existing bot repos and stops duplicates.</small></figcaption>
+                        <img src="screenshots/02-accounts.png" alt="TikTok Accounts screen showing header Verify Session, Guided Browser Login, Import from Browser modal button, @username chips, and multi-account toggle" width="380" height="267">
+                        <figcaption><small><strong>Accounts &amp; Friends</strong> &mdash; header Verify Session, v20-safe Guided Login &amp; modal Browser Import.</small></figcaption>
                       </figure>
                     </td>
                   </tr>
                   <tr align="center" valign="top">
                     <td width="50%">
                       <figure>
-                        <img src="screenshots/05-run-logs.png" alt="Run and Logs screen featuring 1-friend smoke test switch, Active schedule badge, Pause Schedule, Run on GitHub Now, and run history table" width="380" height="267">
-                        <figcaption><small><strong>Run History &amp; Cloud Monitor</strong> &mdash; 1-friend test, Pause/Resume Schedule, and Stop Run.</small></figcaption>
+                        <img src="screenshots/03-content-schedule.png" alt="Message and Media split view displaying daily message editor, verified TikTok video URL, photo card, live 1:1 TikTok DM Preview, and Streak Pet Tasks (+7 pts)" width="380" height="267">
+                        <figcaption><small><strong>Message &amp; Media + 1:1 DM Preview</strong> &mdash; live TikTok chat replica &amp; reactive +7 pts/day tracker.</small></figcaption>
                       </figure>
                     </td>
                     <td width="50%">
                       <figure>
-                        <img src="screenshots/06-settings.png" alt="Settings screen displaying Appearance Theme, Windows Accent Color sync, Language, Timezone, and Telegram Alerts" width="380" height="267">
-                        <figcaption><small><strong>Settings, Theme &amp; Updates</strong> &mdash; Windows theme sync, timezone, Telegram bot, and auto-updater.</small></figcaption>
+                        <img src="screenshots/04-cloud-deploy.png" alt="Automation route showing GitHub Cloud repository card, Detected Bot Repositories list, off-peak :15 schedules, UTC conversion header, and 3-check inline preflight" width="380" height="267">
+                        <figcaption><small><strong>Automation &amp; Cloud Preflight</strong> &mdash; single-source timezone, bot repo discovery, and :15 presets.</small></figcaption>
+                      </figure>
+                    </td>
+                  </tr>
+                  <tr align="center" valign="top">
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/05-run-logs.png" alt="Run and Logs screen featuring Local Run, Test 1 Friend, GitHub Cloud summary card, Recent Cloud Runs table, and redacted Live Logs" width="380" height="267">
+                        <figcaption><small><strong>Run &amp; Logs</strong> &mdash; Test 1 Friend, GitHub Cloud summary card, Run History &amp; Redacted Logs.</small></figcaption>
+                      </figure>
+                    </td>
+                    <td width="50%">
+                      <figure>
+                        <img src="screenshots/06-settings.png" alt="Settings screen with General &amp; Alerts and Accounts, Privacy &amp; Updates Pivot tabs, Windows Accent sync, Timezone, and Telegram Alerts" width="380" height="267">
+                        <figcaption><small><strong>Settings (Pivot Tabs &amp; Theme Sync)</strong> &mdash; uniform Fluent controls, Telegram bot, and auto-updates.</small></figcaption>
                       </figure>
                     </td>
                   </tr>
@@ -617,16 +617,16 @@
                 <h2>Step-by-Step Setup Guide (Under 5 Minutes)</h2>
                 <ol>
                   <li id="step-1">
-                    <strong>Download &amp; Open:</strong> Download <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest"><code>TikTokStreakSetup.exe</code></a> (v1.3.3) and double-click to launch. No ZIP extraction or Python install is required. On Windows SmartScreen, click <em>More info &rarr; Run anyway</em> (or inspect/build directly from source via <code>build-exe.yml</code>).
+                    <strong>Download &amp; Open:</strong> Download <a href="https://github.com/alexanderfrit/tiktok-streak/releases/latest"><code>TikTokStreakSetup.exe</code></a> (v1.4.0) and double-click to launch. No ZIP extraction or Python install is required. On Windows SmartScreen, click <em>More info &rarr; Run anyway</em> (or inspect/build directly from source via <code>build-exe.yml</code>).
                   </li>
                   <li id="step-2">
-                    <strong>Connect TikTok &amp; Friends (Accounts Tab):</strong> Click <strong>Sign in via Browser (Recommended)</strong>. Log into TikTok in the clean browser window, click <strong>Verify</strong> to confirm <code>/messages</code> works and fetch regional Cloud routing cookies (<code>tt-target-idc</code>, <code>store-idc</code>), and add mutual friend <code>@usernames</code> (or import <code>friends.csv</code>).
+                    <strong>Connect TikTok &amp; Friends (Accounts Tab):</strong> Click <strong>Sign in via Browser (Recommended)</strong> (or <strong>Import from Browser</strong> to pick Chrome/Edge/Firefox/Zen profiles inside a self-contained modal). Log into TikTok in the clean browser window, click <strong>Verify Session</strong> in the card header to confirm <code>/messages</code> works and fetch regional Cloud routing cookies (<code>tt-target-idc</code>, <code>store-idc</code>), and add mutual friend <code>@usernames</code> (or click <strong>Import CSV</strong>).
                   </li>
                   <li id="step-3">
-                    <strong>Pick Message, Media &amp; Cloud Schedule (Content &amp; Schedule Tab):</strong> Customize text, video share URL (<code>vt.tiktok.com</code> short links supported), and photo. Sign in with 1-click GitHub OAuth Device Flow, keep <strong>Create Private Repository</strong> on, pick off-peak minutes such as <code>:15</code> or <code>:17</code>, review <strong>Detected Bot Repositories</strong> to avoid duplicate schedules, and click <strong>Save &amp; Deploy to GitHub</strong>.
+                    <strong>Pick Message, Media &amp; Schedule (Message &amp; Media + Automation Tabs):</strong> Customize text, video share URL (<code>vt.tiktok.com</code> short links supported with <strong>Check Link</strong> verification), and photo alongside the live <strong>1:1 DM Preview</strong>. Then open <strong>Automation</strong>, sign in with 1-click GitHub OAuth Device Flow, keep <strong>Private</strong> enabled, pick off-peak minutes such as <code>:15</code> or <code>:17</code>, confirm green <strong>Preflight</strong> tiles, and click <strong>Deploy to GitHub</strong>.
                   </li>
                   <li id="step-4">
-                    <strong>Run a 1-Friend Smoke Test (Run &amp; Logs Tab):</strong> Select one friend, optionally toggle <strong>Show browser window</strong> (inbox sidebar clicks are automatically locked while running), and run <strong>Quick Test (1 Friend)</strong> before enabling full runs.
+                    <strong>Run a 1-Friend Smoke Test (Run &amp; Logs Tab):</strong> Select one friend, optionally toggle <strong>Show browser window</strong> (synced with <strong>Automation</strong>; inbox sidebar clicks are automatically locked while running), and click <strong>Test 1 Friend</strong> before running all friends or enabling automated cloud schedules.
                   </li>
                 </ol>
 
@@ -689,7 +689,7 @@
                   <li><strong>Local OS Encryption (<code>gui/services/storage.py</code>):</strong> Plain settings go to <code>%APPDATA%\TikTokStreak\config.json</code>, while session cookies, GitHub OAuth tokens, and Telegram bot tokens are encrypted via <strong>Windows Credential Manager (<code>keyring</code>)</strong> or <strong>Windows DPAPI</strong> (<code>secrets.dpapi</code> bound to your Windows user login).</li>
                   <li><strong>Client-Side GitHub Secret Sealing (<code>gui/services/github_api.py</code>):</strong> Secrets are encrypted on your PC using <strong>PyNaCl (<code>SealedBox</code>)</strong> with your own private repository's Actions public key before upload.</li>
                   <li><strong>Automatic Log Redaction &amp; Read-Only Cookie DBs:</strong> Browser imports use SQLite read-only mode (<code>?mode=ro</code>) filtered strictly to <code>tiktok.com</code>, and <code>redact_secrets()</code> strips tokens/cookies from UI logs and diagnostics.</li>
-                  <li><strong>1-Click Reset:</strong> Use <strong>Settings &rarr; Reset All Settings &amp; Secrets</strong> anytime to wipe config files, DPAPI secrets, and Credential Manager entries.</li>
+                  <li><strong>1-Click Reset:</strong> Use <strong>Settings &rarr; Accounts, Privacy &amp; Updates &rarr; Reset Local App Data</strong> anytime to wipe config files, DPAPI secrets, and Credential Manager entries.</li>
                 </ul>
 
                 <h3>Exact Network Hosts Contacted</h3>
@@ -778,7 +778,7 @@
 
                 <details>
                   <summary><strong>How do I prevent duplicate messages if I deployed more than one bot repository?</strong></summary>
-                  <p>In <code>v1.3.0</code>, <strong>Content &amp; Schedule &rarr; Detected Bot Repositories</strong> scans your GitHub account for repositories containing <code>.github/workflows/streak.yml</code>. If two or more schedules are active, click <strong>Pause Others</strong> to pause duplicate repositories in one click, or manage schedules directly in <strong>Run &amp; Logs</strong>.</p>
+                  <p>In <code>v1.3.0+</code>, <strong>Automation &rarr; Detected Bot Repositories</strong> scans your GitHub account for repositories containing <code>.github/workflows/streak.yml</code>. If two or more schedules are active, pause extra repositories in one click or manage schedules directly in <strong>Run &amp; Logs</strong>.</p>
                 </details>
                 <br>
 
@@ -790,7 +790,7 @@
 
                 <details>
                   <summary><strong>How do Windows EXE users receive updates in v1.3.0+?</strong></summary>
-                  <p>Starting in <code>v1.3.0</code>, <strong>TikTok Streak Setup</strong> checks GitHub Releases on startup (or via <strong>Settings &rarr; About &amp; Updates &rarr; Check for Updates</strong>), verifies the downloaded executable's PE header and SHA-256 digest, swaps <code>TikTokStreakSetup.exe</code> safely with backup rollback, and reminds you on the Dashboard if your Cloud workflow also needs a re-deploy.</p>
+                  <p>Starting in <code>v1.3.0</code>, <strong>TikTok Streak Setup</strong> checks GitHub Releases on startup (or via <strong>Settings &rarr; Accounts, Privacy &amp; Updates &rarr; Check for Updates</strong>), verifies the downloaded executable's PE header and SHA-256 digest, swaps <code>TikTokStreakSetup.exe</code> safely with backup rollback, and reminds you on Home if your Cloud workflow also needs a re-deploy.</p>
                 </details>
               </section>
 
@@ -880,7 +880,7 @@ python fetch_friends.py                                     # Scrape mutual hand
           <footer>
             <p align="center">
               <small>
-                <strong>TikTok Streak Auto</strong> v1.3.3 &middot;
+                <strong>TikTok Streak Auto</strong> v1.4.0 &middot;
                 Maintained by <a href="https://github.com/alexanderfrit" rel="author">alexanderfrit</a> &middot;
                 <a href="https://github.com/alexanderfrit/tiktok-streak/blob/main/LICENSE">MIT License</a> &middot;
                 <a href="https://github.com/alexanderfrit/tiktok-streak">GitHub Repository</a> &middot;

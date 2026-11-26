@@ -7,16 +7,15 @@ from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
-    FluentIcon as FIF,
     MessageBoxBase,
     ProgressBar,
-    PushButton,
     SubtitleLabel,
     TextBrowser,
+    TransparentPushButton,
     isDarkTheme,
 )
 
@@ -30,6 +29,8 @@ from gui.services.updater import (
     markdown_to_update_html,
 )
 from gui.version import APP_VERSION
+from gui.widgets.fluent_redesign import apply_fluent_dialog_footer
+from gui.widgets.status_pill import StatusPill
 from gui.workers import WorkerController
 
 
@@ -94,18 +95,26 @@ class UpdateDialog(MessageBoxBase):
 
         current_ver = str(self._info.get("current_version") or APP_VERSION).lstrip("vV")
         latest_ver = str(self._info.get("latest_version") or current_ver).lstrip("vV")
+        self._current_ver = current_ver
         self._latest_ver = latest_ver
         self._download_url = str(self._info.get("download_url") or "").strip()
         self._html_url = str(self._info.get("html_url") or "").strip()
         self._can_install_exe = bool(can_self_update_executable() and self._download_url)
 
         asset_size = int(self._info.get("asset_size") or 0)
-        sub_text = tr("update.dlg_subtitle", current=current_ver, latest=latest_ver)
-        if asset_size > 0:
-            sub_text = f"{sub_text}  •  {_fmt_mb(asset_size)}"
 
+        hdr_row = QHBoxLayout()
+        hdr_row.setContentsMargins(0, 0, 0, 0)
+        hdr_row.setSpacing(10)
         self.titleLabel = SubtitleLabel(tr("update.dlg_title", latest=latest_ver), self)
-        self.subtitleLabel = BodyLabel(sub_text, self)
+        self.sizeBadge = StatusPill(_fmt_mb(asset_size) if asset_size > 0 else "", "info", self)
+        self.sizeBadge.setVisible(asset_size > 0)
+        hdr_row.addWidget(self.titleLabel, 1, Qt.AlignVCenter)
+        hdr_row.addWidget(self.sizeBadge, 0, Qt.AlignVCenter)
+
+        self.subtitleLabel = BodyLabel(
+            tr("update.dlg_subtitle", current=current_ver, latest=latest_ver), self
+        )
         self.subtitleLabel.setWordWrap(True)
 
         notes = str(self._info.get("release_notes") or "").strip() or tr("update.dlg_no_notes")
@@ -115,8 +124,8 @@ class UpdateDialog(MessageBoxBase):
         self.notesEdit.setOpenExternalLinks(True)
         self.notesEdit.document().setDocumentMargin(12)
         self.notesEdit.setHtml(markdown_to_update_html(notes, dark=dark))
-        self.notesEdit.setMinimumHeight(220)
-        self.notesEdit.setMaximumHeight(340)
+        self.notesEdit.setMinimumHeight(180)
+        self.notesEdit.setMaximumHeight(300)
         border_col = "rgba(255, 255, 255, 0.12)" if dark else "rgba(0, 0, 0, 0.10)"
         bg_col = "rgba(255, 255, 255, 0.04)" if dark else "rgba(0, 0, 0, 0.025)"
         self.notesEdit.setStyleSheet(
@@ -137,12 +146,17 @@ class UpdateDialog(MessageBoxBase):
         self.statusLabel.setWordWrap(True)
         self.statusLabel.hide()
 
-        self.viewLayout.addWidget(self.titleLabel)
+        self.bgHintLabel = CaptionLabel(tr("update.dlg_bg_hint"), self)
+        self.bgHintLabel.setWordWrap(True)
+        self.bgHintLabel.hide()
+
+        self.viewLayout.addLayout(hdr_row)
         self.viewLayout.addWidget(self.subtitleLabel)
         self.viewLayout.addWidget(self.notesEdit)
         self.viewLayout.addWidget(self.sourceNoteLabel)
-        self.viewLayout.addWidget(self.progressBar)
         self.viewLayout.addWidget(self.statusLabel)
+        self.viewLayout.addWidget(self.progressBar)
+        self.viewLayout.addWidget(self.bgHintLabel)
 
         # Customize MessageBoxBase buttons without auto-closing before download completes
         try:
@@ -162,18 +176,25 @@ class UpdateDialog(MessageBoxBase):
         self.yesButton.setText(escape_qt_mnemonic(primary_txt))
         self.cancelButton.setText(escape_qt_mnemonic(tr("update.btn_later")))
 
-        self.skipBtn = PushButton(escape_qt_mnemonic(tr("update.btn_skip")), self)
+        self.skipBtn = TransparentPushButton(
+            escape_qt_mnemonic(tr("update.btn_skip_ver", version=latest_ver)), self
+        )
         self.skipBtn.clicked.connect(self._on_skip_clicked)
-        self.buttonLayout.insertWidget(1, self.skipBtn)
+
+        apply_fluent_dialog_footer(
+            self,
+            left_widgets=[self.skipBtn],
+            right_widgets=[self.cancelButton, self.yesButton],
+        )
 
         self.yesButton.clicked.connect(self._on_primary_clicked)
         self.cancelButton.clicked.connect(self._on_cancel_clicked)
 
-        self.widget.setMinimumWidth(600)
+        self.widget.setMinimumWidth(540)
         self.sync_download_state(
             download_state,
             downloaded=downloaded_bytes,
-            total=total_bytes or int(self._info.get("asset_size") or 0),
+            total=total_bytes or asset_size,
             error=download_error,
         )
 
@@ -192,6 +213,11 @@ class UpdateDialog(MessageBoxBase):
         self._downloading = norm == "downloading"
 
         if norm == "downloading":
+            self.titleLabel.setText(tr("update.dlg_downloading_title", latest=self._latest_ver))
+            self.sizeBadge.hide()
+            self.subtitleLabel.hide()
+            self.notesEdit.hide()
+            self.sourceNoteLabel.hide()
             self.yesButton.setEnabled(True)
             self.yesButton.setText(escape_qt_mnemonic(tr("update.btn_background")))
             self.skipBtn.setVisible(False)
@@ -203,18 +229,26 @@ class UpdateDialog(MessageBoxBase):
                 self.progressBar.setRange(0, 100)
                 self.progressBar.setValue(pct)
                 total_s = _fmt_mb(eff_total)
+                status_txt = (
+                    f"{tr('update.dlg_downloading', downloaded=_fmt_mb(int(downloaded)), total=total_s)} · {pct}%"
+                )
             else:
                 self.progressBar.setRange(0, 0)
-                total_s = "?"
+                status_txt = tr("update.dlg_downloading", downloaded=_fmt_mb(int(downloaded)), total="?")
             self.progressBar.show()
             self.statusLabel.setStyleSheet("")
-            self.statusLabel.setText(
-                tr("update.dlg_downloading", downloaded=_fmt_mb(int(downloaded)), total=total_s)
-            )
+            self.statusLabel.setText(status_txt)
             self.statusLabel.show()
+            self.bgHintLabel.show()
             return
 
         if norm == "installing":
+            self.titleLabel.setText(tr("update.dlg_downloading_title", latest=self._latest_ver))
+            self.sizeBadge.hide()
+            self.subtitleLabel.hide()
+            self.notesEdit.hide()
+            self.sourceNoteLabel.hide()
+            self.bgHintLabel.hide()
             self.yesButton.setEnabled(False)
             self.skipBtn.setVisible(False)
             self.cancelButton.setEnabled(False)
@@ -225,6 +259,14 @@ class UpdateDialog(MessageBoxBase):
             self.statusLabel.setText(tr("update.dlg_verifying"))
             self.statusLabel.show()
             return
+
+        self.titleLabel.setText(tr("update.dlg_title", latest=self._latest_ver))
+        asset_size = int(self._info.get("asset_size") or 0)
+        self.sizeBadge.setVisible(asset_size > 0)
+        self.subtitleLabel.show()
+        self.notesEdit.show()
+        self.sourceNoteLabel.setVisible(not self._can_install_exe)
+        self.bgHintLabel.hide()
 
         primary_txt = (
             tr("update.dlg_download_install")

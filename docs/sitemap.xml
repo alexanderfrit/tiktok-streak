@@ -3,38 +3,38 @@
         xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
   <url>
     <loc>https://alexanderfrit.github.io/tiktok-streak/</loc>
-    <lastmod>2026-11-21</lastmod>
+    <lastmod>2026-11-26</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/01-dashboard.png</image:loc>
-      <image:title>TikTok Streak Setup — Dashboard &amp; Setup Checklist</image:title>
-      <image:caption>Windows 11 Fluent desktop overview displaying setup status, connected accounts, execution mode, and readiness checklist.</image:caption>
+      <image:title>TikTok Streak Setup v1.4.0 — Home &amp; Setup Checklist</image:title>
+      <image:caption>Windows 11 Fluent Home view displaying All Systems Ready status, 3 equal-height KPI tiles, 4-step Setup Checklist, and compact Local-First Privacy footer.</image:caption>
     </image:image>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/02-accounts.png</image:loc>
-      <image:title>TikTok Accounts &amp; Guided v20 Browser Login</image:title>
-      <image:caption>TikTok Accounts page with Guided Browser Login bypassing Chrome v20 encryption, @username friends list, and multi-account toggle.</image:caption>
+      <image:title>TikTok Accounts, Browser Import Modal &amp; Guided v20 Login</image:title>
+      <image:caption>Accounts screen featuring header Verify Session, v20-safe Guided Browser Login, self-contained Import from Browser modal, @username chips, and multi-account toggle.</image:caption>
     </image:image>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/03-content-schedule.png</image:loc>
-      <image:title>Streak Message, Video Share Card &amp; Photo Configuration</image:title>
-      <image:caption>Customize streak text messages, TikTok video share URLs, and daily photo cards in TikTok Streak Setup.</image:caption>
+      <image:title>Message &amp; Media with 1:1 TikTok DM Preview &amp; Streak Pet Tasks</image:title>
+      <image:caption>Side-by-side message/media editor with live 1:1 TikTok Web DM Preview, verified video check link, and reactive +7 pts/day Streak Pet Tasks tracker.</image:caption>
     </image:image>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/04-cloud-deploy.png</image:loc>
-      <image:title>GitHub Cloud Deployment &amp; Detected Bot Repositories</image:title>
-      <image:caption>Zero-server GitHub Actions deployment showing Detected Bot Repositories, duplicate scheduler protection, and timezone-aware cron schedules.</image:caption>
+      <image:title>Automation Route — GitHub Cloud, Detected Bot Repos &amp; Preflight</image:title>
+      <image:caption>Dedicated Automation screen showing single-source timezone badge, Detected Bot Repositories, off-peak :15 schedules with UTC preview, and inline 3-check preflight.</image:caption>
     </image:image>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/05-run-logs.png</image:loc>
-      <image:title>Run History, Cloud Monitor &amp; Local Smoke Test</image:title>
-      <image:caption>Local 1-friend smoke test and GitHub Cloud Monitor with Pause/Resume schedule, Stop Run, job logs, and debug artifact viewer.</image:caption>
+      <image:title>Run &amp; Logs — Local Test, GitHub Cloud Card &amp; Redacted Live Logs</image:title>
+      <image:caption>Equal-height Local Run and GitHub Cloud summary cards paired side-by-side with Recent Cloud Runs and redacted Live Logs.</image:caption>
     </image:image>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/screenshots/06-settings.png</image:loc>
-      <image:title>Settings, Windows Theme Sync &amp; Telegram Alerts</image:title>
-      <image:caption>Appearance theme sync, English/Indonesian localization, timezone selection, and Telegram run notifications.</image:caption>
+      <image:title>Settings — Pivot Tabs, Windows Theme Sync &amp; Telegram Alerts</image:title>
+      <image:caption>Native Windows 11 Pivot-tab Settings for appearance sync, English/Indonesian localization, single-source timezone, Telegram notifications, and SHA-256 auto-updates.</image:caption>
     </image:image>
     <image:image>
       <image:loc>https://alexanderfrit.github.io/tiktok-streak/examples/chat-send-example.jpg</image:loc>

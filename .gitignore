@@ -19,7 +19,9 @@ _*.py
 _meta_verify.json
 !**/__init__.py
 /build/
+/dist-nuitka/
 *.spec
+!TikTokStreakSetup.spec
 *.egg-info/
 .pytest_cache/
 assets/custom_photo.*
